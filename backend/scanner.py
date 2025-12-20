@@ -319,9 +319,19 @@ def scan_paths(paths, task_id=None):
             file_str = str(file_path)
             file_uuid = generate_uuid(file_str)
 
-            # Check if file already exists
+            # Check if file already exists - first by UUID, then by file path
+            # (file path check handles database moved to new location)
             cur.execute("SELECT uuid, modified_at FROM songs WHERE uuid = ?", (file_uuid,))
             existing = cur.fetchone()
+            existing_uuid = file_uuid  # UUID to use for updates
+
+            if not existing:
+                # UUID didn't match - check by file path for relocated databases
+                cur.execute("SELECT uuid, modified_at FROM songs WHERE file = ?", (file_str,))
+                existing = cur.fetchone()
+                if existing:
+                    # Use the existing UUID from the database
+                    existing_uuid = existing['uuid']
 
             # Get file modification time
             file_mtime = datetime.fromtimestamp(file_path.stat().st_mtime)
@@ -337,7 +347,7 @@ def scan_paths(paths, task_id=None):
 
             # Extract metadata
             metadata = extract_metadata(file_path)
-            metadata['uuid'] = file_uuid
+            metadata['uuid'] = existing_uuid  # Use existing UUID if found by path
             metadata['modified_at'] = file_mtime.isoformat()
             metadata['size'] = file_path.stat().st_size
 
@@ -362,7 +372,7 @@ def scan_paths(paths, task_id=None):
                     metadata['seekable'], metadata['size'], metadata['modified_at'],
                     metadata['replay_gain_track'], metadata['replay_gain_album'],
                     metadata['key'], metadata['bpm'],
-                    file_uuid
+                    existing_uuid
                 ))
                 updated_songs += 1
             else:
