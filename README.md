@@ -20,7 +20,7 @@ A self-hosted music streaming application with offline support, built with Flask
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/mrepo-web.git
+   git clone https://github.com/iwalton3/mrepo-web.git
    cd mrepo-web
    ```
 
