@@ -236,8 +236,8 @@ async function updateCacheIfNeeded() {
         currentCacheName = newCacheName;
         currentVersion = manifest.version;
 
-        // Clean up old caches
-        await cleanupOldCaches(newCacheName);
+        // NOTE: Don't delete old caches here! The running page may still need them
+        // for lazy-loaded modules. Old caches are cleaned up on navigation (reload).
 
         // Notify clients
         await postMessageToClients({
@@ -349,6 +349,12 @@ self.addEventListener('fetch', (event) => {
                 cacheName = found.cacheName;
                 currentCacheName = cacheName;
                 currentVersion = found.version;
+            }
+
+            // For navigation requests (page reload), clean up old caches
+            // Safe because the page is reloading and won't need old lazy-loaded modules
+            if (event.request.mode === 'navigate' && cacheName) {
+                cleanupOldCaches(cacheName);
             }
 
             // If we have a cache, try it first
