@@ -1,0 +1,35 @@
+# mrepo Configuration Example
+#
+# Copy this file to config.yaml and adjust settings as needed.
+# Environment variables can override most settings.
+
+# Database
+database:
+  path: /data/music.db
+  timeout: 30  # Connection timeout in seconds
+
+# Media paths - directories containing your music files
+media:
+  paths:
+    - /music/
+    # - /media/podcasts
+    # - /media/audiobooks
+
+# Streaming
+streaming:
+  url_prefix: /stream
+  transcode_bitrate: 320k  # Bitrate for transcoded files
+  ffmpeg_path: ffmpeg      # Path to FFmpeg binary
+
+# Authentication
+auth:
+  # Secret key is auto-generated and stored in .secret_key file
+  # Uncomment to override with a specific value:
+  # secret_key: your-secret-key-here
+  session_days: 30
+  allow_registration: false  # Set to true to allow new user registration
+
+# Background tasks
+tasks:
+  scan_on_startup: false
+  # scan_schedule: "0 3 * * *"  # Cron expression for scheduled scans (null to disable)

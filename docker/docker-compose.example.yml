@@ -1,0 +1,28 @@
+services:
+  mrepo:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      # Database (persistent)
+      - ../data:/data
+      # Configuration (optional - can use env vars instead)
+      - ./config.yaml:/config/config.yaml:ro
+      # Music files (read-only, adjust path to your music library)
+      - /path/to/Music/:/media:ro
+    environment:
+      - DATABASE_PATH=/data/music.db
+      - MEDIA_PATH=/media
+      - PUID=1000
+      - PGID=1000
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/config.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  mrepo-data:

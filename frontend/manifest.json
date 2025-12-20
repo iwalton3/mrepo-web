@@ -1,0 +1,17 @@
+{
+    "name": "Music Player",
+    "short_name": "Music",
+    "description": "A web-based music player",
+    "start_url": "./index.html",
+    "display": "standalone",
+    "background_color": "#0d0d0d",
+    "theme_color": "#1a1a2e",
+    "icons": [
+        {
+            "src": "https://iwalton.com/theme/audio.svg",
+            "sizes": "any",
+            "type": "image/svg+xml",
+            "purpose": "any"
+        }
+    ]
+}

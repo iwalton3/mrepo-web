@@ -1,0 +1,36 @@
+# Data (keep directory structure, ignore contents)
+data/*
+!data/.gitkeep
+*.db
+*.db-wal
+*.db-shm
+.secret_key
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Config (use config.example.yaml as template)
+config.yaml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+config.yaml
+docker/config.yaml
+docker/docker-compose.yml
