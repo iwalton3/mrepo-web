@@ -25,7 +25,8 @@ const PROJECT_ROOT = __dirname; // frontend directory is the deploy root
 // Files to always include (even if not discovered via imports)
 const ALWAYS_INCLUDE = [
     'index.html',
-    'manifest.json'
+    'manifest.json',
+    'noise-processor.js'  // AudioWorklet loaded dynamically
 ];
 
 // Directories to scan for vendor files (include all files)

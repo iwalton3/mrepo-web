@@ -42,6 +42,13 @@ export default defineComponent('eq-page', {
             loudnessReferenceSPL: player.state.loudnessReferenceSPL,
             loudnessStrength: player.state.loudnessStrength,
 
+            // Comfort noise settings
+            noiseEnabled: player.state.noiseEnabled,
+            noiseMode: player.state.noiseMode,
+            noiseTilt: player.state.noiseTilt,
+            noisePower: player.state.noisePower,
+            noiseThreshold: player.state.noiseThreshold,
+
             // Undo/redo history - initialize with current state
             // For parametric mode, this will be updated once editor is ready
             undoHistory: [],
@@ -336,11 +343,41 @@ export default defineComponent('eq-page', {
             const value = parseInt(e.target.value, 10);
             this.state.loudnessStrength = value;
             player.setLoudnessStrength(value);
+        },
+
+        // Comfort noise handlers
+        handleNoiseToggle(e) {
+            this.state.noiseEnabled = e.target.checked;
+            player.setNoiseEnabled(e.target.checked);
+        },
+
+        handleNoiseModeChange(mode) {
+            this.state.noiseMode = mode;
+            this.state.noiseTilt = 0;  // Reset tilt when changing mode (matches store behavior)
+            player.setNoiseMode(mode);
+        },
+
+        handleNoiseTiltChange(e) {
+            const value = parseInt(e.target.value, 10);
+            this.state.noiseTilt = value;
+            player.setNoiseTilt(value);
+        },
+
+        handleNoisePowerChange(e) {
+            const value = parseInt(e.target.value, 10);
+            this.state.noisePower = value;
+            player.setNoisePower(value);
+        },
+
+        handleNoiseThresholdChange(e) {
+            const value = parseInt(e.target.value, 10);
+            this.state.noiseThreshold = value;
+            player.setNoiseThreshold(value);
         }
     },
 
     template() {
-        const { eqEnabled, eqGains, showParametricEQ, undoHistory, redoHistory, crossfeedEnabled, crossfeedLevel, loudnessEnabled, loudnessReferenceSPL, loudnessStrength } = this.state;
+        const { eqEnabled, eqGains, showParametricEQ, undoHistory, redoHistory, crossfeedEnabled, crossfeedLevel, loudnessEnabled, loudnessReferenceSPL, loudnessStrength, noiseEnabled, noiseMode, noiseTilt, noisePower, noiseThreshold } = this.state;
         const canUndo = undoHistory.length > 0;
         const canRedo = redoHistory.length > 0;
 
@@ -478,6 +515,60 @@ export default defineComponent('eq-page', {
                                    value="${loudnessStrength}"
                                    on-input="handleLoudnessStrengthChange">
                             <span class="loudness-value">${loudnessStrength}%</span>
+                        </div>
+                    `)}
+                </div>
+
+                <div class="noise-section">
+                    <div class="noise-row">
+                        <label>Comfort Noise</label>
+                        <label class="toggle">
+                            <input type="checkbox" checked="${noiseEnabled}"
+                                   on-change="handleNoiseToggle">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <p class="noise-explainer">
+                        Adds subtle background noise during quiet passages to mask silence.
+                        Useful for sleep, focus, or anxiety relief.
+                    </p>
+                    ${when(noiseEnabled, html`
+                        <div class="noise-mode-row">
+                            <button class="noise-mode-btn ${noiseMode === 'white' ? 'active' : ''}"
+                                    on-click="${() => this.handleNoiseModeChange('white')}">White</button>
+                            <button class="noise-mode-btn ${noiseMode === 'grey' ? 'active' : ''}"
+                                    on-click="${() => this.handleNoiseModeChange('grey')}">Grey</button>
+                        </div>
+                        <p class="noise-mode-hint">
+                            ${noiseMode === 'white' ? 'Flat spectrum - technically accurate' : 'Inverse A-weighted - perceptually flat to human hearing'}
+                        </p>
+                        <div class="noise-slider-row">
+                            <span class="range-label-inline">Dark</span>
+                            <input type="range" min="-100" max="100" step="1"
+                                   class="noise-slider"
+                                   value="${noiseTilt}"
+                                   on-input="handleNoiseTiltChange">
+                            <span class="range-label-inline">Bright</span>
+                        </div>
+                        <div class="noise-slider-row">
+                            <span class="range-label-inline">Level</span>
+                            <input type="range" min="-60" max="0" step="1"
+                                   class="noise-slider"
+                                   value="${noisePower}"
+                                   on-input="handleNoisePowerChange">
+                            <span class="noise-value">${noisePower} dB</span>
+                        </div>
+                        <div class="noise-slider-row">
+                            <span class="range-label-inline">Threshold</span>
+                            <input type="range" min="-60" max="0" step="1"
+                                   class="noise-slider"
+                                   value="${noiseThreshold}"
+                                   on-input="handleNoiseThresholdChange">
+                            <span class="noise-value">${noiseThreshold === 0 ? 'Always' : noiseThreshold + ' dB'}</span>
+                        </div>
+                        <div class="noise-labels">
+                            <span>Quiet</span>
+                            <span>Always On</span>
                         </div>
                     `)}
                 </div>
@@ -845,6 +936,98 @@ export default defineComponent('eq-page', {
             color: var(--text-muted, #707070);
             margin-top: 0.25rem;
             padding: 0 4.5rem;
+        }
+
+        /* Noise Section */
+        .noise-section {
+            background: var(--surface-100, #242424);
+            border-radius: 8px;
+            margin-top: 1rem;
+            margin-bottom: 1rem;
+            padding: 1rem;
+        }
+
+        .noise-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .noise-row > label:first-child {
+            font-weight: 500;
+            color: var(--text-primary, #e0e0e0);
+        }
+
+        .noise-explainer {
+            margin: 0.5rem 0 0 0;
+            font-size: 0.8rem;
+            color: var(--text-muted, #707070);
+            line-height: 1.4;
+        }
+
+        .noise-slider-row {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-top: 0.75rem;
+        }
+
+        .noise-slider {
+            flex: 1;
+            min-width: 80px;
+        }
+
+        .noise-value {
+            font-family: monospace;
+            font-size: 0.875rem;
+            color: var(--text-secondary, #a0a0a0);
+            min-width: 4rem;
+            text-align: right;
+        }
+
+        .noise-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.7rem;
+            color: var(--text-muted, #707070);
+            margin-top: 0.25rem;
+            padding: 0 4.5rem;
+        }
+
+        .noise-mode-row {
+            display: flex;
+            gap: 0.5rem;
+            margin: 0.75rem 0 0.5rem 0;
+        }
+
+        .noise-mode-btn {
+            flex: 1;
+            padding: 0.5rem 1rem;
+            border: 1px solid var(--border-color, #404040);
+            border-radius: 4px;
+            background: var(--surface-200, #2a2a2a);
+            color: var(--text-secondary, #a0a0a0);
+            font-size: 0.875rem;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        .noise-mode-btn:hover {
+            background: var(--surface-300, #333);
+            color: var(--text-primary, #e0e0e0);
+        }
+
+        .noise-mode-btn.active {
+            background: var(--primary, #6366f1);
+            border-color: var(--primary, #6366f1);
+            color: white;
+        }
+
+        .noise-mode-hint {
+            margin: 0 0 0.5rem 0;
+            font-size: 0.75rem;
+            color: var(--text-muted, #707070);
+            font-style: italic;
         }
 
         /* Mobile */

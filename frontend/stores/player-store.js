@@ -318,7 +318,14 @@ export const playerStore = createStore({
     sleepTimerMinutes: audioFXSettings?.sleepTimerMinutes ?? 0,  // 0 = disabled (for duration mode)
     sleepTimerTargetTime: audioFXSettings?.sleepTimerTargetTime ?? '23:00',  // HH:MM (for time mode)
     sleepTimerMinimumMinutes: audioFXSettings?.sleepTimerMinimumMinutes ?? 0,  // Minimum playback after target time (0 = indefinite if past target)
-    sleepTimerEndTime: null  // Runtime: Date.now() + minutes when timer started
+    sleepTimerEndTime: null,  // Runtime: Date.now() + minutes when timer started
+
+    // Comfort noise (fills silence with background noise)
+    noiseEnabled: audioFXSettings?.noiseEnabled || false,
+    noiseMode: audioFXSettings?.noiseMode ?? 'white',    // 'white' or 'grey'
+    noiseTilt: audioFXSettings?.noiseTilt ?? 0,          // -100 (dark/bass) to +100 (bright/treble)
+    noisePower: audioFXSettings?.noisePower ?? -24,      // -60 to 0 dB
+    noiseThreshold: audioFXSettings?.noiseThreshold ?? -36  // -60 to 0 dB (0 = always on)
 });
 
 /**
@@ -372,6 +379,19 @@ class AudioController {
         this._loudnessLowShelf = null;    // BiquadFilterNode (lowshelf, 100Hz)
         this._loudnessHighShelf = null;   // BiquadFilterNode (highshelf, 10kHz)
 
+        // Comfort noise state
+        this._noiseInitialized = false;
+        this._noiseWorklet = null;        // AudioWorkletNode for noise generation
+        this._noiseScriptProcessor = null; // Fallback ScriptProcessorNode
+        this._noiseLowFilter = null;      // BiquadFilterNode lowshelf for bass control
+        this._noiseHighFilter = null;     // BiquadFilterNode highshelf for treble control
+        this._noiseGain = null;           // GainNode for volume control
+        this._noiseMerger = null;         // GainNode to merge noise with music
+        this._noiseAnalyser = null;       // AnalyserNode for RMS detection
+        this._noiseRafId = null;          // requestAnimationFrame ID
+        this._noiseTimeDomainData = null; // Float32Array for RMS calculation
+        this._noiseInternalConnected = false; // Track internal noise node connections
+
         // Set up event listeners on BOTH audio elements once (not per-swap)
         // Guards in handlers ensure only active element updates state
         this._setupEventListeners(this._audioElements[0]);
@@ -421,7 +441,7 @@ class AudioController {
                 console.log('[TempQueue] Restored temp queue from previous session');
                 this._applyReplayGain();
                 this.store.state.serverLoaded = true;
-                this._initEQOnStartup();
+                this._initAudioPipelineOnStartup();
                 return;
             }
         } catch (e) {
@@ -490,16 +510,34 @@ class AudioController {
             console.error('Failed to load queue from server:', e);
         }
 
-        // Initialize EQ regardless of server load success (EQ is local-only)
-        this._initEQOnStartup();
+        // Initialize audio pipeline regardless of server load success (effects are local-only)
+        this._initAudioPipelineOnStartup();
     }
 
     /**
-     * Initialize EQ on startup from localStorage settings.
+     * Initialize audio pipeline on startup if any effects are enabled.
      * Called after server load attempt, but runs regardless of server success.
+     * Checks: EQ, crossfade, crossfeed, loudness, noise
      */
-    async _initEQOnStartup() {
-        if (!this.store.state.eqEnabled) return;
+    async _initAudioPipelineOnStartup() {
+        // Check if ANY effect is enabled that requires the audio pipeline
+        const needsPipeline =
+            this.store.state.eqEnabled ||
+            this.store.state.crossfadeEnabled ||
+            this.store.state.crossfeedEnabled ||
+            this.store.state.loudnessEnabled ||
+            this.store.state.noiseEnabled;
+
+        if (!needsPipeline) return;
+
+        // If EQ is not enabled but other effects are, just build the pipeline
+        if (!this.store.state.eqEnabled) {
+            console.log('[Startup] Initializing pipeline for non-EQ effects');
+            await this._ensureAudioPipeline();
+            return;
+        }
+
+        // EQ is enabled - proceed with EQ-specific initialization
 
         // Check if PEQ mode is active
         const isPEQMode = localStorage.getItem('music-eq-advanced') === 'true';
@@ -538,14 +576,14 @@ class AudioController {
 
             if (bands && bands.length > 0) {
                 console.log('[EQ Startup] Applying PEQ with', bands.length, 'bands');
-                this.setParametricEQ(bands, this._calculatePEQPreamp(bands));
+                await this.setParametricEQ(bands, this._calculatePEQPreamp(bands));
                 return;
             }
         }
 
-        // Fall back to GEQ
+        // Fall back to GEQ - use unified pipeline builder
         console.log('[EQ Startup] Applying GEQ');
-        this._autoInitEQ();
+        await this._ensureAudioPipeline();
     }
 
     _setupPersistence() {
@@ -1003,6 +1041,20 @@ class AudioController {
             audioUrl = await getAudioUrl(song.uuid);
             if (!audioUrl) {
                 audioUrl = getStreamUrl(song.uuid, song.type);
+            }
+        }
+
+        // Initialize audio pipeline if crossfade is enabled but not set up yet
+        // Do this BEFORE setting the audio source to avoid glitches during playback
+        if (this.store.state.crossfadeEnabled) {
+            if (!this._dualPipelineActive) {
+                console.log('[Play] Initializing dual pipeline for crossfade');
+                await this._ensureAudioPipeline();
+            }
+            // Ensure the primary audio source is connected to the pipeline
+            if (this._dualPipelineActive && !this._audioSources[this._primaryIndex]) {
+                console.log('[Play] Connecting audio source to pipeline');
+                this._ensureSourceConnected(this._primaryIndex);
             }
         }
 
@@ -1510,7 +1562,7 @@ class AudioController {
             return filter;
         });
 
-        // Chain: source -> filters -> preamp -> crossfeed -> output
+        // Chain: source -> filters -> preamp -> crossfeed -> noise -> output
         let lastNode = this._eqSourceNode;
         for (const filter of this._eqFilters) {
             lastNode.connect(filter);
@@ -1519,6 +1571,8 @@ class AudioController {
         lastNode.connect(this._eqPreampGain);
         // Insert crossfeed into chain
         lastNode = this._connectCrossfeed(this._eqPreampGain) || this._eqPreampGain;
+        // Insert noise into chain
+        lastNode = this._connectNoise(lastNode);
         lastNode.connect(this._eqOutputNode);
     }
 
@@ -1529,15 +1583,15 @@ class AudioController {
      * @param {Object[]} bands - Array of band configurations
      * @param {number} [autoPreamp=0] - Auto-preamp in dB to prevent clipping
      */
-    setParametricEQ(bands, autoPreamp = 0) {
+    async setParametricEQ(bands, autoPreamp = 0) {
         // Store for later restore when EQ is re-enabled
         this._parametricBands = bands;
         this._parametricPreamp = autoPreamp;
         this._isParametricMode = true;
 
-        // Auto-initialize if not already done
+        // Auto-initialize if not already done - use unified pipeline builder
         if (!this._audioContext || !this._eqSourceNode) {
-            this._autoInitEQ();
+            await this._ensureAudioPipeline();
         }
 
         if (!this._audioContext) {
@@ -1583,12 +1637,14 @@ class AudioController {
 
         // Create new filters
         if (!bands || bands.length === 0) {
-            // No filters - connect chainInput -> loudness -> preamp -> crossfeed -> output
+            // No filters - connect chainInput -> loudness -> preamp -> crossfeed -> noise -> output
             this._eqFilters = [];
             const loudnessOut = this._connectLoudness(chainInputNode);
             loudnessOut.connect(this._eqPreampGain);
             const crossfeedOut = this._connectCrossfeed(this._eqPreampGain) || this._eqPreampGain;
-            crossfeedOut.connect(this._eqOutputNode);
+            // Insert noise into chain
+            const noiseOut = this._connectNoise(crossfeedOut);
+            noiseOut.connect(this._eqOutputNode);
             return;
         }
 
@@ -1604,7 +1660,7 @@ class AudioController {
             return filter;
         });
 
-        // Chain: chainInput -> loudness -> filter1 -> filter2 -> ... -> preamp -> crossfeed -> output
+        // Chain: chainInput -> loudness -> filter1 -> filter2 -> ... -> preamp -> crossfeed -> noise -> output
         let lastNode = this._connectLoudness(chainInputNode);
         for (const filter of this._eqFilters) {
             lastNode.connect(filter);
@@ -1613,7 +1669,9 @@ class AudioController {
         lastNode.connect(this._eqPreampGain);
         // Insert crossfeed into chain
         const crossfeedOut = this._connectCrossfeed(this._eqPreampGain) || this._eqPreampGain;
-        crossfeedOut.connect(this._eqOutputNode);
+        // Insert noise into chain
+        const noiseOut = this._connectNoise(crossfeedOut);
+        noiseOut.connect(this._eqOutputNode);
     }
 
     /**
@@ -1694,6 +1752,10 @@ class AudioController {
      * This accounts for crossfeed/stereo image processing if active.
      */
     _getChainEndNode() {
+        // Noise merger is at the end of the chain (after crossfeed)
+        if (this._noiseInitialized && this._noiseMerger) {
+            return this._noiseMerger;
+        }
         // If crossfeed is initialized and connected, the merger is the end
         if (this._crossfeedInitialized && this._crossfeedMerger) {
             return this._crossfeedMerger;
@@ -1801,11 +1863,21 @@ class AudioController {
             this._audioContext = null;
         }
 
-        // Reset crossfeed and loudness state (nodes are invalid after context close)
+        // Reset crossfeed, loudness, and noise state (nodes are invalid after context close)
         this._crossfeedInitialized = false;
         this._crossfeedInternalConnected = false;
         this._loudnessInitialized = false;
         this._loudnessInternalConnected = false;
+        this._noiseInitialized = false;
+        this._noiseInternalConnected = false;
+        this._noiseWorklet = null;
+        this._noiseScriptProcessor = null;
+        this._noiseLowFilter = null;
+        this._noiseHighFilter = null;
+        this._noiseGain = null;
+        this._noiseMerger = null;
+        this._noiseAnalyser = null;
+        this._noiseTimeDomainData = null;
         this._dualPipelineActive = false;
 
         // Create fresh audio elements for both slots
@@ -1848,6 +1920,11 @@ class AudioController {
             this.audio._visualizerSource = this._eqSourceNode;
         }
 
+        // Initialize noise if enabled (must happen before EQ chain build)
+        if (this.store.state.noiseEnabled) {
+            await this._initNoise();
+        }
+
         // Restore EQ state - either parametric or graphic
         if (wasParametricMode && savedParametricBands && savedParametricBands.length > 0) {
             // Restore parametric EQ
@@ -1866,7 +1943,7 @@ class AudioController {
                 return filter;
             });
 
-            // Chain: chainInput -> loudness -> filters -> crossfeed -> destination
+            // Chain: chainInput -> loudness -> filters -> crossfeed -> noise -> destination
             let lastNode = this._connectLoudness(chainInputNode);
             for (const filter of this._eqFilters) {
                 lastNode.connect(filter);
@@ -1874,6 +1951,8 @@ class AudioController {
             }
             // Insert crossfeed into chain
             lastNode = this._connectCrossfeed(lastNode) || lastNode;
+            // Insert noise into chain
+            lastNode = this._connectNoise(lastNode);
             lastNode.connect(this._eqOutputNode);
         }
 
@@ -1929,83 +2008,26 @@ class AudioController {
     }
 
     /**
-     * Auto-initialize EQ audio context if not already done.
-     * Creates the audio graph based on crossfade mode:
-     * - Simple mode: source -> EQ filters -> crossfeed -> destination
-     * - Dual mode: sources -> fade gains -> mixer -> EQ filters -> crossfeed -> destination
+     * Ensure the audio pipeline is initialized.
+     * Uses switchLatencyMode as the single code path for pipeline creation.
+     * This handles all features: crossfade, loudness, crossfeed, noise, EQ.
+     */
+    async _ensureAudioPipeline() {
+        if (this._audioContext) return;
+
+        // Use switchLatencyMode as the single unified pipeline builder
+        const lowLatencyEnabled = loadLowLatencySetting();
+        const latencyHint = lowLatencyEnabled ? 'interactive' : 'playback';
+        await this.switchLatencyMode(latencyHint, true);
+    }
+
+    /**
+     * @deprecated Use _ensureAudioPipeline() instead.
+     * Kept for compatibility - just calls the async version fire-and-forget.
      */
     _autoInitEQ() {
         if (this._audioContext) return;
-
-        try {
-            // Check if audio element already has a context (from visualizer)
-            if (this.audio._visualizerContext) {
-                this._audioContext = this.audio._visualizerContext;
-                this._eqSourceNode = this.audio._visualizerSource;
-                this._eqOutputNode = this.audio._visualizerAnalyser || this._audioContext.destination;
-                return;
-            }
-
-            // Create new audio context - use low latency if enabled in settings
-            const lowLatencyEnabled = loadLowLatencySetting();
-            const latencyHint = lowLatencyEnabled ? 'interactive' : 'playback';
-            this._audioContext = new (window.AudioContext || window.webkitAudioContext)({ latencyHint });
-
-            // Sync latency mode tracking so visualizer knows the current state
-            currentLatencyMode = latencyHint;
-            this._eqOutputNode = this._audioContext.destination;
-
-            // Determine chain input based on crossfade mode
-            let chainInputNode;
-
-            if (this.store.state.crossfadeEnabled) {
-                // Dual mode: set up mixer pipeline
-                this._initDualAudioPipeline();
-                this._ensureSourceConnected(this._primaryIndex);
-                chainInputNode = this._mixerGain;
-
-                // Store primary source for backward compatibility
-                this._eqSourceNode = this._audioSources[this._primaryIndex];
-            } else {
-                // Simple mode: direct source connection
-                this._eqSourceNode = this._audioContext.createMediaElementSource(this.audio);
-                chainInputNode = this._eqSourceNode;
-
-                // Store on audio element so visualizer can reuse
-                this.audio._visualizerContext = this._audioContext;
-                this.audio._visualizerSource = this._eqSourceNode;
-            }
-
-            // Initialize default 10-band EQ filters
-            this._eqFilters = EQ_BANDS.map((freq, i) => {
-                const filter = this._audioContext.createBiquadFilter();
-                const isShelf = i === 0 || i === 9;
-                filter.type = i === 0 ? 'lowshelf' : i === 9 ? 'highshelf' : 'peaking';
-                filter.frequency.value = freq;
-                if (!isShelf) {
-                    filter.Q.value = 1.4;
-                }
-                filter.gain.value = this.store.state.eqEnabled ? this.store.state.eqGains[i] : 0;
-                return filter;
-            });
-
-            // Chain: chainInput -> loudness -> filters -> crossfeed -> destination
-            let lastNode = this._connectLoudness(chainInputNode);
-            for (const filter of this._eqFilters) {
-                lastNode.connect(filter);
-                lastNode = filter;
-            }
-            // Insert crossfeed into chain
-            lastNode = this._connectCrossfeed(lastNode) || lastNode;
-            lastNode.connect(this._eqOutputNode);
-
-            // Resume if suspended (autoplay policy)
-            if (this._audioContext.state === 'suspended') {
-                this._audioContext.resume();
-            }
-        } catch (e) {
-            console.error('Failed to auto-initialize EQ:', e);
-        }
+        this._ensureAudioPipeline().catch(e => console.error('Failed to initialize audio pipeline:', e));
     }
 
     /**
@@ -2107,7 +2129,12 @@ class AudioController {
             sleepTimerMode: this.store.state.sleepTimerMode,
             sleepTimerMinutes: this.store.state.sleepTimerMinutes,
             sleepTimerTargetTime: this.store.state.sleepTimerTargetTime,
-            sleepTimerMinimumMinutes: this.store.state.sleepTimerMinimumMinutes
+            sleepTimerMinimumMinutes: this.store.state.sleepTimerMinimumMinutes,
+            noiseEnabled: this.store.state.noiseEnabled,
+            noiseMode: this.store.state.noiseMode,
+            noiseTilt: this.store.state.noiseTilt,
+            noisePower: this.store.state.noisePower,
+            noiseThreshold: this.store.state.noiseThreshold
         });
     }
 
@@ -2635,8 +2662,15 @@ class AudioController {
     /**
      * Set crossfeed enabled state.
      */
-    setCrossfeedEnabled(enabled) {
+    async setCrossfeedEnabled(enabled) {
         this.store.state.crossfeedEnabled = enabled;
+
+        // Initialize pipeline if needed (crossfeed needs the audio graph)
+        if (enabled && !this._audioContext) {
+            // Use unified pipeline builder and wait for completion
+            await this._ensureAudioPipeline();
+        }
+
         this._updateCrossfeedGains();
         this._saveAudioFXSettings();
     }
@@ -2769,10 +2803,15 @@ class AudioController {
         const wasEnabled = this.store.state.loudnessEnabled;
         this.store.state.loudnessEnabled = enabled;
 
-        // Rebuild pipeline if audio context exists and state changed
-        // This creates/connects the loudness nodes
-        if (this._audioContext && wasEnabled !== enabled) {
-            await this.switchLatencyMode(currentLatencyMode, true);
+        // Initialize or rebuild pipeline
+        if (wasEnabled !== enabled) {
+            if (this._audioContext) {
+                // Rebuild pipeline - this creates/connects the loudness nodes
+                await this.switchLatencyMode(currentLatencyMode, true);
+            } else if (enabled) {
+                // No context yet - use unified pipeline builder
+                await this._ensureAudioPipeline();
+            }
         }
 
         // Now that loudness nodes exist, update gains and HTML5 volume
@@ -2800,6 +2839,281 @@ class AudioController {
     setLoudnessStrength(strength) {
         this.store.state.loudnessStrength = Math.max(0, Math.min(150, strength));
         this._updateLoudnessGains();
+        this._saveAudioFXSettings();
+    }
+
+    // ==================== COMFORT NOISE METHODS ====================
+
+    /**
+     * Initialize the comfort noise audio nodes.
+     * Creates: noise generator (AudioWorklet or ScriptProcessor), color filter, gain node.
+     */
+    async _initNoise() {
+        if (!this._audioContext || this._noiseInitialized) return;
+
+        // Try AudioWorklet first (most efficient)
+        try {
+            await this._audioContext.audioWorklet.addModule('./noise-processor.js');
+            this._noiseWorklet = new AudioWorkletNode(this._audioContext, 'noise-processor');
+        } catch (e) {
+            console.warn('AudioWorklet not supported for noise, using ScriptProcessor fallback:', e);
+            // Fallback to ScriptProcessorNode (deprecated but widely supported)
+            this._noiseScriptProcessor = this._audioContext.createScriptProcessor(4096, 0, 1);
+            this._noiseScriptProcessor.onaudioprocess = (e) => {
+                const output = e.outputBuffer.getChannelData(0);
+                for (let i = 0; i < output.length; i++) {
+                    output[i] = Math.random() * 2 - 1;
+                }
+            };
+        }
+
+        // Low frequency filter - controls bass/brown noise character
+        this._noiseLowFilter = this._audioContext.createBiquadFilter();
+        this._noiseLowFilter.type = 'lowshelf';
+        this._noiseLowFilter.frequency.value = 100;  // Lower for deeper bass control
+        this._noiseLowFilter.gain.value = 0;
+
+        // High frequency filter - controls treble/blue noise character
+        this._noiseHighFilter = this._audioContext.createBiquadFilter();
+        this._noiseHighFilter.type = 'highshelf';
+        this._noiseHighFilter.frequency.value = 3000;  // Lower for wider treble control
+        this._noiseHighFilter.gain.value = 0;
+
+        // Output gain (controlled by RMS analysis)
+        this._noiseGain = this._audioContext.createGain();
+        this._noiseGain.gain.value = 0; // Start silent
+
+        // RMS analyser on music path
+        this._noiseAnalyser = this._audioContext.createAnalyser();
+        this._noiseAnalyser.fftSize = 2048;
+        this._noiseTimeDomainData = new Float32Array(this._noiseAnalyser.fftSize);
+
+        // Merger node to combine music + noise
+        this._noiseMerger = this._audioContext.createGain();
+        this._noiseMerger.gain.value = 1.0;
+
+        // Connect noise chain: generator -> lowFilter -> highFilter -> gain
+        const noiseSource = this._noiseWorklet || this._noiseScriptProcessor;
+        if (noiseSource) {
+            noiseSource.connect(this._noiseLowFilter);
+            this._noiseLowFilter.connect(this._noiseHighFilter);
+            this._noiseHighFilter.connect(this._noiseGain);
+        }
+
+        this._noiseInitialized = true;
+        this._updateNoiseFilters();
+    }
+
+    /**
+     * Connect noise to the audio output chain.
+     * Inserts analyser for RMS detection, merges noise with music.
+     * @param {AudioNode} musicEndNode - The final node of the music chain
+     * @returns {AudioNode} The merger node (new chain end), or musicEndNode if noise disabled
+     */
+    _connectNoise(musicEndNode) {
+        if (!this._noiseInitialized || !this._noiseMerger) {
+            return musicEndNode;
+        }
+
+        // Internal connections only need to be done once
+        if (!this._noiseInternalConnected) {
+            this._noiseAnalyser.connect(this._noiseMerger);
+            this._noiseGain.connect(this._noiseMerger);
+            this._noiseInternalConnected = true;
+        }
+
+        // Connect music path through analyser (this can change when chain is rebuilt)
+        musicEndNode.connect(this._noiseAnalyser);
+
+        // Start RMS monitoring if noise is enabled
+        if (this.store.state.noiseEnabled) {
+            this._startNoiseLoop();
+        }
+
+        return this._noiseMerger;
+    }
+
+    /**
+     * Update noise filters based on noiseMode and noiseTilt.
+     *
+     * White mode: Flat spectrum at tilt=0, brown-ish at -100, blue-ish at +100
+     * Grey mode: Perceptually flat (inverse A-weighted) at tilt=0, then tilts from there
+     *
+     * Tilt maps to low/high shelf gains:
+     * - Negative tilt: boost bass, cut treble (darker/warmer)
+     * - Positive tilt: cut bass, boost treble (brighter/airier)
+     */
+    _updateNoiseFilters() {
+        if (!this._noiseLowFilter || !this._noiseHighFilter) return;
+
+        const tilt = this.store.state.noiseTilt;  // -100 to +100
+        const mode = this.store.state.noiseMode;  // 'white' or 'grey'
+
+        // Calculate base gains from tilt
+        // Brown noise (-6dB/octave) needs significant low boost and high cut
+        // At tilt -100: low=+24, high=-18 (deep brown)
+        // At tilt 0: low=0, high=0 (flat white)
+        // At tilt +100: low=-18, high=+18 (bright blue/violet)
+        let lowGain = -tilt * 0.24;   // -100 -> +24, 0 -> 0, +100 -> -24
+        let highGain = tilt * 0.18;   // -100 -> -18, 0 -> 0, +100 -> +18
+
+        // Grey mode applies INVERSE A-weighting to compensate for human hearing
+        // Based on equal-loudness contours, grey noise needs:
+        // - Strong bass boost (~+15-20dB at 100Hz relative to 1kHz)
+        // - Reduction in the 2-4kHz range where ears are most sensitive
+        // - Slight rolloff at very high frequencies
+        if (mode === 'grey') {
+            lowGain += 18;   // Strong bass boost for perceptual flatness
+            highGain -= 10;  // Cut highs/mids where ears are sensitive
+        }
+
+        // Clamp to filter range (extended to ±24 for deeper coloring)
+        lowGain = Math.max(-24, Math.min(24, lowGain));
+        highGain = Math.max(-24, Math.min(24, highGain));
+
+        this._noiseLowFilter.gain.value = lowGain;
+        this._noiseHighFilter.gain.value = highGain;
+    }
+
+    /**
+     * Set noise mode ('white' or 'grey').
+     * White: Flat spectrum at tilt=0
+     * Grey: Perceptually flat (A-weighted) at tilt=0
+     * Changing mode resets tilt to center.
+     */
+    setNoiseMode(mode) {
+        if (mode !== 'white' && mode !== 'grey') return;
+        this.store.state.noiseMode = mode;
+        this.store.state.noiseTilt = 0;  // Reset tilt when changing mode
+        this._updateNoiseFilters();
+        this._saveAudioFXSettings();
+    }
+
+    /**
+     * Start the noise RMS monitoring loop.
+     * Analyzes music loudness and adjusts noise gain based on threshold.
+     */
+    _startNoiseLoop() {
+        if (this._noiseRafId) return;
+
+        const loop = () => {
+            // Stop if noise disabled
+            if (!this.store.state.noiseEnabled) {
+                if (this._noiseGain) this._noiseGain.gain.value = 0;
+                this._noiseRafId = requestAnimationFrame(loop);
+                return;
+            }
+
+            // Don't add noise when not playing
+            if (!this.store.state.isPlaying) {
+                if (this._noiseGain) this._noiseGain.gain.value = 0;
+                this._noiseRafId = requestAnimationFrame(loop);
+                return;
+            }
+
+            // Get RMS of music
+            if (this._noiseAnalyser && this._noiseTimeDomainData) {
+                this._noiseAnalyser.getFloatTimeDomainData(this._noiseTimeDomainData);
+                let sum = 0;
+                for (let i = 0; i < this._noiseTimeDomainData.length; i++) {
+                    sum += this._noiseTimeDomainData[i] * this._noiseTimeDomainData[i];
+                }
+                const rms = Math.sqrt(sum / this._noiseTimeDomainData.length);
+                const rmsDb = 20 * Math.log10(Math.max(rms, 1e-10));
+
+                // Calculate target noise level
+                const threshold = this.store.state.noiseThreshold;
+                const power = this.store.state.noisePower;
+                const targetGain = Math.pow(10, power / 20); // Convert dB to linear
+
+                let noiseLevel = 0;
+                if (threshold >= 0) {
+                    // Max threshold = always add noise
+                    noiseLevel = targetGain;
+                } else if (rmsDb < threshold) {
+                    // Below threshold - fade in noise proportionally
+                    const fadeRange = 6; // 6dB fade range
+                    const fadeAmount = Math.min(1, (threshold - rmsDb) / fadeRange);
+                    noiseLevel = fadeAmount * targetGain;
+                }
+
+                // Smooth transition (avoid pops)
+                if (this._noiseGain) {
+                    const currentGain = this._noiseGain.gain.value;
+                    const smoothing = 0.1;
+                    this._noiseGain.gain.value = currentGain + (noiseLevel - currentGain) * smoothing;
+                }
+            }
+
+            this._noiseRafId = requestAnimationFrame(loop);
+        };
+
+        this._noiseRafId = requestAnimationFrame(loop);
+    }
+
+    /**
+     * Stop the noise RMS monitoring loop.
+     */
+    _stopNoiseLoop() {
+        if (this._noiseRafId) {
+            cancelAnimationFrame(this._noiseRafId);
+            this._noiseRafId = null;
+        }
+    }
+
+    /**
+     * Set noise enabled state.
+     * Triggers audio chain rebuild to add/remove noise nodes.
+     */
+    async setNoiseEnabled(enabled) {
+        this.store.state.noiseEnabled = enabled;
+
+        if (enabled) {
+            if (!this._audioContext) {
+                // No context yet - use unified pipeline builder (handles noise init)
+                await this._ensureAudioPipeline();
+            } else if (!this._noiseInitialized) {
+                // Rebuild pipeline - switchLatencyMode will init noise with correct context
+                await this.switchLatencyMode(currentLatencyMode, true);
+            } else {
+                // Already initialized, just start the monitoring loop
+                this._startNoiseLoop();
+            }
+        } else {
+            this._stopNoiseLoop();
+            if (this._noiseGain) {
+                this._noiseGain.gain.value = 0;
+            }
+        }
+
+        this._saveAudioFXSettings();
+    }
+
+    /**
+     * Set noise tilt (-100 to +100).
+     * Negative = darker/warmer (more bass), Positive = brighter/airier (more treble)
+     */
+    setNoiseTilt(tilt) {
+        this.store.state.noiseTilt = Math.max(-100, Math.min(100, tilt));
+        this._updateNoiseFilters();
+        this._saveAudioFXSettings();
+    }
+
+    /**
+     * Set noise power level (-60 to 0 dB).
+     */
+    setNoisePower(power) {
+        this.store.state.noisePower = Math.max(-60, Math.min(0, power));
+        this._saveAudioFXSettings();
+    }
+
+    /**
+     * Set noise threshold (-60 to 0 dB).
+     * When music RMS drops below this level, noise fades in.
+     * 0 = always on (constant noise mixing).
+     */
+    setNoiseThreshold(threshold) {
+        this.store.state.noiseThreshold = Math.max(-60, Math.min(0, threshold));
         this._saveAudioFXSettings();
     }
 
@@ -2878,10 +3192,15 @@ class AudioController {
             this.store.state.gaplessEnabled = false;
         }
 
-        // Rebuild pipeline if audio context exists and state changed
-        if (this._audioContext && wasEnabled !== enabled) {
-            // Use full teardown/rebuild via switchLatencyMode for reliability
-            await this.switchLatencyMode(currentLatencyMode, true);
+        // Initialize or rebuild pipeline
+        if (wasEnabled !== enabled) {
+            if (this._audioContext) {
+                // Use full teardown/rebuild via switchLatencyMode for reliability
+                await this.switchLatencyMode(currentLatencyMode, true);
+            } else if (enabled) {
+                // No context yet - use unified pipeline builder
+                await this._ensureAudioPipeline();
+            }
         }
 
         this._saveAudioFXSettings();
@@ -2945,11 +3264,24 @@ class AudioController {
             return;
         }
 
-        // Ensure dual pipeline is active
+        // Ensure dual pipeline is active - initialize if needed
         if (!this._dualPipelineActive) {
-            console.warn('Crossfade requested but dual pipeline not active');
-            resetAndReturn();
-            return;
+            if (!this._audioContext) {
+                // No context yet - build the full pipeline
+                console.log('Crossfade: initializing audio pipeline');
+                await this._ensureAudioPipeline();
+            } else if (this.store.state.crossfadeEnabled && !this._dualPipelineActive) {
+                // Context exists but dual pipeline not set up - need to rebuild
+                console.log('Crossfade: rebuilding pipeline for dual mode');
+                await this.switchLatencyMode(currentLatencyMode, true);
+            }
+
+            // Check again after initialization
+            if (!this._dualPipelineActive) {
+                console.warn('Crossfade requested but dual pipeline not active after init attempt');
+                resetAndReturn();
+                return;
+            }
         }
 
         // Get next track
@@ -3231,12 +3563,15 @@ class AudioController {
                 } else {
                     lastNode = this._connectCrossfeed(lastNode) || lastNode;
                 }
+                // Insert noise into chain
+                lastNode = this._connectNoise(lastNode);
                 lastNode.connect(this._eqOutputNode);
             } else {
-                // No EQ - connect source through loudness and crossfeed
+                // No EQ - connect source through loudness, crossfeed, and noise
                 const loudnessOut = this._connectLoudness(this._eqSourceNode);
                 const crossfeedOut = this._connectCrossfeed(loudnessOut) || loudnessOut;
-                crossfeedOut.connect(this._eqOutputNode);
+                const noiseOut = this._connectNoise(crossfeedOut);
+                noiseOut.connect(this._eqOutputNode);
             }
         } catch (e) {
             console.error('Failed to reconnect audio source:', e);
@@ -4971,6 +5306,13 @@ export const player = {
     setLoudnessEnabled: (enabled) => audioController.setLoudnessEnabled(enabled),
     setLoudnessReferenceSPL: (spl) => audioController.setLoudnessReferenceSPL(spl),
     setLoudnessStrength: (strength) => audioController.setLoudnessStrength(strength),
+
+    // Audio FX - Comfort Noise
+    setNoiseEnabled: (enabled) => audioController.setNoiseEnabled(enabled),
+    setNoiseMode: (mode) => audioController.setNoiseMode(mode),
+    setNoiseTilt: (tilt) => audioController.setNoiseTilt(tilt),
+    setNoisePower: (power) => audioController.setNoisePower(power),
+    setNoiseThreshold: (threshold) => audioController.setNoiseThreshold(threshold),
 
     // Audio FX - Sleep Timer
     setSleepTimerMode: (mode) => audioController.setSleepTimerMode(mode),

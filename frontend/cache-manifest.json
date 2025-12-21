@@ -1,8 +1,8 @@
 {
-  "version": "9b119cf6",
-  "timestamp": 1766260682653,
-  "generatedAt": "2025-12-20T19:58:02.653Z",
-  "fileCount": 44,
+  "version": "16370b43",
+  "timestamp": 1766287959663,
+  "generatedAt": "2025-12-21T03:32:39.663Z",
+  "fileCount": 45,
   "files": [
     "/api/music-api.js",
     "/componentlib/button/button.js",
@@ -27,6 +27,7 @@
     "/lib/utils.js",
     "/manifest.json",
     "/music-app.js",
+    "/noise-processor.js",
     "/offline/offline-api.js",
     "/offline/offline-audio.js",
     "/offline/offline-db.js",
