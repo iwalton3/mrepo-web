@@ -159,9 +159,8 @@ function setupNetworkListeners() {
         const { status, progress, version, error, updated, previousVersion } = event.detail;
         offlineStore.state.cacheStatus = status;
         offlineStore.state.cacheProgress = progress || null;
-        if (version) {
-            offlineStore.state.cacheVersion = version;
 
+        if (version) {
             // Track the first version we see as our "running" version
             if (initialRunningVersion === null) {
                 initialRunningVersion = version;
@@ -169,17 +168,25 @@ function setupNetworkListeners() {
 
             // Detect updates: either via explicit flag or version mismatch
             if (status === 'ready' && !offlineStore.state.updateAvailable) {
-                if (updated) {
-                    // Explicit update flag from SW
+                if (updated && previousVersion) {
+                    // Explicit update flag from SW - use previousVersion for display
+                    offlineStore.state.cacheVersion = previousVersion;
                     offlineStore.state.updateAvailable = true;
                     offlineStore.state.pendingVersion = version;
                     console.log(`[Offline Store] Update available: v${previousVersion} → v${version}`);
                 } else if (initialRunningVersion && version !== initialRunningVersion) {
                     // Version changed since page load - new cache is ready
+                    // cacheVersion stays as initialRunningVersion for correct display
                     offlineStore.state.updateAvailable = true;
                     offlineStore.state.pendingVersion = version;
                     console.log(`[Offline Store] Update detected: v${initialRunningVersion} → v${version}`);
+                } else {
+                    // No update - just set current version
+                    offlineStore.state.cacheVersion = version;
                 }
+            } else if (!offlineStore.state.updateAvailable) {
+                // Not ready yet or already have update - update version normally
+                offlineStore.state.cacheVersion = version;
             }
         }
     });
@@ -187,6 +194,10 @@ function setupNetworkListeners() {
     // Listen for update availability
     window.addEventListener('sw-update-available', (event) => {
         const { version, previousVersion } = event.detail;
+        // Keep cacheVersion as the previous version for correct display
+        if (previousVersion && !offlineStore.state.updateAvailable) {
+            offlineStore.state.cacheVersion = previousVersion;
+        }
         offlineStore.state.updateAvailable = true;
         offlineStore.state.pendingVersion = version;
         console.log(`[Offline Store] Update available: v${previousVersion} → v${version}`);
@@ -428,9 +439,8 @@ export async function requestCacheStatus() {
             // Wait for SW to be ready (handles race condition on initial load)
             const registration = await navigator.serviceWorker.ready;
             if (registration.active) {
-                // Request current status
-                registration.active.postMessage({ type: 'check-cache' });
-                // Also trigger an update check to ensure cache is current
+                // Only send update-cache - it checks current status AND updates if needed
+                // Sending both check-cache and update-cache causes duplicate cache scans
                 registration.active.postMessage({ type: 'update-cache' });
             }
         } catch (e) {
