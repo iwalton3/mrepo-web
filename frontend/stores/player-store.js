@@ -325,7 +325,8 @@ export const playerStore = createStore({
     noiseMode: audioFXSettings?.noiseMode ?? 'white',    // 'white' or 'grey'
     noiseTilt: audioFXSettings?.noiseTilt ?? 0,          // -100 (dark/bass) to +100 (bright/treble)
     noisePower: audioFXSettings?.noisePower ?? -24,      // -60 to 0 dB
-    noiseThreshold: audioFXSettings?.noiseThreshold ?? -36  // -60 to 0 dB (0 = always on)
+    noiseThreshold: audioFXSettings?.noiseThreshold ?? -36,  // -60 to 0 dB (0 = always on)
+    noiseAttack: audioFXSettings?.noiseAttack ?? 25      // 25 (instant) to 2000 ms, log scale
 });
 
 /**
@@ -803,6 +804,8 @@ class AudioController {
         });
 
         audioElement.addEventListener('error', (e) => {
+            // Only handle errors from the active audio element
+            if (audioElement !== this.audio) return;
             this._handleError(e);
         });
 
@@ -2150,7 +2153,8 @@ class AudioController {
             noiseMode: this.store.state.noiseMode,
             noiseTilt: this.store.state.noiseTilt,
             noisePower: this.store.state.noisePower,
-            noiseThreshold: this.store.state.noiseThreshold
+            noiseThreshold: this.store.state.noiseThreshold,
+            noiseAttack: this.store.state.noiseAttack
         });
     }
 
@@ -2888,6 +2892,7 @@ class AudioController {
             let currentNoiseLevel = 0;
             let thresholdLinear = Math.pow(10, this.store.state.noiseThreshold / 20);
             let powerLinear = Math.pow(10, this.store.state.noisePower / 20);
+            let attackMs = this.store.state.noiseAttack;
             let enabled = this.store.state.noiseEnabled;
             let isPlaying = this.store.state.isPlaying;
 
@@ -2898,6 +2903,9 @@ class AudioController {
                 }
                 if (settings.power !== undefined) {
                     powerLinear = Math.pow(10, settings.power / 20);
+                }
+                if (settings.attack !== undefined) {
+                    attackMs = settings.attack;
                 }
                 if (settings.enabled !== undefined) {
                     enabled = settings.enabled;
@@ -2940,8 +2948,11 @@ class AudioController {
                     targetNoiseLevel = fadeAmount * powerLinear;
                 }
 
-                // Smooth transition
-                currentNoiseLevel += (targetNoiseLevel - currentNoiseLevel) * 0.1;
+                // Smooth transition based on attack time
+                // Block time = 4096 / 48000 ≈ 0.0853 seconds
+                const blockTime = 4096 / 48000;
+                const smoothing = 1 - Math.exp(-blockTime / (attackMs / 1000));
+                currentNoiseLevel += (targetNoiseLevel - currentNoiseLevel) * smoothing;
 
                 // Generate noise
                 for (let i = 0; i < outputL.length; i++) {
@@ -2982,6 +2993,7 @@ class AudioController {
         this._sendNoiseSettings({
             threshold: this.store.state.noiseThreshold,
             power: this.store.state.noisePower,
+            attack: this.store.state.noiseAttack,
             enabled: this.store.state.noiseEnabled,
             isPlaying: this.store.state.isPlaying
         });
@@ -3149,6 +3161,19 @@ class AudioController {
         this.store.state.noiseThreshold = clampedThreshold;
         await this._ensureNoiseInitialized();
         this._sendNoiseSettings({ threshold: clampedThreshold });
+        this._saveAudioFXSettings();
+    }
+
+    /**
+     * Set noise attack time (25 to 2000 ms, log scale).
+     * Controls how quickly noise fades in/out.
+     * 25ms = instant (original behavior), 2000ms = 2 second fade.
+     */
+    async setNoiseAttack(attack) {
+        const clampedAttack = Math.max(25, Math.min(2000, attack));
+        this.store.state.noiseAttack = clampedAttack;
+        await this._ensureNoiseInitialized();
+        this._sendNoiseSettings({ attack: clampedAttack });
         this._saveAudioFXSettings();
     }
 
@@ -5348,6 +5373,7 @@ export const player = {
     setNoiseTilt: (tilt) => audioController.setNoiseTilt(tilt),
     setNoisePower: (power) => audioController.setNoisePower(power),
     setNoiseThreshold: (threshold) => audioController.setNoiseThreshold(threshold),
+    setNoiseAttack: (attack) => audioController.setNoiseAttack(attack),
 
     // Audio FX - Sleep Timer
     setSleepTimerMode: (mode) => audioController.setSleepTimerMode(mode),

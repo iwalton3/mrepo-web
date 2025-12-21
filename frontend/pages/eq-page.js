@@ -48,6 +48,7 @@ export default defineComponent('eq-page', {
             noiseTilt: player.state.noiseTilt,
             noisePower: player.state.noisePower,
             noiseThreshold: player.state.noiseThreshold,
+            noiseAttack: player.state.noiseAttack,
 
             // Undo/redo history - initialize with current state
             // For parametric mode, this will be updated once editor is ready
@@ -373,11 +374,26 @@ export default defineComponent('eq-page', {
             const value = parseInt(e.target.value, 10);
             this.state.noiseThreshold = value;
             player.setNoiseThreshold(value);
+        },
+
+        handleNoiseAttackChange(e) {
+            // Log scale: slider 0-100 maps to 25-2000ms
+            // ms = 25 * 80^(slider/100)
+            const sliderValue = parseInt(e.target.value, 10);
+            const ms = Math.round(25 * Math.pow(80, sliderValue / 100));
+            this.state.noiseAttack = ms;
+            player.setNoiseAttack(ms);
+        },
+
+        // Convert ms to slider position (log scale)
+        attackMsToSlider(ms) {
+            // slider = 100 * log(ms/25) / log(80)
+            return Math.round(100 * Math.log(ms / 25) / Math.log(80));
         }
     },
 
     template() {
-        const { eqEnabled, eqGains, showParametricEQ, undoHistory, redoHistory, crossfeedEnabled, crossfeedLevel, loudnessEnabled, loudnessReferenceSPL, loudnessStrength, noiseEnabled, noiseMode, noiseTilt, noisePower, noiseThreshold } = this.state;
+        const { eqEnabled, eqGains, showParametricEQ, undoHistory, redoHistory, crossfeedEnabled, crossfeedLevel, loudnessEnabled, loudnessReferenceSPL, loudnessStrength, noiseEnabled, noiseMode, noiseTilt, noisePower, noiseThreshold, noiseAttack } = this.state;
         const canUndo = undoHistory.length > 0;
         const canRedo = redoHistory.length > 0;
 
@@ -569,6 +585,14 @@ export default defineComponent('eq-page', {
                         <div class="noise-labels">
                             <span>Quiet</span>
                             <span>Always On</span>
+                        </div>
+                        <div class="noise-slider-row">
+                            <span class="range-label-inline">Attack</span>
+                            <input type="range" min="0" max="100" step="1"
+                                   class="noise-slider"
+                                   value="${this.attackMsToSlider(noiseAttack)}"
+                                   on-input="handleNoiseAttackChange">
+                            <span class="noise-value">${noiseAttack <= 25 ? 'Instant' : noiseAttack >= 1000 ? (noiseAttack / 1000).toFixed(1) + 's' : noiseAttack + 'ms'}</span>
                         </div>
                     `)}
                 </div>

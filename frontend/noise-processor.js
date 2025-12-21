@@ -16,6 +16,7 @@ class NoiseProcessor extends AudioWorkletProcessor {
         this.isPlaying = false;
         this.thresholdLinear = 0.015;  // ~-36dB default
         this.powerLinear = 0.063;       // ~-24dB default
+        this.attackMs = 25;             // 25ms = instant, up to 2000ms (log scale)
 
         // Smoothing state
         this.currentNoiseLevel = 0;
@@ -30,6 +31,9 @@ class NoiseProcessor extends AudioWorkletProcessor {
             if (data.power !== undefined) {
                 // Convert dB to linear amplitude
                 this.powerLinear = Math.pow(10, data.power / 20);
+            }
+            if (data.attack !== undefined) {
+                this.attackMs = data.attack;
             }
             if (data.enabled !== undefined) {
                 this.enabled = data.enabled;
@@ -87,9 +91,10 @@ class NoiseProcessor extends AudioWorkletProcessor {
             targetNoiseLevel = fadeAmount * this.powerLinear;
         }
 
-        // Smooth transition to avoid clicks/pops
-        // ~0.1 smoothing factor at 48kHz with 128 sample blocks
-        const smoothing = 0.1;
+        // Smooth transition based on attack time
+        // Block time = 128 samples / 48000 Hz ≈ 0.00267 seconds
+        const blockTime = 128 / sampleRate;
+        const smoothing = 1 - Math.exp(-blockTime / (this.attackMs / 1000));
         this.currentNoiseLevel += (targetNoiseLevel - this.currentNoiseLevel) * smoothing;
 
         // Generate white noise at calculated level
