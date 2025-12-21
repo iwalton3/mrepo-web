@@ -381,16 +381,11 @@ class AudioController {
 
         // Comfort noise state
         this._noiseInitialized = false;
-        this._noiseWorklet = null;        // AudioWorkletNode for noise generation
+        this._noiseWorklet = null;        // AudioWorkletNode for noise generation + RMS detection
         this._noiseScriptProcessor = null; // Fallback ScriptProcessorNode
         this._noiseLowFilter = null;      // BiquadFilterNode lowshelf for bass control
         this._noiseHighFilter = null;     // BiquadFilterNode highshelf for treble control
-        this._noiseGain = null;           // GainNode for volume control
         this._noiseMerger = null;         // GainNode to merge noise with music
-        this._noiseAnalyser = null;       // AnalyserNode for RMS detection
-        this._noiseRafId = null;          // requestAnimationFrame ID
-        this._noiseTimeDomainData = null; // Float32Array for RMS calculation
-        this._noiseInternalConnected = false; // Track internal noise node connections
 
         // Set up event listeners on BOTH audio elements once (not per-swap)
         // Guards in handlers ensure only active element updates state
@@ -781,6 +776,8 @@ class AudioController {
                 navigator.mediaSession.playbackState = 'playing';
             }
             this._updateMediaSessionPosition();
+            // Notify noise worklet of playback state
+            this._sendNoiseSettings({ isPlaying: true });
         });
 
         audioElement.addEventListener('pause', () => {
@@ -795,6 +792,8 @@ class AudioController {
                 navigator.mediaSession.playbackState = 'paused';
             }
             this._updateMediaSessionPosition();
+            // Notify noise worklet of playback state
+            this._sendNoiseSettings({ isPlaying: false });
         });
 
         audioElement.addEventListener('ended', () => {
@@ -1869,15 +1868,11 @@ class AudioController {
         this._loudnessInitialized = false;
         this._loudnessInternalConnected = false;
         this._noiseInitialized = false;
-        this._noiseInternalConnected = false;
         this._noiseWorklet = null;
         this._noiseScriptProcessor = null;
         this._noiseLowFilter = null;
         this._noiseHighFilter = null;
-        this._noiseGain = null;
         this._noiseMerger = null;
-        this._noiseAnalyser = null;
-        this._noiseTimeDomainData = null;
         this._dualPipelineActive = false;
 
         // Create fresh audio elements for both slots
@@ -2846,23 +2841,91 @@ class AudioController {
 
     /**
      * Initialize the comfort noise audio nodes.
-     * Creates: noise generator (AudioWorklet or ScriptProcessor), color filter, gain node.
+     * Creates: noise generator (AudioWorklet or ScriptProcessor) with RMS detection, color filters.
+     * The worklet/processor analyzes music input and generates noise when audio is quiet.
      */
     async _initNoise() {
         if (!this._audioContext || this._noiseInitialized) return;
 
-        // Try AudioWorklet first (most efficient)
+        // Try AudioWorklet first (runs on audio thread, works when page is backgrounded)
         try {
             await this._audioContext.audioWorklet.addModule('./noise-processor.js');
-            this._noiseWorklet = new AudioWorkletNode(this._audioContext, 'noise-processor');
+            // numberOfInputs: 1 for receiving music to analyze
+            // numberOfOutputs: 1 for noise output
+            this._noiseWorklet = new AudioWorkletNode(this._audioContext, 'noise-processor', {
+                numberOfInputs: 1,
+                numberOfOutputs: 1,
+                outputChannelCount: [2]
+            });
         } catch (e) {
             console.warn('AudioWorklet not supported for noise, using ScriptProcessor fallback:', e);
             // Fallback to ScriptProcessorNode (deprecated but widely supported)
-            this._noiseScriptProcessor = this._audioContext.createScriptProcessor(4096, 0, 1);
+            // 2 input channels (stereo music), 2 output channels (stereo noise)
+            this._noiseScriptProcessor = this._audioContext.createScriptProcessor(4096, 2, 2);
+
+            // ScriptProcessor state
+            let currentNoiseLevel = 0;
+            let thresholdLinear = Math.pow(10, this.store.state.noiseThreshold / 20);
+            let powerLinear = Math.pow(10, this.store.state.noisePower / 20);
+            let enabled = this.store.state.noiseEnabled;
+            let isPlaying = this.store.state.isPlaying;
+
+            // Store reference for settings updates
+            this._noiseScriptProcessor._updateSettings = (settings) => {
+                if (settings.threshold !== undefined) {
+                    thresholdLinear = Math.pow(10, settings.threshold / 20);
+                }
+                if (settings.power !== undefined) {
+                    powerLinear = Math.pow(10, settings.power / 20);
+                }
+                if (settings.enabled !== undefined) {
+                    enabled = settings.enabled;
+                }
+                if (settings.isPlaying !== undefined) {
+                    isPlaying = settings.isPlaying;
+                }
+            };
+
             this._noiseScriptProcessor.onaudioprocess = (e) => {
-                const output = e.outputBuffer.getChannelData(0);
-                for (let i = 0; i < output.length; i++) {
-                    output[i] = Math.random() * 2 - 1;
+                const inputL = e.inputBuffer.getChannelData(0);
+                const inputR = e.inputBuffer.numberOfChannels > 1 ? e.inputBuffer.getChannelData(1) : inputL;
+                const outputL = e.outputBuffer.getChannelData(0);
+                const outputR = e.outputBuffer.numberOfChannels > 1 ? e.outputBuffer.getChannelData(1) : outputL;
+
+                // If disabled or not playing, fade out
+                if (!enabled || !isPlaying) {
+                    for (let i = 0; i < outputL.length; i++) {
+                        currentNoiseLevel *= 0.999;
+                        outputL[i] = (Math.random() * 2 - 1) * currentNoiseLevel;
+                        outputR[i] = (Math.random() * 2 - 1) * currentNoiseLevel;
+                    }
+                    return;
+                }
+
+                // Calculate RMS from input
+                let sum = 0;
+                for (let i = 0; i < inputL.length; i++) {
+                    sum += inputL[i] * inputL[i] + inputR[i] * inputR[i];
+                }
+                const rms = Math.sqrt(sum / (inputL.length * 2));
+
+                // Determine target noise level
+                let targetNoiseLevel = 0;
+                if (thresholdLinear >= 1.0) {
+                    targetNoiseLevel = powerLinear;
+                } else if (rms < thresholdLinear) {
+                    const fadeRange = thresholdLinear * 0.5;
+                    const fadeAmount = Math.min(1, (thresholdLinear - rms) / fadeRange);
+                    targetNoiseLevel = fadeAmount * powerLinear;
+                }
+
+                // Smooth transition
+                currentNoiseLevel += (targetNoiseLevel - currentNoiseLevel) * 0.1;
+
+                // Generate noise
+                for (let i = 0; i < outputL.length; i++) {
+                    outputL[i] = (Math.random() * 2 - 1) * currentNoiseLevel;
+                    outputR[i] = (Math.random() * 2 - 1) * currentNoiseLevel;
                 }
             };
         }
@@ -2870,43 +2933,42 @@ class AudioController {
         // Low frequency filter - controls bass/brown noise character
         this._noiseLowFilter = this._audioContext.createBiquadFilter();
         this._noiseLowFilter.type = 'lowshelf';
-        this._noiseLowFilter.frequency.value = 100;  // Lower for deeper bass control
+        this._noiseLowFilter.frequency.value = 100;
         this._noiseLowFilter.gain.value = 0;
 
         // High frequency filter - controls treble/blue noise character
         this._noiseHighFilter = this._audioContext.createBiquadFilter();
         this._noiseHighFilter.type = 'highshelf';
-        this._noiseHighFilter.frequency.value = 3000;  // Lower for wider treble control
+        this._noiseHighFilter.frequency.value = 3000;
         this._noiseHighFilter.gain.value = 0;
 
-        // Output gain (controlled by RMS analysis)
-        this._noiseGain = this._audioContext.createGain();
-        this._noiseGain.gain.value = 0; // Start silent
-
-        // RMS analyser on music path
-        this._noiseAnalyser = this._audioContext.createAnalyser();
-        this._noiseAnalyser.fftSize = 2048;
-        this._noiseTimeDomainData = new Float32Array(this._noiseAnalyser.fftSize);
-
-        // Merger node to combine music + noise
+        // Merger node to combine music + filtered noise
         this._noiseMerger = this._audioContext.createGain();
         this._noiseMerger.gain.value = 1.0;
 
-        // Connect noise chain: generator -> lowFilter -> highFilter -> gain
+        // Connect noise chain: generator -> lowFilter -> highFilter -> merger
         const noiseSource = this._noiseWorklet || this._noiseScriptProcessor;
         if (noiseSource) {
             noiseSource.connect(this._noiseLowFilter);
             this._noiseLowFilter.connect(this._noiseHighFilter);
-            this._noiseHighFilter.connect(this._noiseGain);
+            this._noiseHighFilter.connect(this._noiseMerger);
         }
 
         this._noiseInitialized = true;
         this._updateNoiseFilters();
+
+        // Send initial settings to worklet
+        this._sendNoiseSettings({
+            threshold: this.store.state.noiseThreshold,
+            power: this.store.state.noisePower,
+            enabled: this.store.state.noiseEnabled,
+            isPlaying: this.store.state.isPlaying
+        });
     }
 
     /**
      * Connect noise to the audio output chain.
-     * Inserts analyser for RMS detection, merges noise with music.
+     * Sends music to worklet/processor for RMS analysis, merges noise with music.
      * @param {AudioNode} musicEndNode - The final node of the music chain
      * @returns {AudioNode} The merger node (new chain end), or musicEndNode if noise disabled
      */
@@ -2915,19 +2977,12 @@ class AudioController {
             return musicEndNode;
         }
 
-        // Internal connections only need to be done once
-        if (!this._noiseInternalConnected) {
-            this._noiseAnalyser.connect(this._noiseMerger);
-            this._noiseGain.connect(this._noiseMerger);
-            this._noiseInternalConnected = true;
-        }
+        const noiseSource = this._noiseWorklet || this._noiseScriptProcessor;
 
-        // Connect music path through analyser (this can change when chain is rebuilt)
-        musicEndNode.connect(this._noiseAnalyser);
-
-        // Start RMS monitoring if noise is enabled
-        if (this.store.state.noiseEnabled) {
-            this._startNoiseLoop();
+        // Connect music to merger (passthrough) and to noise processor (for RMS analysis)
+        musicEndNode.connect(this._noiseMerger);
+        if (noiseSource) {
+            musicEndNode.connect(noiseSource);
         }
 
         return this._noiseMerger;
@@ -2990,74 +3045,15 @@ class AudioController {
     }
 
     /**
-     * Start the noise RMS monitoring loop.
-     * Analyzes music loudness and adjusts noise gain based on threshold.
+     * Send settings to the noise worklet/processor.
+     * Used to update threshold, power, enabled, and isPlaying state.
+     * @param {Object} settings - Settings to send
      */
-    _startNoiseLoop() {
-        if (this._noiseRafId) return;
-
-        const loop = () => {
-            // Stop if noise disabled
-            if (!this.store.state.noiseEnabled) {
-                if (this._noiseGain) this._noiseGain.gain.value = 0;
-                this._noiseRafId = requestAnimationFrame(loop);
-                return;
-            }
-
-            // Don't add noise when not playing
-            if (!this.store.state.isPlaying) {
-                if (this._noiseGain) this._noiseGain.gain.value = 0;
-                this._noiseRafId = requestAnimationFrame(loop);
-                return;
-            }
-
-            // Get RMS of music
-            if (this._noiseAnalyser && this._noiseTimeDomainData) {
-                this._noiseAnalyser.getFloatTimeDomainData(this._noiseTimeDomainData);
-                let sum = 0;
-                for (let i = 0; i < this._noiseTimeDomainData.length; i++) {
-                    sum += this._noiseTimeDomainData[i] * this._noiseTimeDomainData[i];
-                }
-                const rms = Math.sqrt(sum / this._noiseTimeDomainData.length);
-                const rmsDb = 20 * Math.log10(Math.max(rms, 1e-10));
-
-                // Calculate target noise level
-                const threshold = this.store.state.noiseThreshold;
-                const power = this.store.state.noisePower;
-                const targetGain = Math.pow(10, power / 20); // Convert dB to linear
-
-                let noiseLevel = 0;
-                if (threshold >= 0) {
-                    // Max threshold = always add noise
-                    noiseLevel = targetGain;
-                } else if (rmsDb < threshold) {
-                    // Below threshold - fade in noise proportionally
-                    const fadeRange = 6; // 6dB fade range
-                    const fadeAmount = Math.min(1, (threshold - rmsDb) / fadeRange);
-                    noiseLevel = fadeAmount * targetGain;
-                }
-
-                // Smooth transition (avoid pops)
-                if (this._noiseGain) {
-                    const currentGain = this._noiseGain.gain.value;
-                    const smoothing = 0.1;
-                    this._noiseGain.gain.value = currentGain + (noiseLevel - currentGain) * smoothing;
-                }
-            }
-
-            this._noiseRafId = requestAnimationFrame(loop);
-        };
-
-        this._noiseRafId = requestAnimationFrame(loop);
-    }
-
-    /**
-     * Stop the noise RMS monitoring loop.
-     */
-    _stopNoiseLoop() {
-        if (this._noiseRafId) {
-            cancelAnimationFrame(this._noiseRafId);
-            this._noiseRafId = null;
+    _sendNoiseSettings(settings) {
+        if (this._noiseWorklet) {
+            this._noiseWorklet.port.postMessage(settings);
+        } else if (this._noiseScriptProcessor && this._noiseScriptProcessor._updateSettings) {
+            this._noiseScriptProcessor._updateSettings(settings);
         }
     }
 
@@ -3075,16 +3071,11 @@ class AudioController {
             } else if (!this._noiseInitialized) {
                 // Rebuild pipeline - switchLatencyMode will init noise with correct context
                 await this.switchLatencyMode(currentLatencyMode, true);
-            } else {
-                // Already initialized, just start the monitoring loop
-                this._startNoiseLoop();
-            }
-        } else {
-            this._stopNoiseLoop();
-            if (this._noiseGain) {
-                this._noiseGain.gain.value = 0;
             }
         }
+
+        // Notify worklet of enabled state change
+        this._sendNoiseSettings({ enabled });
 
         this._saveAudioFXSettings();
     }
@@ -3103,7 +3094,9 @@ class AudioController {
      * Set noise power level (-60 to 0 dB).
      */
     setNoisePower(power) {
-        this.store.state.noisePower = Math.max(-60, Math.min(0, power));
+        const clampedPower = Math.max(-60, Math.min(0, power));
+        this.store.state.noisePower = clampedPower;
+        this._sendNoiseSettings({ power: clampedPower });
         this._saveAudioFXSettings();
     }
 
@@ -3113,7 +3106,9 @@ class AudioController {
      * 0 = always on (constant noise mixing).
      */
     setNoiseThreshold(threshold) {
-        this.store.state.noiseThreshold = Math.max(-60, Math.min(0, threshold));
+        const clampedThreshold = Math.max(-60, Math.min(0, threshold));
+        this.store.state.noiseThreshold = clampedThreshold;
+        this._sendNoiseSettings({ threshold: clampedThreshold });
         this._saveAudioFXSettings();
     }
 
