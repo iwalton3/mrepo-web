@@ -18,6 +18,42 @@ A self-hosted music streaming application with offline support, built with Flask
 
 ## Quick Start with Docker
 
+### Using the Pre-built Image (Recommended)
+
+Create a `docker-compose.yml` file:
+
+```yaml
+services:
+  mrepo:
+    image: ghcr.io/iwalton3/mrepo-web:main
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+      - /path/to/your/music:/media:ro
+    environment:
+      - DATABASE_PATH=/data/music.db
+      - MEDIA_PATH=/media
+    restart: unless-stopped
+```
+
+Start the container:
+
+```bash
+docker-compose up -d
+```
+
+Open http://localhost:8080 - the setup wizard will guide you through creating an admin account.
+
+#### Available Tags
+
+- `main` - Latest build from main branch
+- `vX.Y.Z` - Specific version (e.g., `v1.0.0`)
+- `X.Y` - Latest patch for a minor version
+- `<sha>` - Specific commit
+
+### Building from Source
+
 1. Clone the repository:
    ```bash
    git clone https://github.com/iwalton3/mrepo-web.git
@@ -41,16 +77,11 @@ A self-hosted music streaming application with offline support, built with Flask
 
 ### Docker Compose Configuration
 
-Edit `docker/docker-compose.yml` to set your music directory:
+Edit volumes to set your music directory:
 
 ```yaml
 volumes:
   - /path/to/your/music:/media:ro  # Change this to your music folder
-```
-
-Start the container:
-```bash
-docker-compose up -d
 ```
 
 A secure session key is automatically generated and stored in `/data/.secret_key` on first run.
