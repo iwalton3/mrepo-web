@@ -984,9 +984,28 @@ class AudioController {
 
     _handleError(e) {
         console.error('Audio error:', e);
-        this.store.state.error = 'Failed to play audio';
         this.store.state.isLoading = false;
-        this.store.state.isPlaying = false;
+
+        // Track consecutive errors to prevent infinite skip loops
+        this._consecutiveErrors = (this._consecutiveErrors || 0) + 1;
+
+        // If we've hit too many consecutive errors, stop trying
+        const maxErrors = Math.min(5, this.store.state.queue.length);
+        if (this._consecutiveErrors >= maxErrors) {
+            console.error('Too many consecutive playback errors, stopping');
+            this.store.state.error = 'Failed to play audio - too many errors';
+            this.store.state.isPlaying = false;
+            this._consecutiveErrors = 0;
+            return;
+        }
+
+        // Try to skip to the next song
+        console.log(`Playback error, skipping to next (error ${this._consecutiveErrors}/${maxErrors})`);
+        this.next({ userInitiated: false }).catch(err => {
+            console.error('Failed to skip after error:', err);
+            this.store.state.error = 'Failed to play audio';
+            this.store.state.isPlaying = false;
+        });
     }
 
     /**
@@ -1083,6 +1102,8 @@ class AudioController {
             this.store.state.isPaused = false;
             this.store.state.isLoading = false;
             this.playStartTime = Date.now();
+            // Reset consecutive error counter on successful playback
+            this._consecutiveErrors = 0;
         } catch (error) {
             console.error('Playback failed:', error);
             this.store.state.error = 'Playback failed';
@@ -3036,10 +3057,11 @@ class AudioController {
      * Grey: Perceptually flat (A-weighted) at tilt=0
      * Changing mode resets tilt to center.
      */
-    setNoiseMode(mode) {
+    async setNoiseMode(mode) {
         if (mode !== 'white' && mode !== 'grey') return;
         this.store.state.noiseMode = mode;
         this.store.state.noiseTilt = 0;  // Reset tilt when changing mode
+        await this._ensureNoiseInitialized();
         this._updateNoiseFilters();
         this._saveAudioFXSettings();
     }
@@ -3081,11 +3103,27 @@ class AudioController {
     }
 
     /**
+     * Ensure noise is initialized if it's supposed to be enabled.
+     * This handles cases where the audio context was recreated but noise state is still true.
+     */
+    async _ensureNoiseInitialized() {
+        if (this.store.state.noiseEnabled && !this._noiseInitialized) {
+            if (!this._audioContext) {
+                await this._ensureAudioPipeline();
+            } else {
+                // Rebuild pipeline to properly connect noise nodes
+                await this.switchLatencyMode(currentLatencyMode, true);
+            }
+        }
+    }
+
+    /**
      * Set noise tilt (-100 to +100).
      * Negative = darker/warmer (more bass), Positive = brighter/airier (more treble)
      */
-    setNoiseTilt(tilt) {
+    async setNoiseTilt(tilt) {
         this.store.state.noiseTilt = Math.max(-100, Math.min(100, tilt));
+        await this._ensureNoiseInitialized();
         this._updateNoiseFilters();
         this._saveAudioFXSettings();
     }
@@ -3093,9 +3131,10 @@ class AudioController {
     /**
      * Set noise power level (-60 to 0 dB).
      */
-    setNoisePower(power) {
+    async setNoisePower(power) {
         const clampedPower = Math.max(-60, Math.min(0, power));
         this.store.state.noisePower = clampedPower;
+        await this._ensureNoiseInitialized();
         this._sendNoiseSettings({ power: clampedPower });
         this._saveAudioFXSettings();
     }
@@ -3105,9 +3144,10 @@ class AudioController {
      * When music RMS drops below this level, noise fades in.
      * 0 = always on (constant noise mixing).
      */
-    setNoiseThreshold(threshold) {
+    async setNoiseThreshold(threshold) {
         const clampedThreshold = Math.max(-60, Math.min(0, threshold));
         this.store.state.noiseThreshold = clampedThreshold;
+        await this._ensureNoiseInitialized();
         this._sendNoiseSettings({ threshold: clampedThreshold });
         this._saveAudioFXSettings();
     }

@@ -996,30 +996,31 @@ export default defineComponent('eq-page', {
 
         .noise-mode-row {
             display: flex;
-            gap: 0.5rem;
+            gap: 0;
             margin: 0.75rem 0 0.5rem 0;
+            background: var(--surface-100, #242424);
+            border-radius: 6px;
+            padding: 4px;
         }
 
         .noise-mode-btn {
             flex: 1;
             padding: 0.5rem 1rem;
-            border: 1px solid var(--border-color, #404040);
+            border: none;
             border-radius: 4px;
-            background: var(--surface-200, #2a2a2a);
+            background: transparent;
             color: var(--text-secondary, #a0a0a0);
             font-size: 0.875rem;
             cursor: pointer;
-            transition: all 0.15s ease;
+            transition: background 0.15s, color 0.15s;
         }
 
         .noise-mode-btn:hover {
-            background: var(--surface-300, #333);
             color: var(--text-primary, #e0e0e0);
         }
 
         .noise-mode-btn.active {
-            background: var(--primary, #6366f1);
-            border-color: var(--primary, #6366f1);
+            background: var(--primary-600, #2563eb);
             color: white;
         }
 
