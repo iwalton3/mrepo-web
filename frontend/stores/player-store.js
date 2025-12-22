@@ -14,6 +14,7 @@ import { getStreamUrl, history, queue as queueApi, playback, sca, radio, prefere
 import { getAudioUrl } from '../offline/offline-audio.js';
 import offlineStore from '../offline/offline-store.js';
 import * as offlineDb from '../offline/offline-db.js';
+import { isSyncing } from '../offline/sync-manager.js';
 
 /**
  * Convert decibels to linear gain multiplier.
@@ -660,6 +661,9 @@ class AudioController {
         // Skip sync in temp queue mode or while exiting temp queue
         if (this.store.state.tempQueueMode || this._isExitingTempQueue) return;
 
+        // Skip sync while offline sync is in progress
+        if (isSyncing) return;
+
         // Skip sync within 5 seconds of exiting temp queue to prevent race condition
         // where server state overwrites the just-restored local queue
         const timeSinceExit = Date.now() - this._tempQueueExitTime;
@@ -689,13 +693,38 @@ class AudioController {
             // Update queueIndex: if playing, preserve current song's position in queue
             // (prevents crossfade race condition where server returns stale index)
             if (wasPlaying && currentUuid) {
-                const currentSongIndex = this.store.state.queue.findIndex(s => s.uuid === currentUuid);
-                if (currentSongIndex >= 0) {
-                    // Current song still in queue - keep playing at its new position
-                    this.store.state.queueIndex = currentSongIndex;
+                const oldQueueIndex = this.store.state.queueIndex;
+                const queue = this.store.state.queue;
+
+                // First check if song at current position still matches - handles duplicates correctly
+                if (queue[oldQueueIndex]?.uuid === currentUuid) {
+                    // Position still valid, keep it
+                    this.store.state.queueIndex = oldQueueIndex;
                 } else {
-                    // Current song no longer in queue - use server's index
-                    this.store.state.queueIndex = result.queueIndex || 0;
+                    // Song at current position changed - find nearest occurrence
+                    let nearestIndex = -1;
+                    let nearestDistance = Infinity;
+
+                    for (let i = 0; i < queue.length; i++) {
+                        if (queue[i].uuid === currentUuid) {
+                            const distance = Math.abs(i - oldQueueIndex);
+                            if (distance < nearestDistance) {
+                                nearestDistance = distance;
+                                nearestIndex = i;
+                            }
+                        }
+                    }
+
+                    if (nearestIndex >= 0) {
+                        this.store.state.queueIndex = nearestIndex;
+                    } else {
+                        // Current song no longer in queue - queues are desynced
+                        // Use server's index (server is authoritative after sync)
+                        // Note: offline queue sync is handled by syncQueueState() which
+                        // compares timestamps and pushes local if newer
+                        this.store.state.queueIndex = result.queueIndex || 0;
+                        this.store.state.currentSong = queue[this.store.state.queueIndex] || null;
+                    }
                 }
             } else {
                 // Not playing - use server's index
@@ -4159,7 +4188,8 @@ class AudioController {
 
             if (playNow) {
                 // Find the first added song's position and play it
-                const newIndex = this.store.state.queue.findIndex(s => s.uuid === songUuids[0]);
+                // Use findLastIndex to handle duplicates - newly added songs are at the end
+                const newIndex = this.store.state.queue.findLastIndex(s => s.uuid === songUuids[0]);
                 if (newIndex >= 0) {
                     this.store.state.queueIndex = newIndex;
                     await queueApi.setIndex(newIndex);
@@ -4175,7 +4205,7 @@ class AudioController {
 
     /**
      * Add songs from a VFS path to queue.
-     * Always attempts to autoplay; falls back to paused state on failure.
+     * Appends to existing queue. Autoplays only if queue was empty before adding.
      */
     async addByPath(path) {
         // Temp queue mode: fetch songs directly and add locally
@@ -4184,12 +4214,16 @@ class AudioController {
                 const songs = await this._fetchAllSongsByPath(path);
                 if (songs.length === 0) return;
 
-                this.store.state.queue = songs;
-                this.store.state.queueIndex = 0;
+                const wasEmpty = this.store.state.queue.length === 0;
+                this.store.state.queue = [...this.store.state.queue, ...songs];
                 this.store.state.queueVersion++;
 
                 await this._saveTempQueueState();
-                await this._autoplayQueue();
+
+                // Only autoplay if queue was empty before adding
+                if (wasEmpty) {
+                    await this._autoplayQueue();
+                }
             } catch (e) {
                 console.error('Failed to add by path (temp queue):', e);
             }
@@ -4197,6 +4231,9 @@ class AudioController {
         }
 
         try {
+            // Track if queue was empty before adding
+            const wasEmpty = this.store.state.queue.length === 0;
+
             const result = await queueApi.addByPath(path);
 
             if (result.error) {
@@ -4209,8 +4246,8 @@ class AudioController {
             this.store.state.queue = queueResult.items || [];
             this.store.state.queueVersion++;
 
-            // Autoplay first song
-            if (this.store.state.queue.length > 0) {
+            // Only autoplay if queue was empty before adding
+            if (wasEmpty && this.store.state.queue.length > 0) {
                 await this._autoplayQueue();
             }
         } catch (e) {
@@ -4238,7 +4275,7 @@ class AudioController {
 
     /**
      * Add songs by filter to queue.
-     * Always attempts to autoplay; falls back to paused state on failure.
+     * Appends to existing queue. Autoplays only if queue was empty before adding.
      */
     async addByFilter(filters) {
         // Temp queue mode: fetch songs directly and add locally
@@ -4247,12 +4284,16 @@ class AudioController {
                 const songs = await this._fetchAllSongsByFilter(filters);
                 if (songs.length === 0) return;
 
-                this.store.state.queue = songs;
-                this.store.state.queueIndex = 0;
+                const wasEmpty = this.store.state.queue.length === 0;
+                this.store.state.queue = [...this.store.state.queue, ...songs];
                 this.store.state.queueVersion++;
 
                 await this._saveTempQueueState();
-                await this._autoplayQueue();
+
+                // Only autoplay if queue was empty before adding
+                if (wasEmpty) {
+                    await this._autoplayQueue();
+                }
             } catch (e) {
                 console.error('Failed to add by filter (temp queue):', e);
             }
@@ -4260,6 +4301,9 @@ class AudioController {
         }
 
         try {
+            // Track if queue was empty before adding
+            const wasEmpty = this.store.state.queue.length === 0;
+
             const result = await queueApi.addByFilter(filters);
 
             if (result.error) {
@@ -4272,8 +4316,8 @@ class AudioController {
             this.store.state.queue = queueResult.items || [];
             this.store.state.queueVersion++;
 
-            // Autoplay first song
-            if (this.store.state.queue.length > 0) {
+            // Only autoplay if queue was empty before adding
+            if (wasEmpty && this.store.state.queue.length > 0) {
                 await this._autoplayQueue();
             }
         } catch (e) {
@@ -4301,7 +4345,7 @@ class AudioController {
 
     /**
      * Add songs from a playlist to queue.
-     * Always attempts to autoplay; falls back to paused state on failure.
+     * Appends to existing queue. Autoplays only if queue was empty before adding.
      */
     async addByPlaylist(playlistId, shuffle = false) {
         // Temp queue mode: fetch songs directly and add locally
@@ -4315,12 +4359,16 @@ class AudioController {
                     songs = this._shuffleArray([...songs]);
                 }
 
-                this.store.state.queue = songs;
-                this.store.state.queueIndex = 0;
+                const wasEmpty = this.store.state.queue.length === 0;
+                this.store.state.queue = [...this.store.state.queue, ...songs];
                 this.store.state.queueVersion++;
 
                 await this._saveTempQueueState();
-                await this._autoplayQueue();
+
+                // Only autoplay if queue was empty before adding
+                if (wasEmpty) {
+                    await this._autoplayQueue();
+                }
             } catch (e) {
                 console.error('Failed to add by playlist (temp queue):', e);
             }
@@ -4328,6 +4376,9 @@ class AudioController {
         }
 
         try {
+            // Track if queue was empty before adding
+            const wasEmpty = this.store.state.queue.length === 0;
+
             const result = await queueApi.addByPlaylist(playlistId, null, shuffle);
 
             if (result.error) {
@@ -4340,8 +4391,8 @@ class AudioController {
             this.store.state.queue = queueResult.items || [];
             this.store.state.queueVersion++;
 
-            // Autoplay first song
-            if (this.store.state.queue.length > 0) {
+            // Only autoplay if queue was empty before adding
+            if (wasEmpty && this.store.state.queue.length > 0) {
                 await this._autoplayQueue();
             }
         } catch (e) {
@@ -4442,17 +4493,44 @@ class AudioController {
         try {
             const result = await queueApi.list({ limit: 10000 });
             if (!result.error) {
+                const currentUuid = this.store.state.currentSong?.uuid;
+                const serverIndex = result.queueIndex || 0;
+
                 this.store.state.queue = result.items || [];
-                this.store.state.queueIndex = result.queueIndex || 0;
                 this.store.state.queueVersion++;  // Trigger re-render
 
-                // Keep playing current song if it's still in the queue
-                const currentUuid = this.store.state.currentSong?.uuid;
+                // Validate server's index against current song UUID
                 if (currentUuid) {
-                    const newIndex = this.store.state.queue.findIndex(s => s.uuid === currentUuid);
-                    if (newIndex >= 0) {
-                        this.store.state.queueIndex = newIndex;
+                    if (this.store.state.queue[serverIndex]?.uuid === currentUuid) {
+                        // Server index is valid - use it
+                        this.store.state.queueIndex = serverIndex;
+                    } else {
+                        // Server index doesn't match our song - find nearest occurrence
+                        const queue = this.store.state.queue;
+                        let nearestIndex = -1;
+                        let nearestDistance = Infinity;
+
+                        for (let i = 0; i < queue.length; i++) {
+                            if (queue[i].uuid === currentUuid) {
+                                const distance = Math.abs(i - serverIndex);
+                                if (distance < nearestDistance) {
+                                    nearestDistance = distance;
+                                    nearestIndex = i;
+                                }
+                            }
+                        }
+
+                        if (nearestIndex >= 0) {
+                            this.store.state.queueIndex = nearestIndex;
+                        } else {
+                            // Song not in queue - use server's index
+                            // (syncQueueState handles offline/online sync conflicts)
+                            this.store.state.queueIndex = serverIndex;
+                            this.store.state.currentSong = this.store.state.queue[serverIndex] || null;
+                        }
                     }
+                } else {
+                    this.store.state.queueIndex = serverIndex;
                 }
             }
         } catch (e) {
