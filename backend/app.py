@@ -312,7 +312,7 @@ def _register_auth_methods():
         from .db import get_db
 
         # Check if trying to delete self
-        if user_id == details['user_id']:
+        if str(user_id) == str(details['user_id']):
             # Only allow if there's another admin
             conn = get_db()
             cur = conn.cursor()

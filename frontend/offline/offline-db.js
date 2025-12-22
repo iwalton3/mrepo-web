@@ -654,6 +654,7 @@ export async function getSongMetadata(uuid) {
 
 /**
  * Get multiple song metadata by UUIDs
+ * Returns results in the same order as input UUIDs
  */
 export async function getSongsMetadata(uuids) {
     const db = await getDb();
@@ -661,7 +662,8 @@ export async function getSongsMetadata(uuids) {
     return new Promise((resolve, reject) => {
         const tx = db.transaction(STORES.SONG_METADATA, 'readonly');
         const store = tx.objectStore(STORES.SONG_METADATA);
-        const results = [];
+        // Pre-allocate array to preserve input order
+        const results = new Array(uuids.length);
         let pending = uuids.length;
 
         if (pending === 0) {
@@ -669,14 +671,14 @@ export async function getSongsMetadata(uuids) {
             return;
         }
 
-        for (const uuid of uuids) {
+        uuids.forEach((uuid, index) => {
             const request = store.get(uuid);
             request.onsuccess = () => {
                 if (request.result) {
-                    results.push(request.result);
+                    results[index] = request.result;
                 } else {
                     // Return placeholder for unavailable song (no cached metadata)
-                    results.push({ uuid, unavailable: true });
+                    results[index] = { uuid, unavailable: true };
                 }
                 pending--;
                 if (pending === 0) {
@@ -685,13 +687,13 @@ export async function getSongsMetadata(uuids) {
             };
             request.onerror = () => {
                 // Return placeholder on error too
-                results.push({ uuid, unavailable: true });
+                results[index] = { uuid, unavailable: true };
                 pending--;
                 if (pending === 0) {
                     resolve(results);
                 }
             };
-        }
+        });
     });
 }
 
@@ -875,16 +877,31 @@ export async function getTempQueueState() {
 
         let tempQueue = null;
         let savedQueue = null;
+        let pending = 2;
+
+        const checkComplete = () => {
+            pending--;
+            if (pending === 0) {
+                resolve({ tempQueue, savedQueue });
+            }
+        };
 
         tempRequest.onsuccess = () => {
             tempQueue = tempRequest.result || null;
+            checkComplete();
+        };
+        tempRequest.onerror = () => {
+            checkComplete();
         };
 
         savedRequest.onsuccess = () => {
             savedQueue = savedRequest.result || null;
+            checkComplete();
+        };
+        savedRequest.onerror = () => {
+            checkComplete();
         };
 
-        tx.oncomplete = () => resolve({ tempQueue, savedQueue });
         tx.onerror = () => reject(tx.error);
     });
 }

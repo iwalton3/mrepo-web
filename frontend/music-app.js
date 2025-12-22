@@ -304,7 +304,7 @@ export default defineComponent('music-app', {
                 </div>
             </cl-shell>
 
-            <cl-toast position="bottom-right"></cl-toast>
+            <cl-toast position="top-right"></cl-toast>
         `;
     },
 

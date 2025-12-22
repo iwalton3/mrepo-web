@@ -15,7 +15,8 @@ import offlineStore, {
     removeFavorite,
     setFavorites,
     setFavoritesPlaylistId,
-    refreshPendingWriteCount
+    refreshPendingWriteCount,
+    computeOfflineFilterSets
 } from './offline-store.js';
 import { playerStore } from '../stores/player-store.js';
 
@@ -579,9 +580,15 @@ export const queue = {
             // Store song UUIDs for this pending playlist
             await offlineDb.saveSetting(`pending-playlist-songs:${tempId}`, songUuids);
 
+            // Notify listeners that playlists changed
+            notifyPlaylistsChanged();
+
             return { success: true, queued: true, id: tempId, name, ...pendingPlaylist };
         }
-        return api.queue.saveAsPlaylist(name, description, isPublic);
+        // Online - create and notify
+        const result = await api.queue.saveAsPlaylist(name, description, isPublic);
+        notifyPlaylistsChanged();
+        return result;
     }
 };
 
@@ -977,6 +984,7 @@ export const playlists = {
 
             if (shouldUseOffline()) {
                 await queueWrite('playlists', 'addSong', { playlistId, songUuid });
+                await computeOfflineFilterSets();
                 notifyPlaylistsChanged();
                 return { success: true, queued: true };
             }
@@ -1016,6 +1024,7 @@ export const playlists = {
 
         if (shouldUseOffline()) {
             await queueWrite('playlists', 'addSong', { playlistId, songUuid });
+            await computeOfflineFilterSets();
             notifyPlaylistsChanged();
             return { success: true, queued: true };
         }
@@ -1047,6 +1056,7 @@ export const playlists = {
 
             if (shouldUseOffline()) {
                 await queueWrite('playlists', 'removeSong', { playlistId, songUuid });
+                await computeOfflineFilterSets();
                 notifyPlaylistsChanged();
                 return { success: true, queued: true };
             }
@@ -1081,6 +1091,7 @@ export const playlists = {
 
         if (shouldUseOffline()) {
             await queueWrite('playlists', 'removeSong', { playlistId, songUuid });
+            await computeOfflineFilterSets();
             notifyPlaylistsChanged();
             return { success: true, queued: true };
         }
@@ -1114,6 +1125,7 @@ export const playlists = {
 
             if (shouldUseOffline()) {
                 await queueWrite('playlists', 'removeSongs', { playlistId, songUuids });
+                await computeOfflineFilterSets();
                 notifyPlaylistsChanged();
                 return { success: true, queued: true, removed: songUuids.length };
             }
@@ -1156,6 +1168,7 @@ export const playlists = {
         if (shouldUseOffline()) {
             // Queue as batch operation for sync
             await queueWrite('playlists', 'removeSongs', { playlistId, songUuids });
+            await computeOfflineFilterSets();
             notifyPlaylistsChanged();
             return { success: true, queued: true, removed: songUuids.length };
         }
@@ -1449,18 +1462,21 @@ export const playlists = {
             const queueCache = await offlineDb.getQueueCache();
             const queueMap = new Map((queueCache?.items || []).map(s => [s.uuid, s]));
 
-            return metadata.map(m => {
+            const results = [];
+            for (const m of metadata) {
                 if (m.unavailable) {
                     // Check queue cache for full metadata
                     const queueSong = queueMap.get(m.uuid);
                     if (queueSong && queueSong.title) {
                         // Save to songMetadata store for future lookups
-                        offlineDb.saveSongMetadata(queueSong);
-                        return queueSong;
+                        await offlineDb.saveSongMetadata(queueSong);
+                        results.push(queueSong);
+                        continue;
                     }
                 }
-                return m;
-            });
+                results.push(m);
+            }
+            return results;
         };
 
         // Update local cache based on playlist type
@@ -1525,6 +1541,8 @@ export const playlists = {
         if (shouldUseOffline()) {
             // Queue as batch operation for sync
             await queueWrite('playlists', 'addSongsBatch', { playlistId, songUuids });
+            // Refresh filter sets so songs appear in browse
+            await computeOfflineFilterSets();
             // Notify so playlist counts update
             notifyPlaylistsChanged();
             return { success: true, queued: true, added: songUuids.length };
@@ -1697,7 +1715,9 @@ export const auth = {
 
     // These require network - not available offline
     login: api.auth.login,
-    logout: api.auth.logout
+    logout: api.auth.logout,
+    register: api.auth.register,
+    changePassword: api.auth.changePassword
 };
 
 // =============================================================================
@@ -1975,8 +1995,7 @@ export const browse = {
     },
 
     // Pass through other browse methods (not commonly used offline)
-    albumArtists: api.browse.albumArtists,
-    pathSearch: api.browse.pathSearch
+    albumArtists: api.browse.albumArtists
 };
 
 // =============================================================================

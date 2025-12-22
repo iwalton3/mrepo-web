@@ -219,6 +219,35 @@ def radio_start(seed_uuid=None, filter_query=None, details=None):
     # Populate initial queue
     queue = _populate_queue(cur, session_id, seed, count=10, filter_query=filter_query)
 
+    # Sync radio queue to user_queue table so it persists across refreshes
+    # Clear existing queue
+    cur.execute("DELETE FROM user_queue WHERE user_id = ?", (user_id,))
+
+    # Add seed song first, then queue songs
+    all_songs = [row_to_dict(seed)] + queue
+    for i, song in enumerate(all_songs):
+        cur.execute("""
+            INSERT INTO user_queue (user_id, song_uuid, position)
+            VALUES (?, ?, ?)
+        """, (user_id, song['uuid'], i))
+
+    # Populate sca_song_pool with songs matching the filter
+    # This allows sca_populate_queue to add more songs during playback
+    cur.execute("DELETE FROM sca_song_pool WHERE user_id = ?", (user_id,))
+
+    where_clause, params = _parse_filter_query(filter_query)
+    cur.execute(f"""
+        INSERT INTO sca_song_pool (user_id, song_uuid)
+        SELECT ?, uuid FROM songs WHERE {where_clause}
+    """, [user_id] + params)
+
+    # Enable SCA mode in playback state so it persists across refreshes
+    cur.execute("""
+        INSERT INTO user_playback_state (user_id, sca_enabled, queue_index, updated_at)
+        VALUES (?, 1, 0, ?)
+        ON CONFLICT(user_id) DO UPDATE SET sca_enabled = 1, queue_index = 0, updated_at = ?
+    """, (user_id, datetime.utcnow(), datetime.utcnow()))
+
     return {
         'session_id': session_id,
         'seed': row_to_dict(seed),
@@ -407,7 +436,8 @@ def sca_start_from_playlist(playlist_id, details=None):
 
     if not playlist:
         raise ValueError('Playlist not found')
-    if playlist['user_id'] != user_id and not playlist['is_public']:
+    # Compare as strings since user_id column is TEXT
+    if str(playlist['user_id']) != str(user_id) and not playlist['is_public']:
         raise ValueError('Access denied')
 
     # Clear existing pool
@@ -441,46 +471,55 @@ def sca_populate_queue(count=5, details=None):
 
     count = min(int(count), 20)
 
-    # Get random songs from pool that aren't already in queue
+    # Get random songs from pool that aren't already in queue, with full metadata
     cur.execute("""
-        SELECT song_uuid FROM sca_song_pool
-        WHERE user_id = ?
-          AND song_uuid NOT IN (SELECT song_uuid FROM user_queue WHERE user_id = ?)
+        SELECT s.uuid, s.type, s.category, s.genre, s.artist, s.album, s.title,
+               s.file, s.album_artist, s.track_number, s.disc_number, s.year,
+               s.duration_seconds, s.seekable, s.replay_gain_track, s.replay_gain_album,
+               s.key, s.bpm
+        FROM songs s
+        JOIN sca_song_pool p ON s.uuid = p.song_uuid
+        WHERE p.user_id = ?
+          AND s.uuid NOT IN (SELECT song_uuid FROM user_queue WHERE user_id = ?)
         ORDER BY RANDOM()
         LIMIT ?
     """, (user_id, user_id, count))
 
-    songs = [row['song_uuid'] for row in cur.fetchall()]
+    songs = rows_to_list(cur.fetchall())
 
     if not songs:
-        return {'added': 0, 'message': 'Pool exhausted'}
+        return {'added': 0, 'songs': [], 'message': 'Pool exhausted'}
 
     # Get max position
     cur.execute("SELECT MAX(position) FROM user_queue WHERE user_id = ?", (user_id,))
     result = cur.fetchone()
     next_pos = (result[0] or -1) + 1
 
-    for uuid in songs:
+    for song in songs:
         cur.execute("""
             INSERT INTO user_queue (user_id, song_uuid, position)
             VALUES (?, ?, ?)
-        """, (user_id, uuid, next_pos))
+        """, (user_id, song['uuid'], next_pos))
         next_pos += 1
 
-    return {'added': len(songs)}
+    return {'added': len(songs), 'songs': songs}
 
 
 @api_method('sca_stop', require='user')
 def sca_stop(details=None):
-    """Stop SCA mode."""
+    """Stop SCA mode. Queue remains, pool is cleared."""
     conn = get_db()
     cur = conn.cursor()
     user_id = details['user_id']
 
+    # Disable SCA
     cur.execute("""
         UPDATE user_playback_state SET sca_enabled = 0, updated_at = ?
         WHERE user_id = ?
     """, (datetime.utcnow(), user_id))
+
+    # Clear pool
+    cur.execute("DELETE FROM sca_song_pool WHERE user_id = ?", (user_id,))
 
     return {'success': True}
 

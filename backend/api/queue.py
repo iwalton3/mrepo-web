@@ -50,46 +50,61 @@ def queue_list(cursor=None, limit=None, details=None):
 
 
 @api_method('queue_add', require='user')
-def queue_add(song_uuids, position=None, details=None):
+def queue_add(song_uuids, position=None, details=None, _conn=None):
     """Add songs to the queue."""
-    conn = get_db()
+    own_conn = _conn is None
+    conn = _conn if _conn else get_db()
     cur = conn.cursor()
     user_id = details['user_id']
 
     if not song_uuids:
         return {'success': True, 'added': 0}
 
-    # Get current max position
-    cur.execute("SELECT MAX(position) FROM user_queue WHERE user_id = ?", (user_id,))
-    result = cur.fetchone()
-    max_pos = result[0] if result[0] is not None else -1
+    try:
+        # Use BEGIN IMMEDIATE to acquire write lock for atomic position calculation
+        if own_conn:
+            cur.execute("BEGIN IMMEDIATE")
 
-    if position is None:
-        # Append to end
-        insert_pos = max_pos + 1
-    else:
-        # Insert at position, shift existing
-        cur.execute("""
-            UPDATE user_queue
-            SET position = position + ?
-            WHERE user_id = ? AND position >= ?
-        """, (len(song_uuids), user_id, position))
-        insert_pos = position
+        # Get current max position
+        cur.execute("SELECT MAX(position) FROM user_queue WHERE user_id = ?", (user_id,))
+        result = cur.fetchone()
+        max_pos = result[0] if result[0] is not None else -1
 
-    added = 0
-    for uuid in song_uuids:
-        cur.execute("""
-            INSERT INTO user_queue (user_id, song_uuid, position)
-            VALUES (?, ?, ?)
-        """, (user_id, uuid, insert_pos))
-        insert_pos += 1
-        added += 1
+        if position is None:
+            # Append to end
+            insert_pos = max_pos + 1
+        else:
+            # Insert at position, shift existing
+            cur.execute("""
+                UPDATE user_queue
+                SET position = position + ?
+                WHERE user_id = ? AND position >= ?
+            """, (len(song_uuids), user_id, position))
+            insert_pos = position
 
-    # Get final queue length
-    cur.execute("SELECT COUNT(*) FROM user_queue WHERE user_id = ?", (user_id,))
-    queue_length = cur.fetchone()[0]
+        added = 0
+        for uuid in song_uuids:
+            cur.execute("""
+                INSERT INTO user_queue (user_id, song_uuid, position)
+                VALUES (?, ?, ?)
+            """, (user_id, uuid, insert_pos))
+            insert_pos += 1
+            added += 1
 
-    return {'added': added, 'queueLength': queue_length}
+        # Get final queue length
+        cur.execute("SELECT COUNT(*) FROM user_queue WHERE user_id = ?", (user_id,))
+        queue_length = cur.fetchone()[0]
+
+        if own_conn:
+            cur.execute("COMMIT")
+        return {'added': added, 'queueLength': queue_length}
+    except Exception as e:
+        if own_conn:
+            try:
+                cur.execute("ROLLBACK")
+            except:
+                pass
+        raise
 
 
 @api_method('queue_add_by_path', require='user')
@@ -167,7 +182,8 @@ def queue_add_by_playlist(playlist_id, position=None, shuffle=False, details=Non
 
     if not playlist:
         raise ValueError('Playlist not found')
-    if playlist['user_id'] != user_id and not playlist['is_public']:
+    # Compare as strings since user_id column is TEXT
+    if str(playlist['user_id']) != str(user_id) and not playlist['is_public']:
         raise ValueError('Access denied')
 
     order_by = "RANDOM()" if shuffle else "ps.position"
@@ -188,9 +204,10 @@ def queue_add_by_playlist(playlist_id, position=None, shuffle=False, details=Non
 
 
 @api_method('queue_remove', require='user')
-def queue_remove(positions, details=None):
+def queue_remove(positions, details=None, _conn=None):
     """Remove songs from queue by positions."""
-    conn = get_db()
+    own_conn = _conn is None
+    conn = _conn if _conn else get_db()
     cur = conn.cursor()
     user_id = details['user_id']
 
@@ -199,143 +216,218 @@ def queue_remove(positions, details=None):
         queue_length = cur.fetchone()[0]
         return {'removed': 0, 'queueLength': queue_length}
 
-    # Sort descending to remove from end first
-    positions = sorted(positions, reverse=True)
+    try:
+        if own_conn:
+            cur.execute("BEGIN IMMEDIATE")
 
-    for pos in positions:
+        # Sort descending to remove from end first
+        positions = sorted(positions, reverse=True)
+
+        for pos in positions:
+            cur.execute("""
+                DELETE FROM user_queue WHERE user_id = ? AND position = ?
+            """, (user_id, pos))
+
+        # Reorder positions
         cur.execute("""
-            DELETE FROM user_queue WHERE user_id = ? AND position = ?
-        """, (user_id, pos))
+            SELECT song_uuid FROM user_queue WHERE user_id = ? ORDER BY position
+        """, (user_id,))
+        songs = cur.fetchall()
 
-    # Reorder positions
-    cur.execute("""
-        SELECT song_uuid FROM user_queue WHERE user_id = ? ORDER BY position
-    """, (user_id,))
-    songs = cur.fetchall()
+        cur.execute("DELETE FROM user_queue WHERE user_id = ?", (user_id,))
 
-    cur.execute("DELETE FROM user_queue WHERE user_id = ?", (user_id,))
+        for i, song in enumerate(songs):
+            cur.execute("""
+                INSERT INTO user_queue (user_id, song_uuid, position)
+                VALUES (?, ?, ?)
+            """, (user_id, song['song_uuid'], i))
 
-    for i, song in enumerate(songs):
-        cur.execute("""
-            INSERT INTO user_queue (user_id, song_uuid, position)
-            VALUES (?, ?, ?)
-        """, (user_id, song['song_uuid'], i))
-
-    return {'removed': len(positions), 'queueLength': len(songs)}
+        if own_conn:
+            cur.execute("COMMIT")
+        return {'removed': len(positions), 'queueLength': len(songs)}
+    except Exception as e:
+        if own_conn:
+            try:
+                cur.execute("ROLLBACK")
+            except:
+                pass
+        raise
 
 
 @api_method('queue_clear', require='user')
-def queue_clear(details=None):
+def queue_clear(details=None, _conn=None):
     """Clear the entire queue."""
-    conn = get_db()
+    own_conn = _conn is None
+    conn = _conn if _conn else get_db()
     cur = conn.cursor()
     user_id = details['user_id']
 
-    # Get count before clearing
-    cur.execute("SELECT COUNT(*) FROM user_queue WHERE user_id = ?", (user_id,))
-    count = cur.fetchone()[0]
+    try:
+        if own_conn:
+            cur.execute("BEGIN IMMEDIATE")
 
-    cur.execute("DELETE FROM user_queue WHERE user_id = ?", (user_id,))
+        # Get count before clearing
+        cur.execute("SELECT COUNT(*) FROM user_queue WHERE user_id = ?", (user_id,))
+        count = cur.fetchone()[0]
 
-    # Reset playback state
-    cur.execute("""
-        INSERT OR REPLACE INTO user_playback_state (user_id, queue_index, updated_at)
-        VALUES (?, 0, ?)
-    """, (user_id, datetime.utcnow()))
+        cur.execute("DELETE FROM user_queue WHERE user_id = ?", (user_id,))
 
-    return {'cleared': count}
+        # Reset playback state
+        cur.execute("""
+            INSERT OR REPLACE INTO user_playback_state (user_id, queue_index, updated_at)
+            VALUES (?, 0, ?)
+        """, (user_id, datetime.utcnow()))
+
+        if own_conn:
+            cur.execute("COMMIT")
+        return {'cleared': count}
+    except Exception as e:
+        if own_conn:
+            try:
+                cur.execute("ROLLBACK")
+            except:
+                pass
+        raise
 
 
 @api_method('queue_reorder', require='user')
-def queue_reorder(from_pos, to_pos, details=None):
+def queue_reorder(from_pos, to_pos, details=None, _conn=None):
     """Move a song within the queue."""
-    conn = get_db()
+    own_conn = _conn is None
+    conn = _conn if _conn else get_db()
     cur = conn.cursor()
     user_id = details['user_id']
 
-    # Get all songs
-    cur.execute("""
-        SELECT song_uuid FROM user_queue WHERE user_id = ? ORDER BY position
-    """, (user_id,))
-    songs = [row['song_uuid'] for row in cur.fetchall()]
+    try:
+        if own_conn:
+            cur.execute("BEGIN IMMEDIATE")
 
-    if from_pos < 0 or from_pos >= len(songs):
-        raise ValueError('Invalid from_pos')
-    if to_pos < 0 or to_pos >= len(songs):
-        raise ValueError('Invalid to_pos')
-
-    # Reorder in memory
-    song = songs.pop(from_pos)
-    songs.insert(to_pos, song)
-
-    # Update database
-    cur.execute("DELETE FROM user_queue WHERE user_id = ?", (user_id,))
-
-    for i, uuid in enumerate(songs):
+        # Get all songs
         cur.execute("""
-            INSERT INTO user_queue (user_id, song_uuid, position)
-            VALUES (?, ?, ?)
-        """, (user_id, uuid, i))
+            SELECT song_uuid FROM user_queue WHERE user_id = ? ORDER BY position
+        """, (user_id,))
+        songs = [row['song_uuid'] for row in cur.fetchall()]
 
-    return {'success': True}
+        if from_pos < 0 or from_pos >= len(songs):
+            if own_conn:
+                cur.execute("ROLLBACK")
+            raise ValueError('Invalid from_pos')
+        if to_pos < 0 or to_pos >= len(songs):
+            if own_conn:
+                cur.execute("ROLLBACK")
+            raise ValueError('Invalid to_pos')
+
+        # Reorder in memory
+        song = songs.pop(from_pos)
+        songs.insert(to_pos, song)
+
+        # Update database
+        cur.execute("DELETE FROM user_queue WHERE user_id = ?", (user_id,))
+
+        for i, uuid in enumerate(songs):
+            cur.execute("""
+                INSERT INTO user_queue (user_id, song_uuid, position)
+                VALUES (?, ?, ?)
+            """, (user_id, uuid, i))
+
+        if own_conn:
+            cur.execute("COMMIT")
+        return {'success': True}
+    except ValueError:
+        raise
+    except Exception as e:
+        if own_conn:
+            try:
+                cur.execute("ROLLBACK")
+            except:
+                pass
+        raise
 
 
 @api_method('queue_reorder_batch', require='user')
-def queue_reorder_batch(from_positions, to_position, details=None):
+def queue_reorder_batch(from_positions, to_position, details=None, _conn=None):
     """Move multiple songs to a single target position (maintains relative order)."""
-    conn = get_db()
+    own_conn = _conn is None
+    conn = _conn if _conn else get_db()
     cur = conn.cursor()
     user_id = details['user_id']
 
     if not from_positions:
         return {'success': True}
 
-    # Get all songs
-    cur.execute("""
-        SELECT song_uuid FROM user_queue WHERE user_id = ? ORDER BY position
-    """, (user_id,))
-    songs = [row['song_uuid'] for row in cur.fetchall()]
+    try:
+        if own_conn:
+            cur.execute("BEGIN IMMEDIATE")
 
-    # Extract the songs being moved (in their current relative order)
-    from_positions_sorted = sorted(from_positions)
-    moving_songs = [songs[pos] for pos in from_positions_sorted if 0 <= pos < len(songs)]
-
-    # Remove them from the list (from end to preserve indices)
-    for pos in sorted(from_positions, reverse=True):
-        if 0 <= pos < len(songs):
-            songs.pop(pos)
-
-    # Insert at target position
-    insert_pos = min(to_position, len(songs))
-    for i, song in enumerate(moving_songs):
-        songs.insert(insert_pos + i, song)
-
-    # Update database
-    cur.execute("DELETE FROM user_queue WHERE user_id = ?", (user_id,))
-
-    for i, uuid in enumerate(songs):
+        # Get all songs
         cur.execute("""
-            INSERT INTO user_queue (user_id, song_uuid, position)
-            VALUES (?, ?, ?)
-        """, (user_id, uuid, i))
+            SELECT song_uuid FROM user_queue WHERE user_id = ? ORDER BY position
+        """, (user_id,))
+        songs = [row['song_uuid'] for row in cur.fetchall()]
 
-    return {'success': True}
+        # Extract the songs being moved (in their current relative order)
+        from_positions_sorted = sorted(from_positions)
+        moving_songs = [songs[pos] for pos in from_positions_sorted if 0 <= pos < len(songs)]
+
+        # Remove them from the list (from end to preserve indices)
+        for pos in sorted(from_positions, reverse=True):
+            if 0 <= pos < len(songs):
+                songs.pop(pos)
+
+        # Insert at target position
+        insert_pos = min(to_position, len(songs))
+        for i, song in enumerate(moving_songs):
+            songs.insert(insert_pos + i, song)
+
+        # Update database
+        cur.execute("DELETE FROM user_queue WHERE user_id = ?", (user_id,))
+
+        for i, uuid in enumerate(songs):
+            cur.execute("""
+                INSERT INTO user_queue (user_id, song_uuid, position)
+                VALUES (?, ?, ?)
+            """, (user_id, uuid, i))
+
+        if own_conn:
+            cur.execute("COMMIT")
+        return {'success': True}
+    except Exception as e:
+        if own_conn:
+            try:
+                cur.execute("ROLLBACK")
+            except:
+                pass
+        raise
 
 
 @api_method('queue_set_index', require='user')
-def queue_set_index(index, details=None):
+def queue_set_index(index, details=None, _conn=None):
     """Set the current playback position in the queue."""
-    conn = get_db()
+    own_conn = _conn is None
+    conn = _conn if _conn else get_db()
     cur = conn.cursor()
     user_id = details['user_id']
 
-    cur.execute("""
-        INSERT INTO user_playback_state (user_id, queue_index, updated_at)
-        VALUES (?, ?, ?)
-        ON CONFLICT(user_id) DO UPDATE SET queue_index = ?, updated_at = ?
-    """, (user_id, index, datetime.utcnow(), index, datetime.utcnow()))
+    try:
+        if own_conn:
+            cur.execute("BEGIN IMMEDIATE")
 
-    return {'success': True}
+        cur.execute("""
+            INSERT INTO user_playback_state (user_id, queue_index, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET queue_index = ?, updated_at = ?
+        """, (user_id, index, datetime.utcnow(), index, datetime.utcnow()))
+
+        if own_conn:
+            cur.execute("COMMIT")
+        return {'success': True}
+    except Exception as e:
+        if own_conn:
+            try:
+                cur.execute("ROLLBACK")
+            except:
+                pass
+        raise
 
 
 @api_method('queue_sort', require='user')

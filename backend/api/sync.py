@@ -50,9 +50,31 @@ def sync_push(session_id, seq, op_type, payload, details=None):
     return {'success': True}
 
 
+def _is_harmless_error(error_msg):
+    """Check if an error is harmless and can be skipped during sync.
+
+    Harmless errors are those that indicate the operation is already done
+    or the target no longer exists - common in retry scenarios.
+    """
+    error_lower = error_msg.lower()
+    harmless_patterns = [
+        'not found',      # Item was already deleted
+        'access denied',  # Playlist was deleted or made private
+        'already',        # Already exists/done
+        'no change',      # State already matches
+        'invalid',        # Invalid position (queue changed)
+    ]
+    return any(pattern in error_lower for pattern in harmless_patterns)
+
+
 @api_method('sync_commit', require='user')
 def sync_commit(session_id, details=None):
-    """Execute all pending operations for a session."""
+    """Execute all pending operations for a session atomically.
+
+    Operations are executed in sequence. Harmless errors (not found, already
+    exists, etc.) are skipped rather than failing the entire sync - this
+    handles retry scenarios gracefully. Real errors cause a full rollback.
+    """
     conn = get_db()
     cur = conn.cursor()
     user_id = details['user_id']
@@ -65,42 +87,86 @@ def sync_commit(session_id, details=None):
     """, (session_id, user_id))
 
     ops = cur.fetchall()
+
+    if not ops:
+        return {'success': True, 'executed': 0, 'skipped': 0, 'errors': []}
+
     executed = 0
-    errors = []
+    skipped = 0
 
     # Track temp ID -> real ID mappings for playlists created in this session
     temp_id_map = {}
 
-    for op in ops:
-        try:
+    try:
+        # Begin transaction for all operations
+        cur.execute("BEGIN IMMEDIATE")
+
+        for op in ops:
             payload = json.loads(op['payload']) if isinstance(op['payload'], str) else op['payload']
 
             # Resolve temp playlist IDs before executing
             payload = _resolve_temp_ids(payload, temp_id_map)
 
-            result = _execute_sync_op(op['op_type'], payload, details)
+            try:
+                result = _execute_sync_op(op['op_type'], payload, details, _conn=conn)
 
-            # Track playlist creation results for temp ID resolution
-            if op['op_type'] == 'playlists.create' and result:
-                temp_id = payload.get('tempId')
-                real_id = result.get('id')
-                if temp_id and real_id:
-                    temp_id_map[temp_id] = real_id
+                # Track playlist creation results for temp ID resolution
+                if op['op_type'] == 'playlists.create' and result:
+                    temp_id = payload.get('tempId')
+                    real_id = result.get('id')
+                    if temp_id and real_id:
+                        temp_id_map[temp_id] = real_id
 
-            executed += 1
-        except Exception as e:
-            errors.append({'op_type': op['op_type'], 'error': str(e)})
+                executed += 1
 
-    # Clear committed ops
-    cur.execute("""
-        DELETE FROM pending_sync_ops WHERE session_id = ? AND user_id = ?
-    """, (session_id, user_id))
+            except Exception as op_error:
+                error_msg = str(op_error)
 
-    return {
-        'success': len(errors) == 0,
-        'executed': executed,
-        'errors': errors
-    }
+                if _is_harmless_error(error_msg):
+                    # Harmless error - skip this operation
+                    skipped += 1
+
+                    # Special case: if playlist create failed because it exists,
+                    # look up the existing ID for temp ID resolution
+                    if op['op_type'] == 'playlists.create':
+                        temp_id = payload.get('tempId')
+                        name = payload.get('name')
+                        if temp_id and name:
+                            cur.execute(
+                                "SELECT id FROM playlists WHERE user_id = ? AND name = ?",
+                                (user_id, name.strip())
+                            )
+                            row = cur.fetchone()
+                            if row:
+                                temp_id_map[temp_id] = row['id']
+                else:
+                    # Real error - propagate to trigger rollback
+                    raise
+
+        # Clear committed ops within the same transaction
+        cur.execute("""
+            DELETE FROM pending_sync_ops WHERE session_id = ? AND user_id = ?
+        """, (session_id, user_id))
+
+        cur.execute("COMMIT")
+
+        return {
+            'success': True,
+            'executed': executed,
+            'skipped': skipped,
+            'errors': []
+        }
+    except Exception as e:
+        try:
+            cur.execute("ROLLBACK")
+        except:
+            pass
+        return {
+            'success': False,
+            'executed': 0,
+            'skipped': 0,
+            'errors': [{'op_type': op['op_type'] if op else 'unknown', 'error': str(e)}]
+        }
 
 
 def _resolve_temp_ids(payload, temp_id_map):
@@ -131,10 +197,11 @@ def _get_param(payload, *keys, default=None):
     return default
 
 
-def _execute_sync_op(op_type, payload, details):
+def _execute_sync_op(op_type, payload, details, _conn=None):
     """Execute a single sync operation.
 
     Supports both camelCase (original) and snake_case parameter names.
+    Pass _conn for transactional batching of operations.
     """
     # Import the API methods
     from . import queue, playlists, preferences, history, playback
@@ -144,53 +211,53 @@ def _execute_sync_op(op_type, payload, details):
         'queue.add': lambda p: queue.queue_add(
             _get_param(p, 'songUuids', 'song_uuids', default=[]),
             _get_param(p, 'position'),
-            details=details),
+            details=details, _conn=_conn),
         'queue.remove': lambda p: queue.queue_remove(
             _get_param(p, 'positions', default=[]),
-            details=details),
-        'queue.clear': lambda p: queue.queue_clear(details=details),
+            details=details, _conn=_conn),
+        'queue.clear': lambda p: queue.queue_clear(details=details, _conn=_conn),
         'queue.setIndex': lambda p: queue.queue_set_index(
             _get_param(p, 'index', 'queue_index', default=0),
-            details=details),
+            details=details, _conn=_conn),
         'queue.reorder': lambda p: queue.queue_reorder(
             _get_param(p, 'fromPos', 'from_pos'),
             _get_param(p, 'toPos', 'to_pos'),
-            details=details),
+            details=details, _conn=_conn),
 
         # Playlist operations - support both camelCase and snake_case
         'playlists.addSong': lambda p: playlists.playlists_add_song(
             _get_param(p, 'playlistId', 'playlist_id'),
             _get_param(p, 'songUuid', 'song_uuid'),
-            details=details),
+            details=details, _conn=_conn),
         'playlists.removeSong': lambda p: playlists.playlists_remove_song(
             _get_param(p, 'playlistId', 'playlist_id'),
             _get_param(p, 'songUuid', 'song_uuid'),
-            details=details),
+            details=details, _conn=_conn),
         'playlists.removeSongs': lambda p: playlists.playlists_remove_songs(
             _get_param(p, 'playlistId', 'playlist_id'),
             _get_param(p, 'songUuids', 'song_uuids', default=[]),
-            details=details),
+            details=details, _conn=_conn),
         'playlists.addSongsBatch': lambda p: playlists.playlists_add_songs(
             _get_param(p, 'playlistId', 'playlist_id'),
             _get_param(p, 'songUuids', 'song_uuids', default=[]),
-            details=details),
+            details=details, _conn=_conn),
         'playlists.reorder': lambda p: playlists.playlists_reorder(
             _get_param(p, 'playlistId', 'playlist_id'),
             _get_param(p, 'positions', default=[]),
-            details=details),
+            details=details, _conn=_conn),
         'playlists.sort': lambda p: playlists.playlists_sort(
             _get_param(p, 'playlistId', 'playlist_id'),
             _get_param(p, 'sortBy', 'sort_by', default='artist'),
             _get_param(p, 'order', default='asc'),
-            details=details),
+            details=details, _conn=_conn),
         'playlists.create': lambda p: playlists.playlists_create(
             _get_param(p, 'name'),
             _get_param(p, 'description', default=''),
             _get_param(p, 'isPublic', 'is_public', default=False),
-            details=details),
+            details=details, _conn=_conn),
         'playlists.delete': lambda p: playlists.playlists_delete(
             _get_param(p, 'playlistId', 'playlist_id'),
-            details=details),
+            details=details, _conn=_conn),
 
         # Preferences - convert camelCase to snake_case for preferences_set
         'preferences.set': lambda p: preferences.preferences_set(
@@ -202,7 +269,7 @@ def _execute_sync_op(op_type, payload, details):
             replay_gain_mode=_get_param(p, 'replayGainMode', 'replay_gain_mode'),
             replay_gain_preamp=_get_param(p, 'replayGainPreamp', 'replay_gain_preamp'),
             replay_gain_fallback=_get_param(p, 'replayGainFallback', 'replay_gain_fallback'),
-            details=details),
+            details=details, _conn=_conn),
 
         # History - support both camelCase and snake_case
         'history.record': lambda p: history.history_record(
@@ -210,17 +277,17 @@ def _execute_sync_op(op_type, payload, details):
             _get_param(p, 'durationSeconds', 'duration_seconds', 'play_duration_seconds', default=0),
             _get_param(p, 'skipped', default=False),
             _get_param(p, 'source'),
-            details=details),
+            details=details, _conn=_conn),
 
         # EQ Presets
         'eqPresets.save': lambda p: preferences.eq_presets_save(
             uuid=_get_param(p, 'uuid'),
             name=_get_param(p, 'name'),
             bands=_get_param(p, 'bands'),
-            details=details),
+            details=details, _conn=_conn),
         'eqPresets.delete': lambda p: preferences.eq_presets_delete(
             _get_param(p, 'uuid'),
-            details=details),
+            details=details, _conn=_conn),
 
         # Playback state - support both camelCase and snake_case
         'playback.setState': lambda p: playback.playback_set_state(
@@ -228,7 +295,7 @@ def _execute_sync_op(op_type, payload, details):
             sca_enabled=_get_param(p, 'scaEnabled', 'sca_enabled'),
             play_mode=_get_param(p, 'playMode', 'play_mode'),
             volume=_get_param(p, 'volume'),
-            details=details),
+            details=details, _conn=_conn),
     }
 
     handler = handlers.get(op_type)

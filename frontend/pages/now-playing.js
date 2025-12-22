@@ -538,7 +538,8 @@ export default defineComponent('now-playing-page', {
                 const msg = result.queued
                     ? `Playlist "${result.name}" will be created when online.`
                     : `Playlist "${result.name}" created!`;
-                alert(msg);
+                const toast = document.querySelector('cl-toast');
+                if (toast) toast.show({ severity: 'success', summary: 'Playlist Saved', detail: msg });
             } catch (e) {
                 this.state.saveError = e.message || 'Failed to save playlist';
             } finally {
@@ -659,7 +660,8 @@ export default defineComponent('now-playing-page', {
                 }
             } catch (e) {
                 console.error('Failed to add to playlist:', e);
-                alert('Failed to add to playlist');
+                const toast = document.querySelector('cl-toast');
+                if (toast) toast.show({ severity: 'error', summary: 'Error', detail: 'Failed to add to playlist' });
             } finally {
                 this.state.addingToPlaylist = false;
             }

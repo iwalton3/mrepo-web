@@ -93,30 +93,17 @@ def songs_list(cursor=None, limit=50, sort='title', order='asc',
 
 
 @api_method('songs_get', require='user')
-def songs_get(uuid, include_vfs=False, details=None):
-    """Get a single song by UUID. Optionally include VFS virtual_file path."""
+def songs_get(uuid, details=None):
+    """Get a single song by UUID."""
     conn = get_db()
     cur = conn.cursor()
 
-    if include_vfs:
-        user_id = details.get('user_id') if details else None
-        cur.execute("""
-            SELECT s.uuid, s.key, s.type, s.category, s.genre, s.artist, s.album, s.title,
-                   s.file, COALESCE(v.virtual_file, s.file) as virtual_file,
-                   s.album_artist, s.track_number, s.disc_number, s.year, s.duration_seconds,
-                   s.bpm, s.seekable, s.replay_gain_track, s.replay_gain_album
-            FROM songs s
-            LEFT JOIN vfs_song_paths v ON s.uuid = v.song_uuid
-                AND (v.user_id = ? OR v.user_id IS NULL)
-            WHERE s.uuid = ?
-        """, (user_id, uuid))
-    else:
-        cur.execute("""
-            SELECT uuid, key, type, category, genre, artist, album, title, file,
-                   album_artist, track_number, disc_number, year, duration_seconds,
-                   bpm, seekable, replay_gain_track, replay_gain_album
-            FROM songs WHERE uuid = ?
-        """, (uuid,))
+    cur.execute("""
+        SELECT uuid, key, type, category, genre, artist, album, title, file,
+               album_artist, track_number, disc_number, year, duration_seconds,
+               bpm, seekable, replay_gain_track, replay_gain_album
+        FROM songs WHERE uuid = ?
+    """, (uuid,))
 
     row = cur.fetchone()
 
@@ -126,7 +113,7 @@ def songs_get(uuid, include_vfs=False, details=None):
 
 
 @api_method('songs_get_bulk', require='user')
-def songs_get_bulk(uuids, include_vfs=False, details=None):
+def songs_get_bulk(uuids, details=None):
     """Get multiple songs by UUID."""
     if not uuids:
         return []
@@ -136,25 +123,12 @@ def songs_get_bulk(uuids, include_vfs=False, details=None):
 
     placeholders = ','.join('?' * len(uuids))
 
-    if include_vfs:
-        user_id = details.get('user_id') if details else None
-        cur.execute(f"""
-            SELECT s.uuid, s.key, s.type, s.category, s.genre, s.artist, s.album, s.title,
-                   s.file, COALESCE(v.virtual_file, s.file) as virtual_file,
-                   s.album_artist, s.track_number, s.disc_number, s.year, s.duration_seconds,
-                   s.bpm, s.seekable, s.replay_gain_track, s.replay_gain_album
-            FROM songs s
-            LEFT JOIN vfs_song_paths v ON s.uuid = v.song_uuid
-                AND (v.user_id = ? OR v.user_id IS NULL)
-            WHERE s.uuid IN ({placeholders})
-        """, [user_id] + list(uuids))
-    else:
-        cur.execute(f"""
-            SELECT uuid, key, type, category, genre, artist, album, title, file,
-                   album_artist, track_number, disc_number, year, duration_seconds,
-                   bpm, seekable, replay_gain_track, replay_gain_album
-            FROM songs WHERE uuid IN ({placeholders})
-        """, uuids)
+    cur.execute(f"""
+        SELECT uuid, key, type, category, genre, artist, album, title, file,
+               album_artist, track_number, disc_number, year, duration_seconds,
+               bpm, seekable, replay_gain_track, replay_gain_album
+        FROM songs WHERE uuid IN ({placeholders})
+    """, uuids)
 
     rows = cur.fetchall()
     return [row_to_dict(row) for row in rows]

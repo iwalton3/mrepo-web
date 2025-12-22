@@ -447,8 +447,12 @@ class AudioController {
 
         try {
             // Load queue and preferences in parallel
+            // Both have .catch() so Promise.all won't reject if one fails
             const [queueResult, prefsResult] = await Promise.all([
-                queueApi.list({ limit: 10000 }),
+                queueApi.list({ limit: 10000 }).catch(e => {
+                    console.error('Failed to load queue:', e);
+                    return { error: e.message || 'Failed to load queue' };
+                }),
                 preferences.get().catch(e => {
                     console.warn('Failed to load preferences:', e);
                     return {};
@@ -662,7 +666,7 @@ class AudioController {
         if (this.store.state.tempQueueMode || this._isExitingTempQueue) return;
 
         // Skip sync while offline sync is in progress
-        if (isSyncing) return;
+        if (isSyncing()) return;
 
         // Skip sync within 5 seconds of exiting temp queue to prevent race condition
         // where server state overwrites the just-restored local queue
@@ -4980,13 +4984,16 @@ class AudioController {
             this._radioSessionId = result.session_id;
             this.store.state.scaEnabled = true;
 
-            // Load initial queue from radio
-            if (result.queue && result.queue.length > 0) {
-                this.store.state.queue = result.queue;
+            // Build full queue: seed song first, then radio queue
+            // Backend now syncs this to user_queue table, so we match that here
+            const fullQueue = result.seed ? [result.seed, ...result.queue] : result.queue;
+
+            if (fullQueue && fullQueue.length > 0) {
+                this.store.state.queue = fullQueue;
                 this.store.state.queueIndex = 0;
                 this.store.state.queueVersion++;
-                await queueApi.setIndex(0);
-                await this.play(result.queue[0]);
+                // No need to call queueApi.setIndex - backend already set it
+                await this.play(fullQueue[0]);
             }
         } catch (e) {
             console.error('Failed to start radio:', e);
@@ -5396,6 +5403,7 @@ export const player = {
     startScaFromPlaylist: (id) => audioController.startScaFromPlaylist(id),
     startRadio: (seed, filter) => audioController.startRadio(seed, filter),
     stopSca: () => audioController.stopSca(),
+    stopRadio: () => audioController.stopSca(),  // Alias for stopSca
 
     // Queue management
     saveQueueAsPlaylist: (name, desc, pub) => audioController.saveQueueAsPlaylist(name, desc, pub),

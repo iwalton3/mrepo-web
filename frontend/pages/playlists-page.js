@@ -54,14 +54,6 @@ export default defineComponent('playlists-page', {
             searchQuery: '',
             searchResults: [],
             searchLoading: false,
-            // Import state
-            showImportDialog: false,
-            importMode: 'new',  // 'new' or 'append'
-            importTargetPlaylist: null,
-            importNewName: '',
-            importFile: null,
-            importProgress: null,  // { completed, total } or null
-            importError: null,
             // Sorting state
             isSorting: false,
             showSortMenu: false,
@@ -85,11 +77,11 @@ export default defineComponent('playlists-page', {
         }
 
         // Listen for playlist changes from other components
-        this._playlistsChangedHandler = () => this.loadPlaylists();
+        this._playlistsChangedHandler = () => this.loadPlaylists(true);
         window.addEventListener('playlists-changed', this._playlistsChangedHandler);
 
-        // Always load playlists first (needed for playlist info on direct nav)
-        await this.loadPlaylists();
+        // Always load playlists first with force refresh (catches playlists created on other devices)
+        await this.loadPlaylists(true);
 
         // Determine view from params
         const { id, token } = this.props.params || {};
@@ -129,13 +121,14 @@ export default defineComponent('playlists-page', {
             } else if (id) {
                 // Ensure playlists are loaded for playlist info
                 if (this.state.myPlaylists.length === 0) {
-                    await this.loadPlaylists();
+                    await this.loadPlaylists(true);
                 }
                 this.state.view = 'detail';
                 this.loadPlaylistDetail(id);
-            } else if (this.state.view !== 'list') {
+            } else {
+                // Navigating to list view - always refresh
                 this.state.view = 'list';
-                this.loadPlaylists();
+                this.loadPlaylists(true);
             }
         }
     },
@@ -258,7 +251,8 @@ export default defineComponent('playlists-page', {
             );
 
             if (notOffline.length === 0) {
-                alert('All selected songs are already downloaded');
+                const toast = document.querySelector('cl-toast');
+                if (toast) toast.show({ severity: 'info', summary: 'Info', detail: 'All selected songs are already downloaded' });
                 return;
             }
 
@@ -282,7 +276,8 @@ export default defineComponent('playlists-page', {
                 .filter(s => canCacheOffline(s.type));
 
             if (downloadable.length === 0) {
-                alert('No downloadable songs selected (transcode-only formats)');
+                const toast = document.querySelector('cl-toast');
+                if (toast) toast.show({ severity: 'info', summary: 'Info', detail: 'No downloadable songs selected (transcode-only formats)' });
                 return;
             }
 
@@ -354,11 +349,11 @@ export default defineComponent('playlists-page', {
             return 'No songs in playlist';
         },
 
-        async loadPlaylists() {
+        async loadPlaylists(forceRefresh = false) {
             this.state.isLoading = true;
             try {
                 if (this.state.isAuthenticated) {
-                    const result = await playlistsApi.list();
+                    const result = await playlistsApi.list(forceRefresh);
                     this.state.myPlaylists = result.items || [];
                 }
             } catch (e) {
@@ -616,7 +611,8 @@ export default defineComponent('playlists-page', {
             const basePath = window.location.pathname.replace(/\/$/, '');
             const url = `${window.location.origin}${basePath}/#/share/${this.state.shareToken}/`;
             navigator.clipboard.writeText(url).then(() => {
-                alert('Link copied to clipboard!');
+                const toast = document.querySelector('cl-toast');
+                if (toast) toast.show({ severity: 'success', summary: 'Copied', detail: 'Link copied to clipboard!' });
             });
         },
 
@@ -625,7 +621,8 @@ export default defineComponent('playlists-page', {
             try {
                 const result = await playlistsApi.clone(this.state.currentPlaylist.id);
                 if (!result.error) {
-                    alert(`Playlist cloned as "${result.name}"`);
+                    const toast = document.querySelector('cl-toast');
+                    if (toast) toast.show({ severity: 'success', summary: 'Cloned', detail: `Playlist cloned as "${result.name}"` });
                     this.loadPlaylists();
                 }
             } catch (e) {
@@ -1245,122 +1242,6 @@ export default defineComponent('playlists-page', {
             `;
         },
 
-        // Import methods
-        openImportDialog() {
-            this.state.showImportDialog = true;
-            this.state.importMode = 'new';
-            this.state.importTargetPlaylist = null;
-            this.state.importNewName = '';
-            this.state.importFile = null;
-            this.state.importProgress = null;
-            this.state.importError = null;
-        },
-
-        closeImportDialog() {
-            this.state.showImportDialog = false;
-            this.state.importProgress = null;
-            this.state.importError = null;
-        },
-
-        handleImportModeChange(mode) {
-            this.state.importMode = mode;
-        },
-
-        handleImportTargetChange(e) {
-            this.state.importTargetPlaylist = e.target.value;
-        },
-
-        handleImportNameChange(e) {
-            this.state.importNewName = e.target.value;
-        },
-
-        handleImportFileChange(e) {
-            // Store file outside reactive state to avoid proxy issues with Blob methods
-            this._importFile = e.target.files[0] || null;
-            this.state.importFile = this._importFile ? this._importFile.name : null;
-            this.state.importError = null;
-        },
-
-        parsePlaylistFile(content) {
-            // Parse TSV file - extract UUID from first column of each line
-            const lines = content.split('\n');
-            const uuids = [];
-
-            for (const line of lines) {
-                const trimmed = line.trim();
-                if (!trimmed) continue;
-
-                // Get everything before the first tab (or the whole line if no tab)
-                const tabIndex = trimmed.indexOf('\t');
-                const uuid = tabIndex >= 0 ? trimmed.substring(0, tabIndex) : trimmed;
-
-                // Basic UUID validation (should be hex chars and dashes)
-                if (uuid && /^[0-9a-f-]+$/i.test(uuid)) {
-                    uuids.push(uuid);
-                }
-            }
-
-            return uuids;
-        },
-
-        async handleImport() {
-            if (!this._importFile) {
-                this.state.importError = 'Please select a file';
-                return;
-            }
-
-            if (this.state.importMode === 'new' && !this.state.importNewName.trim()) {
-                this.state.importError = 'Please enter a playlist name';
-                return;
-            }
-
-            if (this.state.importMode === 'append' && !this.state.importTargetPlaylist) {
-                this.state.importError = 'Please select a playlist';
-                return;
-            }
-
-            try {
-                // Read and parse file (use _importFile which is the actual File object)
-                const content = await this._importFile.text();
-                const uuids = this.parsePlaylistFile(content);
-
-                if (uuids.length === 0) {
-                    this.state.importError = 'No valid UUIDs found in file';
-                    return;
-                }
-
-                let playlistId;
-
-                if (this.state.importMode === 'new') {
-                    // Create new playlist
-                    const result = await playlistsApi.create(this.state.importNewName.trim());
-                    if (result.error) {
-                        this.state.importError = result.error;
-                        return;
-                    }
-                    playlistId = result.id;
-                } else {
-                    playlistId = this.state.importTargetPlaylist;
-                }
-
-                // Add songs in batches
-                this.state.importProgress = { completed: 0, total: uuids.length };
-
-                await playlistsApi.addSongsBatch(playlistId, uuids, 500, (completed, total) => {
-                    this.state.importProgress = { completed, total };
-                });
-
-                // Done - close dialog and refresh
-                this.state.showImportDialog = false;
-                this.state.importProgress = null;
-                this.loadPlaylists();
-
-            } catch (e) {
-                console.error('Import failed:', e);
-                this.state.importError = e.message || 'Import failed';
-            }
-        },
-
         _setupScrollListener() {
             // Clean up old listener
             if (this._scrollHandler) {
@@ -1434,8 +1315,6 @@ export default defineComponent('playlists-page', {
                 newPlaylistName, newPlaylistDesc, newPlaylistPublic, hasMore, totalCount,
                 visibleStart, visibleEnd,
                 showAddSongs, searchQuery, searchResults, searchLoading,
-                showImportDialog, importMode, importTargetPlaylist, importNewName,
-                importProgress, importError,
                 isSorting, showSortMenu } = this.state;
 
         // List View
@@ -1463,9 +1342,6 @@ export default defineComponent('playlists-page', {
                             <div class="create-section">
                                 <cl-button severity="primary" icon="+" on-click="openCreateDialog">
                                     Create Playlist
-                                </cl-button>
-                                <cl-button severity="secondary" icon="📥" on-click="openImportDialog">
-                                    Import
                                 </cl-button>
                             </div>
 
@@ -1562,75 +1438,6 @@ export default defineComponent('playlists-page', {
                             <div slot="footer">
                                 <cl-button severity="secondary" on-click="closeCreateDialog">Cancel</cl-button>
                                 <cl-button severity="primary" on-click="handleCreatePlaylist">Create</cl-button>
-                            </div>
-                        </cl-dialog>
-                    `)}
-
-                    <!-- Import Dialog -->
-                    ${when(showImportDialog, () => html`
-                        <cl-dialog visible="true" header="Import Playlist"
-                            on-change="${(e, val) => { if (!val) this.closeImportDialog(); }}">
-                            <div class="dialog-form">
-                                <div class="form-row">
-                                    <label>Import Mode</label>
-                                    <div class="import-mode-buttons">
-                                        <button class="mode-btn ${importMode === 'new' ? 'active' : ''}"
-                                                on-click="${() => this.handleImportModeChange('new')}">
-                                            New Playlist
-                                        </button>
-                                        <button class="mode-btn ${importMode === 'append' ? 'active' : ''}"
-                                                on-click="${() => this.handleImportModeChange('append')}">
-                                            Add to Existing
-                                        </button>
-                                    </div>
-                                </div>
-
-                                ${when(importMode === 'new', html`
-                                    <div class="form-row">
-                                        <label>Playlist Name</label>
-                                        <input type="text" x-model="importNewName"
-                                               placeholder="Enter playlist name">
-                                    </div>
-                                `, () => html`
-                                    <div class="form-row">
-                                        <label>Select Playlist</label>
-                                        <select on-change-stop="handleImportTargetChange" value="${importTargetPlaylist || ''}">
-                                            <option value="">-- Select playlist --</option>
-                                            ${each(myPlaylists, p => html`
-                                                <option value="${p.id}">${p.name}</option>
-                                            `)}
-                                        </select>
-                                    </div>
-                                `)}
-
-                                <div class="form-row">
-                                    <label>Playlist File (mrepo/manifest format)</label>
-                                    <input type="file" accept=".txt,.tsv,.manifest"
-                                           on-change-stop="handleImportFileChange">
-                                </div>
-
-                                ${when(importError, html`
-                                    <div class="import-error">${importError}</div>
-                                `)}
-
-                                ${when(importProgress, () => html`
-                                    <div class="import-progress">
-                                        <div class="progress-bar">
-                                            <div class="progress-fill"
-                                                 style="width: ${(importProgress.completed / importProgress.total) * 100}%">
-                                            </div>
-                                        </div>
-                                        <div class="progress-text">
-                                            Adding songs: ${importProgress.completed} / ${importProgress.total}
-                                        </div>
-                                    </div>
-                                `)}
-                            </div>
-                            <div slot="footer">
-                                <cl-button severity="secondary" on-click="closeImportDialog"
-                                           disabled="${!!importProgress}">Cancel</cl-button>
-                                <cl-button severity="primary" on-click="handleImport"
-                                           loading="${!!importProgress}">Import</cl-button>
                             </div>
                         </cl-dialog>
                     `)}
@@ -2457,84 +2264,6 @@ export default defineComponent('playlists-page', {
         .added-badge {
             color: var(--success-500, #22c55e);
             font-size: 0.875rem;
-        }
-
-        /* Import Dialog */
-        .import-mode-buttons {
-            display: flex;
-            gap: 0.5rem;
-        }
-
-        .mode-btn {
-            flex: 1;
-            padding: 0.5rem 1rem;
-            background: var(--surface-100, #242424);
-            border: 1px solid var(--surface-300, #404040);
-            border-radius: 4px;
-            cursor: pointer;
-            color: var(--text-primary, #e0e0e0);
-            transition: all 0.2s;
-        }
-
-        .mode-btn:hover {
-            background: var(--surface-200, #2d2d2d);
-        }
-
-        .mode-btn.active {
-            background: var(--selected-bg, #1e3a5f);
-            border-color: var(--primary-400, #42a5f5);
-        }
-
-        .form-row select {
-            width: 100%;
-            padding: 0.5rem;
-            border: 1px solid var(--surface-300, #404040);
-            border-radius: 4px;
-            background: var(--surface-100, #242424);
-            color: var(--text-primary, #e0e0e0);
-        }
-
-        .form-row input[type="file"] {
-            width: 100%;
-            padding: 0.5rem;
-            border: 1px solid var(--surface-300, #404040);
-            border-radius: 4px;
-            background: var(--surface-100, #242424);
-            color: var(--text-primary, #e0e0e0);
-        }
-
-        .import-error {
-            padding: 0.75rem;
-            background: var(--danger-900, #450a0a);
-            border: 1px solid var(--danger-500, #dc3545);
-            border-radius: 4px;
-            color: var(--danger-300, #fca5a5);
-            font-size: 0.875rem;
-            margin-top: 0.5rem;
-        }
-
-        .import-progress {
-            margin-top: 1rem;
-        }
-
-        .import-progress .progress-bar {
-            height: 8px;
-            background: var(--surface-300, #404040);
-            border-radius: 4px;
-            overflow: hidden;
-        }
-
-        .import-progress .progress-fill {
-            height: 100%;
-            background: var(--primary-500, #2196f3);
-            transition: width 0.2s;
-        }
-
-        .import-progress .progress-text {
-            margin-top: 0.5rem;
-            font-size: 0.875rem;
-            color: var(--text-secondary, #a0a0a0);
-            text-align: center;
         }
 
         .create-section {

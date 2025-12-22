@@ -204,3 +204,26 @@ Key env vars:
 ### Add a new component
 1. Create `frontend/components/my-component.js`
 2. Import and use in pages
+
+## TypeScript Validation
+
+The frontend uses TypeScript for static analysis to catch import/export errors without requiring a build step. The `.d.ts` type definition files are in `frontend/lib/`.
+
+### Running Type Checks
+
+```bash
+cd frontend
+npx tsc
+
+# Filter to just import/export errors (most useful):
+npx tsc 2>&1 | grep -E "has no exported member|Cannot find module|is not a module"
+```
+
+Note: Many errors will show, but most are false positives from TypeScript not understanding JavaScript patterns like `= {}` destructured parameters. Import/export errors are the valuable ones to catch - these reveal missing exports, typos in imports, and API wrapper inconsistencies.
+
+### When to Run
+
+Run TypeScript validation after:
+- Adding new exports to API modules
+- Creating wrapper modules (like `offline-api.js` wrapping `music-api.js`)
+- Refactoring imports across multiple files

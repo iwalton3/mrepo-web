@@ -12,18 +12,32 @@ from ..db import get_db, rows_to_list
 
 @api_method('history_record', require='user')
 def history_record(song_uuid, duration_seconds=0, skipped=False,
-                   source='browse', details=None):
+                   source='browse', details=None, _conn=None):
     """Record a play event."""
-    conn = get_db()
+    own_conn = _conn is None
+    conn = _conn if _conn else get_db()
     cur = conn.cursor()
     user_id = details['user_id']
 
-    cur.execute("""
-        INSERT INTO play_history (user_id, song_uuid, play_duration_seconds, skipped, source)
-        VALUES (?, ?, ?, ?, ?)
-    """, (user_id, song_uuid, duration_seconds, 1 if skipped else 0, source))
+    try:
+        if own_conn:
+            cur.execute("BEGIN IMMEDIATE")
 
-    return {'success': True}
+        cur.execute("""
+            INSERT INTO play_history (user_id, song_uuid, play_duration_seconds, skipped, source)
+            VALUES (?, ?, ?, ?, ?)
+        """, (user_id, song_uuid, duration_seconds, 1 if skipped else 0, source))
+
+        if own_conn:
+            cur.execute("COMMIT")
+        return {'success': True}
+    except Exception as e:
+        if own_conn:
+            try:
+                cur.execute("ROLLBACK")
+            except:
+                pass
+        raise
 
 
 @api_method('history_recent', require='user')

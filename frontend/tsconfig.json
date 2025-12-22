@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ES2020",
+    "moduleResolution": "bundler",
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "strict": false,
+    "noImplicitAny": false,
+    "declaration": false
+  },
+  "include": [
+    "./**/*.js"
+  ],
+  "exclude": [
+    "vendor/**",
+    "sw.js"
+  ]
+}

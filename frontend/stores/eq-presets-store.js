@@ -332,6 +332,23 @@ const controller = {
     }
 };
 
+// Listen for storage changes from other tabs to prevent race conditions
+if (typeof window !== 'undefined') {
+    window.addEventListener('storage', (event) => {
+        if (event.key === LOCAL_STORAGE_KEY && event.newValue) {
+            try {
+                const newState = JSON.parse(event.newValue);
+                // Reload state from the other tab's update
+                eqPresetsStore.state.activePresetUuid = newState.presetUuid;
+                eqPresetsStore.state.customBands = newState.bands || [];
+                console.log('[EQ] Synced state from another tab');
+            } catch (e) {
+                console.error('[EQ] Failed to sync state from other tab:', e);
+            }
+        }
+    });
+}
+
 // Export store with state and methods
 export default {
     state: eqPresetsStore.state,

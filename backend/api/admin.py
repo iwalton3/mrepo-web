@@ -1,88 +1,13 @@
 """
 Admin API module for mrepo.
 
-Provides admin functions: VFS mappings, music scanning, user management.
+Provides admin functions: music scanning, user management.
 """
 
 from datetime import datetime
 
 from ..app import api_method
 from ..db import get_db, row_to_dict, rows_to_list
-
-
-# VFS (Virtual File System) Path Mapping Methods
-
-@api_method('vfs_list_mappings', require='admin')
-def vfs_list_mappings(details=None):
-    """List all VFS path mappings."""
-    conn = get_db()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT id, user_id, original_prefix, virtual_prefix, created_at
-        FROM vfs_path_mappings
-        ORDER BY virtual_prefix
-    """)
-
-    rows = cur.fetchall()
-    return rows_to_list(rows)
-
-
-@api_method('vfs_add_mapping', require='admin')
-def vfs_add_mapping(original_prefix, virtual_prefix, user_id=None, details=None):
-    """Add a VFS path mapping."""
-    conn = get_db()
-    cur = conn.cursor()
-
-    if not original_prefix or not virtual_prefix:
-        raise ValueError('Both original_prefix and virtual_prefix are required')
-
-    try:
-        cur.execute("""
-            INSERT INTO vfs_path_mappings (user_id, original_prefix, virtual_prefix)
-            VALUES (?, ?, ?)
-        """, (user_id, original_prefix, virtual_prefix))
-    except Exception:
-        raise ValueError('Mapping already exists for this prefix')
-
-    return {'id': cur.lastrowid}
-
-
-@api_method('vfs_remove_mapping', require='admin')
-def vfs_remove_mapping(mapping_id, details=None):
-    """Remove a VFS path mapping."""
-    conn = get_db()
-    cur = conn.cursor()
-
-    cur.execute("DELETE FROM vfs_path_mappings WHERE id = ?", (mapping_id,))
-
-    if cur.rowcount == 0:
-        raise ValueError('Mapping not found')
-
-    return {'success': True}
-
-
-@api_method('vfs_move_folder', require='admin')
-def vfs_move_folder(old_prefix, new_prefix, details=None):
-    """Update VFS mappings when a folder is moved."""
-    conn = get_db()
-    cur = conn.cursor()
-
-    # Update all mappings that start with old_prefix
-    cur.execute("""
-        UPDATE vfs_path_mappings
-        SET virtual_prefix = ? || SUBSTR(virtual_prefix, ?)
-        WHERE virtual_prefix LIKE ?
-    """, (new_prefix, len(old_prefix) + 1, old_prefix + '%'))
-
-    return {'updated': cur.rowcount}
-
-
-@api_method('vfs_rebuild_cache', require='admin')
-def vfs_rebuild_cache(details=None):
-    """Rebuild the VFS song paths cache."""
-    count = _rebuild_vfs_cache_internal()
-    return {'cached': count}
 
 
 @api_method('rebuild_search_index', require='admin')
@@ -111,49 +36,6 @@ def _rebuild_fts_index():
         return False
 
 
-def _rebuild_vfs_cache_internal():
-    """Internal function to rebuild VFS cache (no auth check)."""
-    from ..db import get_db
-
-    conn = get_db()
-    cur = conn.cursor()
-
-    # Clear existing cache
-    cur.execute("DELETE FROM vfs_song_paths")
-
-    # Get all mappings
-    cur.execute("SELECT user_id, original_prefix, virtual_prefix FROM vfs_path_mappings")
-    mappings = cur.fetchall()
-
-    if not mappings:
-        return 0
-
-    count = 0
-    for mapping in mappings:
-        user_id = mapping['user_id']
-        original = mapping['original_prefix']
-        virtual = mapping['virtual_prefix']
-
-        # Find songs matching this mapping
-        cur.execute("""
-            SELECT uuid, file FROM songs WHERE file LIKE ?
-        """, (original + '%',))
-
-        for song in cur.fetchall():
-            # Calculate virtual path
-            relative = song['file'][len(original):]
-            virtual_file = virtual + relative
-            virtual_dir = '/'.join(virtual_file.split('/')[:-1]) + '/'
-
-            cur.execute("""
-                INSERT OR REPLACE INTO vfs_song_paths (song_uuid, user_id, virtual_file, virtual_dir)
-                VALUES (?, ?, ?, ?)
-            """, (song['uuid'], user_id, virtual_file, virtual_dir))
-            count += 1
-
-    return count
-
-
 def _run_scan_in_background(paths, task_id):
     """Run the scan in a background thread."""
     from ..scanner import scan_paths
@@ -176,7 +58,6 @@ def _run_scan_in_background(paths, task_id):
 
         # Rebuild indexes after successful scan
         _rebuild_fts_index()
-        _rebuild_vfs_cache_internal()
 
     except Exception as e:
         conn = get_db()

@@ -313,10 +313,11 @@ export default defineComponent('offline-settings', {
             this.state.isClearing = true;
             try {
                 const result = await cleanupOrphanedFiles();
+                const toast = document.querySelector('cl-toast');
                 if (result.removedCount > 0) {
-                    alert(`Cleaned up ${result.removedCount} orphaned files, freed ${formatBytes(result.freedBytes)}`);
+                    if (toast) toast.show({ severity: 'success', summary: 'Cleanup Complete', detail: `Cleaned up ${result.removedCount} orphaned files, freed ${formatBytes(result.freedBytes)}` });
                 } else {
-                    alert('No orphaned files found');
+                    if (toast) toast.show({ severity: 'info', summary: 'Cleanup', detail: 'No orphaned files found' });
                 }
             } catch (e) {
                 console.error('Failed to cleanup:', e);
@@ -326,7 +327,8 @@ export default defineComponent('offline-settings', {
 
         async handleRefreshPlaylistMetadata(playlist) {
             if (!navigator.onLine) {
-                alert('Cannot refresh metadata while offline');
+                const toast = document.querySelector('cl-toast');
+                if (toast) toast.show({ severity: 'error', summary: 'Offline', detail: 'Cannot refresh metadata while offline' });
                 return;
             }
 
@@ -355,7 +357,8 @@ export default defineComponent('offline-settings', {
 
         async handleRefreshAllMetadata() {
             if (!navigator.onLine) {
-                alert('Cannot refresh metadata while offline');
+                const toast = document.querySelector('cl-toast');
+                if (toast) toast.show({ severity: 'error', summary: 'Offline', detail: 'Cannot refresh metadata while offline' });
                 return;
             }
 
@@ -400,10 +403,11 @@ export default defineComponent('offline-settings', {
                 // Refresh storage estimate to show updated quota
                 await refreshDiskUsage();
 
+                const toast = document.querySelector('cl-toast');
                 if (granted) {
-                    alert('Persistent storage granted! Your offline data will be preserved.');
+                    if (toast) toast.show({ severity: 'success', summary: 'Storage Granted', detail: 'Persistent storage granted! Your offline data will be preserved.' });
                 } else {
-                    alert('Persistent storage was not granted. The browser may clear offline data when storage is low.');
+                    if (toast) toast.show({ severity: 'warn', summary: 'Storage Denied', detail: 'Persistent storage was not granted. The browser may clear offline data when storage is low.' });
                 }
             } catch (e) {
                 console.error('Failed to request persistent storage:', e);

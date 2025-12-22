@@ -20,7 +20,9 @@ import offlineStore, {
 import { notifyPlaylistsChanged } from './offline-api.js';
 
 const MAX_RETRIES = 3;
-let isSyncing = false;
+
+// Promise-based lock to prevent concurrent sync operations
+let syncLockPromise = null;
 
 /**
  * Show a toast notification using the app's cl-toast component
@@ -346,140 +348,185 @@ function transformPayload(type, operation, payload) {
  * 4. On success, clear local pending writes
  * 5. On failure, keep local writes for retry
  */
+async function _doSyncPendingWrites() {
+    const writes = await offlineDb.getPendingWrites();
+
+    if (writes.length === 0) {
+        return { success: true, synced: 0 };
+    }
+
+    const sessionId = generateSessionId();
+    let seq = 0;
+    let pushed = 0;
+
+    // Phase 1: Push all operations to server
+    for (const write of writes) {
+        const { type, operation, payload } = write;
+        const opType = toOpType(type, operation);
+        let transformedPayload = transformPayload(type, operation, payload);
+
+        // Special handling for createFromQueue - split into create + addSongsBatch
+        if (type === 'playlists' && operation === 'createFromQueue') {
+            // First push create operation with tempId so server can track ID mapping
+            const createPayload = {
+                name: payload.name,
+                description: payload.description || '',
+                isPublic: payload.isPublic || false,
+                tempId: payload.tempId
+            };
+            const createResult = await api.sync.push(sessionId, seq++, 'playlists.create', createPayload);
+            if (createResult.error) {
+                console.error('[Sync] Failed to push create operation:', createResult.error);
+                await api.sync.discard(sessionId);
+                return { success: false, error: createResult.error };
+            }
+            pushed++;
+
+            // Then push addSongsBatch with tempId as playlistId
+            // Server will resolve tempId -> real ID during commit
+            if (payload.songUuids?.length > 0 && payload.tempId) {
+                const addSongsPayload = {
+                    playlistId: payload.tempId,
+                    songUuids: payload.songUuids
+                };
+                const addResult = await api.sync.push(sessionId, seq++, 'playlists.addSongsBatch', addSongsPayload);
+                if (addResult.error) {
+                    console.error('[Sync] Failed to push addSongsBatch operation:', addResult.error);
+                    await api.sync.discard(sessionId);
+                    return { success: false, error: addResult.error };
+                }
+                pushed++;
+            }
+            continue;
+        }
+
+        // Handle regular playlist create - include tempId so server can track ID mapping
+        if (type === 'playlists' && operation === 'create') {
+            transformedPayload = {
+                ...transformedPayload,
+                tempId: payload.tempId
+            };
+        }
+
+        const result = await api.sync.push(sessionId, seq++, opType, transformedPayload);
+        if (result.error) {
+            console.error(`[Sync] Failed to push ${opType}:`, result.error);
+            // Discard the session and abort
+            await api.sync.discard(sessionId);
+            return { success: false, error: result.error };
+        }
+        pushed++;
+    }
+
+    if (pushed === 0) {
+        return { success: true, synced: 0 };
+    }
+
+    // Phase 2: Commit all operations
+    const commitResult = await api.sync.commit(sessionId);
+
+    if (commitResult.error) {
+        console.error('[Sync] Commit failed:', commitResult.error, 'at operation:', commitResult.failed_op);
+        // Keep local writes for retry - don't delete them
+        // Update retry count on all writes
+        for (const write of writes) {
+            await offlineDb.updatePendingWriteRetry(write.id);
+        }
+        await refreshPendingWriteCount();
+
+        // Set sync failure state and show toast
+        setSyncFailed(commitResult.error);
+        showSyncToast('Sync Failed', 'Go to Settings to retry or discard changes.', 'error');
+
+        return { success: false, error: commitResult.error };
+    }
+
+    // Phase 3: Success - clear local pending writes
+    for (const write of writes) {
+        await offlineDb.deletePendingWrite(write.id);
+    }
+
+    await refreshPendingWriteCount();
+    await setLastSyncTime();
+
+    // Clear any previous sync failure state
+    clearSyncFailed();
+
+    // Invalidate playlist cache to force refresh from server
+    notifyPlaylistsChanged();
+
+    return {
+        success: true,
+        synced: commitResult.executed,
+        skipped: commitResult.skipped
+    };
+}
+
 export async function syncPendingWrites() {
-    if (isSyncing) {
-        return { skipped: true };
+    // If a sync is in progress, wait for it and return its result
+    if (syncLockPromise) {
+        return await syncLockPromise;
     }
 
     if (!offlineStore.state.isOnline) {
         return { skipped: true };
     }
 
-    isSyncing = true;
+    // Create lock promise before any async work
+    let releaseLock;
+    syncLockPromise = new Promise(resolve => { releaseLock = resolve; });
     resolvedPendingIds.clear();
 
+    let result;
     try {
-        const writes = await offlineDb.getPendingWrites();
-
-        if (writes.length === 0) {
-            return { success: true, synced: 0 };
-        }
-
-        const sessionId = generateSessionId();
-        let seq = 0;
-        let pushed = 0;
-
-        // Phase 1: Push all operations to server
-        for (const write of writes) {
-            const { type, operation, payload } = write;
-            const opType = toOpType(type, operation);
-            let transformedPayload = transformPayload(type, operation, payload);
-
-            // Special handling for createFromQueue - split into create + addSongsBatch
-            if (type === 'playlists' && operation === 'createFromQueue') {
-                // First push create operation with tempId so server can track ID mapping
-                const createPayload = {
-                    name: payload.name,
-                    description: payload.description || '',
-                    isPublic: payload.isPublic || false,
-                    tempId: payload.tempId
-                };
-                const createResult = await api.sync.push(sessionId, seq++, 'playlists.create', createPayload);
-                if (createResult.error) {
-                    console.error('[Sync] Failed to push create operation:', createResult.error);
-                    await api.sync.discard(sessionId);
-                    return { success: false, error: createResult.error };
-                }
-                pushed++;
-
-                // Then push addSongsBatch with tempId as playlistId
-                // Server will resolve tempId -> real ID during commit
-                if (payload.songUuids?.length > 0 && payload.tempId) {
-                    const addSongsPayload = {
-                        playlistId: payload.tempId,
-                        songUuids: payload.songUuids
-                    };
-                    const addResult = await api.sync.push(sessionId, seq++, 'playlists.addSongsBatch', addSongsPayload);
-                    if (addResult.error) {
-                        console.error('[Sync] Failed to push addSongsBatch operation:', addResult.error);
-                        await api.sync.discard(sessionId);
-                        return { success: false, error: addResult.error };
-                    }
-                    pushed++;
-                }
-                continue;
-            }
-
-            // Handle regular playlist create - include tempId so server can track ID mapping
-            if (type === 'playlists' && operation === 'create') {
-                transformedPayload = {
-                    ...transformedPayload,
-                    tempId: payload.tempId
-                };
-            }
-
-            const result = await api.sync.push(sessionId, seq++, opType, transformedPayload);
-            if (result.error) {
-                console.error(`[Sync] Failed to push ${opType}:`, result.error);
-                // Discard the session and abort
-                await api.sync.discard(sessionId);
-                return { success: false, error: result.error };
-            }
-            pushed++;
-        }
-
-        if (pushed === 0) {
-            return { success: true, synced: 0 };
-        }
-
-        // Phase 2: Commit all operations
-        const commitResult = await api.sync.commit(sessionId);
-
-        if (commitResult.error) {
-            console.error('[Sync] Commit failed:', commitResult.error, 'at operation:', commitResult.failed_op);
-            // Keep local writes for retry - don't delete them
-            // Update retry count on all writes
-            for (const write of writes) {
-                await offlineDb.updatePendingWriteRetry(write.id);
-            }
-            await refreshPendingWriteCount();
-
-            // Set sync failure state and show toast
-            setSyncFailed(commitResult.error);
-            showSyncToast('Sync Failed', 'Go to Settings to retry or discard changes.', 'error');
-
-            return { success: false, error: commitResult.error };
-        }
-
-        // Phase 3: Success - clear local pending writes
-        for (const write of writes) {
-            await offlineDb.deletePendingWrite(write.id);
-        }
-
-        await refreshPendingWriteCount();
-        await setLastSyncTime();
-
-        // Clear any previous sync failure state
-        clearSyncFailed();
-
-        // Invalidate playlist cache to force refresh from server
-        notifyPlaylistsChanged();
-
-        return {
-            success: true,
-            synced: commitResult.executed,
-            skipped: commitResult.skipped
-        };
-
+        result = await _doSyncPendingWrites();
     } catch (error) {
         console.error('[Sync] Unexpected error:', error);
         setSyncFailed(error.message);
         showSyncToast('Sync Failed', 'Go to Settings to retry or discard changes.', 'error');
-        return { success: false, error: error.message };
-
+        result = { success: false, error: error.message };
     } finally {
-        isSyncing = false;
+        releaseLock(result);
+        syncLockPromise = null;
     }
+    return result;
+}
+
+async function _doSyncPendingWritesLegacy() {
+    const writes = await offlineDb.getPendingWrites();
+
+    if (writes.length === 0) {
+        return { success: true, synced: 0 };
+    }
+
+    let synced = 0;
+    let failed = 0;
+
+    for (const write of writes) {
+        const result = await processWrite(write);
+
+        if (result.success) {
+            await offlineDb.deletePendingWrite(write.id);
+            synced++;
+        } else {
+            await offlineDb.updatePendingWriteRetry(write.id);
+            console.warn(`[Sync] Retry ${write.retryCount + 1} for ${write.type}.${write.operation}`);
+            failed++;
+        }
+    }
+
+    await refreshPendingWriteCount();
+
+    if (failed > 0) {
+        setSyncFailed(`${failed} operations failed`);
+        showSyncToast('Sync Incomplete', `${failed} changes failed to sync. Go to Settings to retry.`, 'error');
+    } else {
+        clearSyncFailed();
+        await setLastSyncTime();
+        notifyPlaylistsChanged();
+    }
+
+    return { success: failed === 0, synced, failed };
 }
 
 /**
@@ -487,61 +534,32 @@ export async function syncPendingWrites() {
  * Used as fallback if transactional sync is not available.
  */
 export async function syncPendingWritesLegacy() {
-    if (isSyncing) {
-        return { skipped: true };
+    // If a sync is in progress, wait for it and return its result
+    if (syncLockPromise) {
+        return await syncLockPromise;
     }
 
     if (!offlineStore.state.isOnline) {
         return { skipped: true };
     }
 
-    isSyncing = true;
+    // Create lock promise before any async work
+    let releaseLock;
+    syncLockPromise = new Promise(resolve => { releaseLock = resolve; });
     resolvedPendingIds.clear();
 
+    let result;
     try {
-        const writes = await offlineDb.getPendingWrites();
-
-        if (writes.length === 0) {
-            return { success: true, synced: 0 };
-        }
-
-        let synced = 0;
-        let failed = 0;
-
-        for (const write of writes) {
-            const result = await processWrite(write);
-
-            if (result.success) {
-                await offlineDb.deletePendingWrite(write.id);
-                synced++;
-            } else {
-                await offlineDb.updatePendingWriteRetry(write.id);
-                console.warn(`[Sync] Retry ${write.retryCount + 1} for ${write.type}.${write.operation}`);
-                failed++;
-            }
-        }
-
-        await refreshPendingWriteCount();
-
-        if (failed > 0) {
-            setSyncFailed(`${failed} operations failed`);
-            showSyncToast('Sync Incomplete', `${failed} changes failed to sync. Go to Settings to retry.`, 'error');
-        } else {
-            clearSyncFailed();
-            await setLastSyncTime();
-            notifyPlaylistsChanged();
-        }
-
-        return { success: failed === 0, synced, failed };
-
+        result = await _doSyncPendingWritesLegacy();
     } catch (error) {
         setSyncFailed(error.message);
         showSyncToast('Sync Failed', 'Go to Settings to retry or discard changes.', 'error');
-        return { success: false, error: error.message };
-
+        result = { success: false, error: error.message };
     } finally {
-        isSyncing = false;
+        releaseLock(result);
+        syncLockPromise = null;
     }
+    return result;
 }
 
 /**
@@ -729,7 +747,9 @@ function setupListeners() {
     window.addEventListener('offline-store-online', () => {
         // Small delay to ensure network is stable
         setTimeout(() => {
-            fullSync();
+            fullSync().catch(e => {
+                console.error('[Sync] Auto-sync failed on reconnect:', e);
+            });
         }, 1000);
     });
 }
@@ -750,5 +770,7 @@ export async function discardPendingWrites() {
     return { discarded: writes.length };
 }
 
-// Export for manual triggering
-export { isSyncing };
+// Export function to check if sync is in progress
+export function isSyncing() {
+    return syncLockPromise !== null;
+}

@@ -1232,7 +1232,8 @@ export default defineComponent('browse-page', {
                 }
 
                 if (songs.length === 0) {
-                    alert('No songs to add');
+                    const toast = document.querySelector('cl-toast');
+                    if (toast) toast.show({ severity: 'info', summary: 'Info', detail: 'No songs to add' });
                     return;
                 }
 
@@ -1245,7 +1246,8 @@ export default defineComponent('browse-page', {
                 this.state.addingAllToPlaylist = false;
             } catch (e) {
                 console.error('Failed to add songs to playlist:', e);
-                alert('Failed to add songs to playlist');
+                const toast = document.querySelector('cl-toast');
+                if (toast) toast.show({ severity: 'error', summary: 'Error', detail: 'Failed to add songs to playlist' });
             } finally {
                 this.state.addingToPlaylist = false;
             }
@@ -1367,7 +1369,8 @@ export default defineComponent('browse-page', {
             );
 
             if (notOffline.length === 0) {
-                alert('All selected songs are already downloaded');
+                const toast = document.querySelector('cl-toast');
+                if (toast) toast.show({ severity: 'info', summary: 'Info', detail: 'All selected songs are already downloaded' });
                 return;
             }
 
@@ -1391,7 +1394,8 @@ export default defineComponent('browse-page', {
                 .filter(s => canCacheOffline(s.type));
 
             if (downloadable.length === 0) {
-                alert('No downloadable songs selected (transcode-only formats)');
+                const toast = document.querySelector('cl-toast');
+                if (toast) toast.show({ severity: 'info', summary: 'Info', detail: 'No downloadable songs selected (transcode-only formats)' });
                 return;
             }
 

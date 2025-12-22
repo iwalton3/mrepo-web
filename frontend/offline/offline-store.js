@@ -543,7 +543,8 @@ export async function computeOfflineFilterSets() {
 export async function forceReloadWithUpdate() {
     // Check if we're actually online - can't update while offline
     if (!navigator.onLine) {
-        alert('Cannot update while offline. Please connect to the internet first.');
+        const toast = document.querySelector('cl-toast');
+        if (toast) toast.show({ severity: 'error', summary: 'Offline', detail: 'Cannot update while offline. Please connect to the internet first.' });
         return;
     }
 

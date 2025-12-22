@@ -51,13 +51,16 @@ def browse_genres(category=None, min_songs=None, sort=None):
     conn = get_db()
     cur = conn.cursor()
 
-    having_clause = ""
-    if min_songs is not None and int(min_songs) > 0:
-        having_clause = f"HAVING COUNT(*) >= {int(min_songs)}"
+    # Use parameterized HAVING clause for safety
+    min_songs_val = int(min_songs) if min_songs is not None and int(min_songs) > 0 else None
+    having_clause = "HAVING COUNT(*) >= ?" if min_songs_val else ""
 
     order_clause = "ORDER BY song_count DESC, genre" if sort == 'song_count' else "ORDER BY genre"
 
     if category:
+        params = [category]
+        if min_songs_val:
+            params.append(min_songs_val)
         cur.execute(f"""
             SELECT genre as name, COUNT(*) as song_count
             FROM songs
@@ -65,8 +68,9 @@ def browse_genres(category=None, min_songs=None, sort=None):
             GROUP BY genre
             {having_clause}
             {order_clause}
-        """, (category,))
+        """, params)
     else:
+        params = [min_songs_val] if min_songs_val else []
         cur.execute(f"""
             SELECT genre as name, COUNT(*) as song_count
             FROM songs
@@ -74,7 +78,7 @@ def browse_genres(category=None, min_songs=None, sort=None):
             GROUP BY genre
             {having_clause}
             {order_clause}
-        """)
+        """, params)
 
     rows = cur.fetchall()
     items = rows_to_list(rows)
@@ -128,17 +132,18 @@ def browse_artists(category=None, genre=None, cursor=None, limit=100, min_songs=
 
     where_clause = " AND ".join(conditions)
 
-    having_clause = ""
-    if min_songs is not None and int(min_songs) > 0:
-        having_clause = f"HAVING COUNT(*) >= {int(min_songs)}"
+    # Use parameterized HAVING clause for safety
+    min_songs_val = int(min_songs) if min_songs is not None and int(min_songs) > 0 else None
+    having_clause = "HAVING COUNT(*) >= ?" if min_songs_val else ""
 
     # Get total artist count (with min_songs filter but without cursor)
+    count_params = params + ([min_songs_val] if min_songs_val else [])
     cur.execute(f"""
         SELECT COUNT(*) FROM (
             SELECT artist FROM songs WHERE {where_clause}
             GROUP BY artist {having_clause}
         )
-    """, params)
+    """, count_params)
     total_artist_count = cur.fetchone()[0]
 
     # Get total song count for [All Artists] entry
@@ -168,6 +173,7 @@ def browse_artists(category=None, genre=None, cursor=None, limit=100, min_songs=
 
     order_clause = "ORDER BY song_count DESC, artist" if sort == 'song_count' else "ORDER BY artist"
 
+    main_params = params + ([min_songs_val] if min_songs_val else []) + [limit + 1, offset]
     cur.execute(f"""
         SELECT artist as name, COUNT(*) as song_count
         FROM songs
@@ -177,7 +183,7 @@ def browse_artists(category=None, genre=None, cursor=None, limit=100, min_songs=
         {order_clause}
         LIMIT ?
         OFFSET ?
-    """, params + [limit + 1, offset])
+    """, main_params)
 
     rows = cur.fetchall()
     items = rows_to_list(rows[:limit])
@@ -484,22 +490,24 @@ def browse_album_artists(category=None, genre=None, cursor=None, limit=100, min_
 
     where_clause = " AND ".join(conditions)
 
-    having_clause = ""
-    if min_songs is not None and int(min_songs) > 0:
-        having_clause = f"HAVING COUNT(*) >= {int(min_songs)}"
+    # Use parameterized HAVING clause for safety
+    min_songs_val = int(min_songs) if min_songs is not None and int(min_songs) > 0 else None
+    having_clause = "HAVING COUNT(*) >= ?" if min_songs_val else ""
 
     # Get total count
+    count_params = params + ([min_songs_val] if min_songs_val else [])
     cur.execute(f"""
         SELECT COUNT(*) FROM (
             SELECT album_artist FROM songs WHERE {where_clause}
             GROUP BY album_artist {having_clause}
         )
-    """, params)
+    """, count_params)
     total_count = cur.fetchone()[0]
 
     # Use offset-based pagination
     offset = int(cursor) if cursor else 0
 
+    main_params = params + ([min_songs_val] if min_songs_val else []) + [limit + 1, offset]
     cur.execute(f"""
         SELECT album_artist as name, COUNT(DISTINCT album) as album_count, COUNT(*) as song_count
         FROM songs
@@ -509,7 +517,7 @@ def browse_album_artists(category=None, genre=None, cursor=None, limit=100, min_
         ORDER BY album_artist
         LIMIT ?
         OFFSET ?
-    """, params + [limit + 1, offset])
+    """, main_params)
 
     rows = cur.fetchall()
     items = rows_to_list(rows[:limit])
@@ -719,9 +727,9 @@ def browse_genres_normalized(category=None, cursor=None, limit=100, min_songs=No
     limit = min(int(limit), 200)
     offset = int(cursor) if cursor else 0
 
-    having_clause = ""
-    if min_songs is not None and int(min_songs) > 0:
-        having_clause = f"HAVING COUNT(DISTINCT sg.song_uuid) >= {int(min_songs)}"
+    # Use parameterized HAVING clause for safety
+    min_songs_val = int(min_songs) if min_songs is not None and int(min_songs) > 0 else None
+    having_clause = "HAVING COUNT(DISTINCT sg.song_uuid) >= ?" if min_songs_val else ""
 
     # Build query with optional category filter
     if category:
@@ -734,6 +742,7 @@ def browse_genres_normalized(category=None, cursor=None, limit=100, min_songs=No
         """, (category,))
         total_count = cur.fetchone()[0]
 
+        main_params = [category] + ([min_songs_val] if min_songs_val else []) + [limit + 1, offset]
         cur.execute(f"""
             SELECT g.id as genre_id, g.display_name as name, COUNT(DISTINCT sg.song_uuid) as song_count
             FROM genres g
@@ -745,12 +754,13 @@ def browse_genres_normalized(category=None, cursor=None, limit=100, min_songs=No
             ORDER BY g.display_name
             LIMIT ?
             OFFSET ?
-        """, (category, limit + 1, offset))
+        """, main_params)
     else:
         # Get total count without filter
         cur.execute("SELECT COUNT(*) FROM genres")
         total_count = cur.fetchone()[0]
 
+        main_params = ([min_songs_val] if min_songs_val else []) + [limit + 1, offset]
         cur.execute(f"""
             SELECT g.id as genre_id, g.display_name as name, COUNT(DISTINCT sg.song_uuid) as song_count
             FROM genres g
@@ -760,7 +770,7 @@ def browse_genres_normalized(category=None, cursor=None, limit=100, min_songs=No
             ORDER BY g.display_name
             LIMIT ?
             OFFSET ?
-        """, (limit + 1, offset))
+        """, main_params)
 
     rows = cur.fetchall()
     items = rows_to_list(rows[:limit])

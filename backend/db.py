@@ -214,6 +214,7 @@ def _run_migrations(db):
                 FOREIGN KEY (song_uuid) REFERENCES songs(uuid) ON DELETE CASCADE
             )
         ''')
+        cur.execute('CREATE INDEX idx_user_queue_user ON user_queue(user_id)')
 
     # User playback state table
     if 'user_playback_state' not in existing_tables:
@@ -298,32 +299,6 @@ def _run_migrations(db):
                 PRIMARY KEY (song_uuid, tag_id),
                 FOREIGN KEY (song_uuid) REFERENCES songs(uuid) ON DELETE CASCADE,
                 FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
-            )
-        ''')
-
-    # VFS path mappings table
-    if 'vfs_path_mappings' not in existing_tables:
-        cur.execute('''
-            CREATE TABLE vfs_path_mappings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT,
-                original_prefix TEXT NOT NULL,
-                virtual_prefix TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(user_id, original_prefix)
-            )
-        ''')
-
-    # VFS song paths cache table
-    if 'vfs_song_paths' not in existing_tables:
-        cur.execute('''
-            CREATE TABLE vfs_song_paths (
-                song_uuid TEXT NOT NULL,
-                user_id TEXT NOT NULL,
-                virtual_file TEXT NOT NULL,
-                virtual_dir TEXT NOT NULL,
-                PRIMARY KEY (song_uuid, user_id),
-                FOREIGN KEY (song_uuid) REFERENCES songs(uuid) ON DELETE CASCADE
             )
         ''')
 
@@ -451,9 +426,7 @@ def _run_migrations(db):
     # Add missing indexes if tables exist
     _create_index_if_not_exists(cur, 'idx_playlists_public', 'playlists', 'is_public')
     _create_index_if_not_exists(cur, 'idx_play_history_song', 'play_history', 'song_uuid')
-    _create_index_if_not_exists(cur, 'idx_vfs_paths_dir', 'vfs_song_paths', 'user_id, virtual_dir')
-    _create_index_if_not_exists(cur, 'idx_vfs_paths_file', 'vfs_song_paths', 'user_id, virtual_file')
-    _create_index_if_not_exists(cur, 'idx_vfs_paths_song', 'vfs_song_paths', 'song_uuid')
+    _create_index_if_not_exists(cur, 'idx_user_queue_user', 'user_queue', 'user_id')
 
 
 def _create_index_if_not_exists(cur, index_name, table_name, columns):

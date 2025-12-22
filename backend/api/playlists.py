@@ -76,23 +76,37 @@ def playlists_public(cursor=None, limit=50):
 
 
 @api_method('playlists_create', require='user')
-def playlists_create(name, description='', is_public=False, details=None):
+def playlists_create(name, description='', is_public=False, details=None, _conn=None):
     """Create a new playlist."""
-    conn = get_db()
+    own_conn = _conn is None
+    conn = _conn if _conn else get_db()
     cur = conn.cursor()
     user_id = details['user_id']
 
     if not name or not name.strip():
         raise ValueError('Playlist name is required')
 
-    cur.execute("""
-        INSERT INTO playlists (user_id, name, description, is_public)
-        VALUES (?, ?, ?, ?)
-    """, (user_id, name.strip(), description, 1 if is_public else 0))
+    try:
+        if own_conn:
+            cur.execute("BEGIN IMMEDIATE")
 
-    playlist_id = cur.lastrowid
+        cur.execute("""
+            INSERT INTO playlists (user_id, name, description, is_public)
+            VALUES (?, ?, ?, ?)
+        """, (user_id, name.strip(), description, 1 if is_public else 0))
 
-    return {'id': playlist_id, 'name': name.strip()}
+        playlist_id = cur.lastrowid
+
+        if own_conn:
+            cur.execute("COMMIT")
+        return {'id': playlist_id, 'name': name.strip()}
+    except Exception as e:
+        if own_conn:
+            try:
+                cur.execute("ROLLBACK")
+            except:
+                pass
+        raise
 
 
 @api_method('playlists_update', require='user')
@@ -132,23 +146,41 @@ def playlists_update(playlist_id, name=None, description=None, is_public=None, d
 
 
 @api_method('playlists_delete', require='user')
-def playlists_delete(playlist_id, details=None):
+def playlists_delete(playlist_id, details=None, _conn=None):
     """Delete a playlist."""
-    conn = get_db()
+    own_conn = _conn is None
+    conn = _conn if _conn else get_db()
     cur = conn.cursor()
     user_id = details['user_id']
 
-    # Verify ownership
-    cur.execute("SELECT id FROM playlists WHERE id = ? AND user_id = ?",
-               (playlist_id, user_id))
-    if not cur.fetchone():
-        raise ValueError('Playlist not found or access denied')
+    try:
+        if own_conn:
+            cur.execute("BEGIN IMMEDIATE")
 
-    # Delete songs first (cascade should handle this, but be explicit)
-    cur.execute("DELETE FROM playlist_songs WHERE playlist_id = ?", (playlist_id,))
-    cur.execute("DELETE FROM playlists WHERE id = ?", (playlist_id,))
+        # Verify ownership
+        cur.execute("SELECT id FROM playlists WHERE id = ? AND user_id = ?",
+                   (playlist_id, user_id))
+        if not cur.fetchone():
+            if own_conn:
+                cur.execute("ROLLBACK")
+            raise ValueError('Playlist not found or access denied')
 
-    return {'success': True}
+        # Delete songs first (cascade should handle this, but be explicit)
+        cur.execute("DELETE FROM playlist_songs WHERE playlist_id = ?", (playlist_id,))
+        cur.execute("DELETE FROM playlists WHERE id = ?", (playlist_id,))
+
+        if own_conn:
+            cur.execute("COMMIT")
+        return {'success': True}
+    except ValueError:
+        raise
+    except Exception as e:
+        if own_conn:
+            try:
+                cur.execute("ROLLBACK")
+            except:
+                pass
+        raise
 
 
 @api_method('playlists_get_songs', require='user')
@@ -213,40 +245,60 @@ def playlists_get_songs(playlist_id, cursor=None, offset=None, limit=100, detail
 
 
 @api_method('playlists_add_song', require='user')
-def playlists_add_song(playlist_id, song_uuid, details=None):
+def playlists_add_song(playlist_id, song_uuid, details=None, _conn=None):
     """Add a song to a playlist."""
-    conn = get_db()
+    own_conn = _conn is None
+    conn = _conn if _conn else get_db()
     cur = conn.cursor()
     user_id = details['user_id']
 
-    # Verify ownership
-    cur.execute("SELECT id FROM playlists WHERE id = ? AND user_id = ?",
-               (playlist_id, user_id))
-    if not cur.fetchone():
-        raise ValueError('Playlist not found or access denied')
+    try:
+        # Use BEGIN IMMEDIATE to acquire write lock for atomic position calculation
+        if own_conn:
+            cur.execute("BEGIN IMMEDIATE")
 
-    # Get next position
-    cur.execute("SELECT MAX(position) FROM playlist_songs WHERE playlist_id = ?",
-               (playlist_id,))
-    result = cur.fetchone()
-    next_pos = (result[0] or 0) + 1
+        # Verify ownership
+        cur.execute("SELECT id FROM playlists WHERE id = ? AND user_id = ?",
+                   (playlist_id, user_id))
+        if not cur.fetchone():
+            if own_conn:
+                cur.execute("ROLLBACK")
+            raise ValueError('Playlist not found or access denied')
 
-    cur.execute("""
-        INSERT OR IGNORE INTO playlist_songs (playlist_id, song_uuid, position)
-        VALUES (?, ?, ?)
-    """, (playlist_id, song_uuid, next_pos))
+        # Get next position (now protected by write lock)
+        cur.execute("SELECT MAX(position) FROM playlist_songs WHERE playlist_id = ?",
+                   (playlist_id,))
+        result = cur.fetchone()
+        next_pos = (result[0] or 0) + 1
 
-    # Update playlist timestamp
-    cur.execute("UPDATE playlists SET updated_at = ? WHERE id = ?",
-               (datetime.utcnow(), playlist_id))
+        cur.execute("""
+            INSERT OR IGNORE INTO playlist_songs (playlist_id, song_uuid, position)
+            VALUES (?, ?, ?)
+        """, (playlist_id, song_uuid, next_pos))
 
-    return {'success': True, 'position': next_pos}
+        # Update playlist timestamp
+        cur.execute("UPDATE playlists SET updated_at = ? WHERE id = ?",
+                   (datetime.utcnow(), playlist_id))
+
+        if own_conn:
+            cur.execute("COMMIT")
+        return {'success': True, 'position': next_pos}
+    except ValueError:
+        raise
+    except Exception as e:
+        if own_conn:
+            try:
+                cur.execute("ROLLBACK")
+            except:
+                pass
+        raise
 
 
 @api_method('playlists_add_songs', require='user')
-def playlists_add_songs(playlist_id, song_uuids, details=None):
+def playlists_add_songs(playlist_id, song_uuids, details=None, _conn=None):
     """Add multiple songs to a playlist."""
-    conn = get_db()
+    own_conn = _conn is None
+    conn = _conn if _conn else get_db()
     cur = conn.cursor()
     user_id = details['user_id']
 
@@ -256,72 +308,109 @@ def playlists_add_songs(playlist_id, song_uuids, details=None):
     if not isinstance(song_uuids, list):
         raise ValueError('song_uuids must be a list')
 
-    # Verify ownership
-    cur.execute("SELECT id FROM playlists WHERE id = ? AND user_id = ?",
-               (playlist_id, user_id))
-    if not cur.fetchone():
-        raise ValueError('Playlist not found or access denied')
+    try:
+        # Use BEGIN IMMEDIATE to acquire write lock for atomic position calculation
+        if own_conn:
+            cur.execute("BEGIN IMMEDIATE")
 
-    # Get existing songs to check for duplicates
-    cur.execute("""
-        SELECT song_uuid FROM playlist_songs WHERE playlist_id = ?
-    """, (playlist_id,))
-    existing = {row['song_uuid'] for row in cur.fetchall()}
+        # Verify ownership
+        cur.execute("SELECT id FROM playlists WHERE id = ? AND user_id = ?",
+                   (playlist_id, user_id))
+        if not cur.fetchone():
+            if own_conn:
+                cur.execute("ROLLBACK")
+            raise ValueError('Playlist not found or access denied')
 
-    # Get next position
-    cur.execute("SELECT MAX(position) FROM playlist_songs WHERE playlist_id = ?",
-               (playlist_id,))
-    result = cur.fetchone()
-    next_pos = (result[0] or 0) + 1
-
-    added = 0
-    skipped = 0
-    for uuid in song_uuids:
-        if uuid in existing:
-            skipped += 1
-            continue
+        # Get existing songs to check for duplicates
         cur.execute("""
-            INSERT INTO playlist_songs (playlist_id, song_uuid, position)
-            VALUES (?, ?, ?)
-        """, (playlist_id, uuid, next_pos))
-        existing.add(uuid)
-        added += 1
-        next_pos += 1
+            SELECT song_uuid FROM playlist_songs WHERE playlist_id = ?
+        """, (playlist_id,))
+        existing = {row['song_uuid'] for row in cur.fetchall()}
 
-    # Update playlist timestamp
-    cur.execute("UPDATE playlists SET updated_at = ? WHERE id = ?",
-               (datetime.utcnow(), playlist_id))
+        # Get next position (now protected by write lock)
+        cur.execute("SELECT MAX(position) FROM playlist_songs WHERE playlist_id = ?",
+                   (playlist_id,))
+        result = cur.fetchone()
+        next_pos = (result[0] or 0) + 1
 
-    return {'success': True, 'added': added, 'skipped': skipped}
+        added = 0
+        skipped = 0
+        for uuid in song_uuids:
+            if uuid in existing:
+                skipped += 1
+                continue
+            cur.execute("""
+                INSERT INTO playlist_songs (playlist_id, song_uuid, position)
+                VALUES (?, ?, ?)
+            """, (playlist_id, uuid, next_pos))
+            existing.add(uuid)
+            added += 1
+            next_pos += 1
+
+        # Update playlist timestamp
+        cur.execute("UPDATE playlists SET updated_at = ? WHERE id = ?",
+                   (datetime.utcnow(), playlist_id))
+
+        if own_conn:
+            cur.execute("COMMIT")
+        return {'success': True, 'added': added, 'skipped': skipped}
+    except ValueError:
+        raise
+    except Exception as e:
+        if own_conn:
+            try:
+                cur.execute("ROLLBACK")
+            except:
+                pass
+        raise
 
 
 @api_method('playlists_remove_song', require='user')
-def playlists_remove_song(playlist_id, song_uuid, details=None):
+def playlists_remove_song(playlist_id, song_uuid, details=None, _conn=None):
     """Remove a song from a playlist by UUID."""
-    conn = get_db()
+    own_conn = _conn is None
+    conn = _conn if _conn else get_db()
     cur = conn.cursor()
     user_id = details['user_id']
 
-    # Verify ownership
-    cur.execute("SELECT id FROM playlists WHERE id = ? AND user_id = ?",
-               (playlist_id, user_id))
-    if not cur.fetchone():
-        raise ValueError('Playlist not found or access denied')
+    try:
+        if own_conn:
+            cur.execute("BEGIN IMMEDIATE")
 
-    cur.execute("""
-        DELETE FROM playlist_songs WHERE playlist_id = ? AND song_uuid = ?
-    """, (playlist_id, song_uuid))
+        # Verify ownership
+        cur.execute("SELECT id FROM playlists WHERE id = ? AND user_id = ?",
+                   (playlist_id, user_id))
+        if not cur.fetchone():
+            if own_conn:
+                cur.execute("ROLLBACK")
+            raise ValueError('Playlist not found or access denied')
 
-    cur.execute("UPDATE playlists SET updated_at = ? WHERE id = ?",
-               (datetime.utcnow(), playlist_id))
+        cur.execute("""
+            DELETE FROM playlist_songs WHERE playlist_id = ? AND song_uuid = ?
+        """, (playlist_id, song_uuid))
 
-    return {'success': True}
+        cur.execute("UPDATE playlists SET updated_at = ? WHERE id = ?",
+                   (datetime.utcnow(), playlist_id))
+
+        if own_conn:
+            cur.execute("COMMIT")
+        return {'success': True}
+    except ValueError:
+        raise
+    except Exception as e:
+        if own_conn:
+            try:
+                cur.execute("ROLLBACK")
+            except:
+                pass
+        raise
 
 
 @api_method('playlists_remove_songs', require='user')
-def playlists_remove_songs(playlist_id, song_uuids, details=None):
+def playlists_remove_songs(playlist_id, song_uuids, details=None, _conn=None):
     """Remove multiple songs from a playlist by UUIDs."""
-    conn = get_db()
+    own_conn = _conn is None
+    conn = _conn if _conn else get_db()
     cur = conn.cursor()
     user_id = details['user_id']
 
@@ -331,55 +420,103 @@ def playlists_remove_songs(playlist_id, song_uuids, details=None):
     if not isinstance(song_uuids, list):
         raise ValueError('song_uuids must be a list')
 
-    # Verify ownership
-    cur.execute("SELECT id FROM playlists WHERE id = ? AND user_id = ?",
-               (playlist_id, user_id))
-    if not cur.fetchone():
-        raise ValueError('Playlist not found or access denied')
+    try:
+        if own_conn:
+            cur.execute("BEGIN IMMEDIATE")
 
-    removed = 0
-    for uuid in song_uuids:
-        cur.execute("""
-            DELETE FROM playlist_songs WHERE playlist_id = ? AND song_uuid = ?
-        """, (playlist_id, uuid))
-        removed += cur.rowcount
+        # Verify ownership
+        cur.execute("SELECT id FROM playlists WHERE id = ? AND user_id = ?",
+                   (playlist_id, user_id))
+        if not cur.fetchone():
+            if own_conn:
+                cur.execute("ROLLBACK")
+            raise ValueError('Playlist not found or access denied')
 
-    cur.execute("UPDATE playlists SET updated_at = ? WHERE id = ?",
-               (datetime.utcnow(), playlist_id))
+        removed = 0
+        for uuid in song_uuids:
+            cur.execute("""
+                DELETE FROM playlist_songs WHERE playlist_id = ? AND song_uuid = ?
+            """, (playlist_id, uuid))
+            removed += cur.rowcount
 
-    return {'success': True, 'removed': removed}
+        cur.execute("UPDATE playlists SET updated_at = ? WHERE id = ?",
+                   (datetime.utcnow(), playlist_id))
+
+        if own_conn:
+            cur.execute("COMMIT")
+        return {'success': True, 'removed': removed}
+    except ValueError:
+        raise
+    except Exception as e:
+        if own_conn:
+            try:
+                cur.execute("ROLLBACK")
+            except:
+                pass
+        raise
 
 
 @api_method('playlists_reorder', require='user')
-def playlists_reorder(playlist_id, positions, details=None):
+def playlists_reorder(playlist_id, positions, details=None, _conn=None):
     """Reorder songs in a playlist. positions is a list of {uuid, position} dicts."""
-    conn = get_db()
+    own_conn = _conn is None
+    conn = _conn if _conn else get_db()
     cur = conn.cursor()
     user_id = details['user_id']
 
-    # Verify ownership
-    cur.execute("SELECT id FROM playlists WHERE id = ? AND user_id = ?",
-               (playlist_id, user_id))
-    if not cur.fetchone():
-        raise ValueError('Playlist not found or access denied')
+    try:
+        if own_conn:
+            cur.execute("BEGIN IMMEDIATE")
 
-    if not positions or not isinstance(positions, list):
+        # Verify ownership
+        cur.execute("SELECT id FROM playlists WHERE id = ? AND user_id = ?",
+                   (playlist_id, user_id))
+        if not cur.fetchone():
+            if own_conn:
+                cur.execute("ROLLBACK")
+            raise ValueError('Playlist not found or access denied')
+
+        if not positions or not isinstance(positions, list):
+            if own_conn:
+                cur.execute("ROLLBACK")
+            return {'success': True}
+
+        # Use negative positions temporarily to avoid UNIQUE constraint violations
+        # First pass: set all positions to negative
+        for item in positions:
+            uuid = item.get('uuid')
+            position = item.get('position')
+            if uuid is not None and position is not None:
+                cur.execute("""
+                    UPDATE playlist_songs SET position = ?
+                    WHERE playlist_id = ? AND song_uuid = ?
+                """, (-(position + 1), playlist_id, uuid))
+
+        # Second pass: set to final positive positions
+        for item in positions:
+            uuid = item.get('uuid')
+            position = item.get('position')
+            if uuid is not None and position is not None:
+                cur.execute("""
+                    UPDATE playlist_songs SET position = ?
+                    WHERE playlist_id = ? AND song_uuid = ?
+                """, (position, playlist_id, uuid))
+
+        cur.execute("UPDATE playlists SET updated_at = ? WHERE id = ?",
+                   (datetime.utcnow(), playlist_id))
+
+        if own_conn:
+            cur.execute("COMMIT")
         return {'success': True}
-
-    # Update each song's position
-    for item in positions:
-        uuid = item.get('uuid')
-        position = item.get('position')
-        if uuid is not None and position is not None:
-            cur.execute("""
-                UPDATE playlist_songs SET position = ?
-                WHERE playlist_id = ? AND song_uuid = ?
-            """, (position, playlist_id, uuid))
-
-    cur.execute("UPDATE playlists SET updated_at = ? WHERE id = ?",
-               (datetime.utcnow(), playlist_id))
-
-    return {'success': True}
+    except ValueError:
+        raise
+    except Exception as e:
+        if own_conn:
+            try:
+                cur.execute("ROLLBACK")
+            except:
+                pass
+        raise
 
 
 @api_method('playlists_share', require='user')
@@ -464,51 +601,69 @@ def playlists_clone(playlist_id, new_name=None, details=None):
 
 
 @api_method('playlists_sort', require='user')
-def playlists_sort(playlist_id, sort_by='artist', order='asc', details=None):
+def playlists_sort(playlist_id, sort_by='artist', order='asc', details=None, _conn=None):
     """Sort a playlist by a field."""
-    conn = get_db()
+    own_conn = _conn is None
+    conn = _conn if _conn else get_db()
     cur = conn.cursor()
     user_id = details['user_id']
 
-    # Verify ownership
-    cur.execute("SELECT id FROM playlists WHERE id = ? AND user_id = ?",
-               (playlist_id, user_id))
-    if not cur.fetchone():
-        raise ValueError('Playlist not found or access denied')
+    try:
+        if own_conn:
+            cur.execute("BEGIN IMMEDIATE")
 
-    sort_map = {
-        'title': 's.title',
-        'artist': 's.artist, s.album, s.disc_number, s.track_number',
-        'album': 's.album, s.disc_number, s.track_number',
-        'track': 's.artist, s.album, s.disc_number, s.track_number',
-        'year': 's.year',
-        'duration': 's.duration_seconds',
-        'random': 'RANDOM()',
-    }
-    order_by = sort_map.get(sort_by, 's.artist, s.album, s.disc_number, s.track_number')
-    order_dir = 'DESC' if order.lower() == 'desc' else 'ASC'
+        # Verify ownership
+        cur.execute("SELECT id FROM playlists WHERE id = ? AND user_id = ?",
+                   (playlist_id, user_id))
+        if not cur.fetchone():
+            if own_conn:
+                cur.execute("ROLLBACK")
+            raise ValueError('Playlist not found or access denied')
 
-    # Get sorted songs
-    cur.execute(f"""
-        SELECT ps.song_uuid
-        FROM playlist_songs ps
-        JOIN songs s ON ps.song_uuid = s.uuid
-        WHERE ps.playlist_id = ?
-        ORDER BY {order_by} {order_dir if sort_by != 'random' else ''}
-    """, (playlist_id,))
+        sort_map = {
+            'title': 's.title',
+            'artist': 's.artist, s.album, s.disc_number, s.track_number',
+            'album': 's.album, s.disc_number, s.track_number',
+            'track': 's.artist, s.album, s.disc_number, s.track_number',
+            'year': 's.year',
+            'duration': 's.duration_seconds',
+            'random': 'RANDOM()',
+        }
+        order_by = sort_map.get(sort_by, 's.artist, s.album, s.disc_number, s.track_number')
+        order_dir = 'DESC' if order.lower() == 'desc' else 'ASC'
 
-    songs = [row['song_uuid'] for row in cur.fetchall()]
+        # Get sorted songs
+        cur.execute(f"""
+            SELECT ps.song_uuid
+            FROM playlist_songs ps
+            JOIN songs s ON ps.song_uuid = s.uuid
+            WHERE ps.playlist_id = ?
+            ORDER BY {order_by} {order_dir if sort_by != 'random' else ''}
+        """, (playlist_id,))
 
-    # Update positions
-    cur.execute("DELETE FROM playlist_songs WHERE playlist_id = ?", (playlist_id,))
+        songs = [row['song_uuid'] for row in cur.fetchall()]
 
-    for i, uuid in enumerate(songs):
-        cur.execute("""
-            INSERT INTO playlist_songs (playlist_id, song_uuid, position)
-            VALUES (?, ?, ?)
-        """, (playlist_id, uuid, i))
+        # Update positions
+        cur.execute("DELETE FROM playlist_songs WHERE playlist_id = ?", (playlist_id,))
 
-    cur.execute("UPDATE playlists SET updated_at = ? WHERE id = ?",
-               (datetime.utcnow(), playlist_id))
+        for i, uuid in enumerate(songs):
+            cur.execute("""
+                INSERT INTO playlist_songs (playlist_id, song_uuid, position)
+                VALUES (?, ?, ?)
+            """, (playlist_id, uuid, i))
 
-    return {'success': True, 'songCount': len(songs)}
+        cur.execute("UPDATE playlists SET updated_at = ? WHERE id = ?",
+                   (datetime.utcnow(), playlist_id))
+
+        if own_conn:
+            cur.execute("COMMIT")
+        return {'success': True, 'songCount': len(songs)}
+    except ValueError:
+        raise
+    except Exception as e:
+        if own_conn:
+            try:
+                cur.execute("ROLLBACK")
+            except:
+                pass
+        raise
