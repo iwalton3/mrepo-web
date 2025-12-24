@@ -357,6 +357,17 @@ export default defineComponent('song-info-modal', {
                     copyable: true,
                     mono: true
                 });
+
+                // Permalink for loop mode
+                const baseUrl = window.location.origin + window.location.pathname;
+                const permalink = `${baseUrl}#/loopsong/${song.uuid}/`;
+                fields.push({
+                    key: 'permalink',
+                    label: 'Permalink',
+                    value: permalink,
+                    copyable: true,
+                    mono: true
+                });
             }
 
             return fields;

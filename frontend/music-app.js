@@ -22,6 +22,7 @@ const loadRadio = () => import('./pages/radio-page.js');
 const loadHistory = () => import('./pages/history-page.js');
 const loadSettings = () => import('./pages/settings-page.js');
 const loadEQ = () => import('./pages/eq-page.js');
+const loadLoopSong = () => import('./pages/loopsong-page.js');
 const loadLogin = () => import('./pages/login-page.js');
 const loadAdmin = () => import('./pages/admin-page.js');
 
@@ -224,6 +225,10 @@ export default defineComponent('music-app', {
                     component: 'admin-page',
                     load: loadAdmin
                 },
+                '/loopsong/:uuid/': {
+                    component: 'loopsong-page',
+                    load: loadLoopSong
+                },
 
                 // Backward-compatibility redirects from /music/* to /*
                 '/music/': { redirect: '/' },
@@ -238,7 +243,8 @@ export default defineComponent('music-app', {
                 '/music/share/:token/': { redirect: '/share/$1/' },
                 '/music/history/': { redirect: '/history/' },
                 '/music/settings/': { redirect: '/settings/' },
-                '/music/eq/': { redirect: '/eq/' }
+                '/music/eq/': { redirect: '/eq/' },
+                '/music/loopsong/:uuid/': { redirect: '/loopsong/$1/' }
             });
         },
 

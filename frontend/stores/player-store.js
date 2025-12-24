@@ -1749,6 +1749,39 @@ class AudioController {
     }
 
     /**
+     * Connect an external audio element to the audio pipeline (EQ, etc.)
+     * Used by loopsong page and other standalone players.
+     * @param {HTMLAudioElement} audioElement - Audio element to connect
+     * @returns {Promise<{source: MediaElementAudioSourceNode, disconnect: Function}>}
+     */
+    async connectExternalAudio(audioElement) {
+        // Ensure audio pipeline exists
+        await this._ensureAudioPipeline();
+
+        if (!this._audioContext) {
+            throw new Error('Failed to create audio context');
+        }
+
+        // Create source node for the external audio
+        const source = this._audioContext.createMediaElementSource(audioElement);
+
+        // Connect to EQ chain if available, otherwise to destination
+        if (this._eqFilters && this._eqFilters.length > 0) {
+            source.connect(this._eqFilters[0]);
+        } else {
+            source.connect(this._eqOutputNode || this._audioContext.destination);
+        }
+
+        // Return source and cleanup function
+        return {
+            source,
+            disconnect: () => {
+                try { source.disconnect(); } catch (e) {}
+            }
+        };
+    }
+
+    /**
      * Insert an analyser node into the existing audio chain.
      * Called by visualizer when it needs to add analyser to EQ-initialized chain.
      * Reconnects: chain end → analyser → destination
@@ -5595,6 +5628,7 @@ export const player = {
     setParametricEQ: (bands, autoPreamp) => audioController.setParametricEQ(bands, autoPreamp),
     getEQFilters: () => audioController.getEQFilters(),
     getAudioContext: () => audioController.getAudioContext(),
+    connectExternalAudio: (el) => audioController.connectExternalAudio(el),
     insertAnalyser: (analyser) => audioController.insertAnalyser(analyser),
     removeAnalyser: () => audioController.removeAnalyser(),
     switchLatencyMode: (hint) => audioController.switchLatencyMode(hint),
