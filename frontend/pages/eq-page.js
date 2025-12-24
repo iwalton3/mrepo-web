@@ -36,6 +36,8 @@ export default defineComponent('eq-page', {
             // Crossfeed settings
             crossfeedEnabled: player.state.crossfeedEnabled,
             crossfeedLevel: player.state.crossfeedLevel,
+            crossfeedDelayMs: player.state.crossfeedDelayMs,
+            crossfeedShadowHz: player.state.crossfeedShadowHz,
 
             // Loudness compensation settings
             loudnessEnabled: player.state.loudnessEnabled,
@@ -328,6 +330,56 @@ export default defineComponent('eq-page', {
             player.setCrossfeedLevel(value);
         },
 
+        // Logarithmic conversion: slider 0-100 → delay 0-5ms
+        // Using base=50 gives excellent resolution at low values (0.1-0.5ms range)
+        // slider 30 ≈ 0.2ms, slider 40 ≈ 0.3ms, slider 50 ≈ 0.5ms, slider 70 ≈ 1.2ms
+        sliderToDelay(slider) {
+            if (slider <= 0) return 0;
+            const maxMs = 5;
+            const base = 50;
+            return maxMs * (Math.pow(base, slider / 100) - 1) / (base - 1);
+        },
+
+        delayToSlider(ms) {
+            if (ms <= 0) return 0;
+            const maxMs = 5;
+            const base = 50;
+            return 100 * Math.log(ms * (base - 1) / maxMs + 1) / Math.log(base);
+        },
+
+        handleCrossfeedDelayChange(e) {
+            const ms = this.sliderToDelay(parseInt(e.target.value, 10));
+            this.state.crossfeedDelayMs = ms;
+            player.setCrossfeedDelay(ms);
+        },
+
+        // Shadow filter conversion: slider 0-100 → 0 (off) or 500-3000Hz
+        // Inverted scale: higher slider = lower frequency (more filtering)
+        sliderToShadow(slider) {
+            if (slider <= 0) return 0;
+            // Linear scale from 3000Hz (slider=1) down to 500Hz (slider=100)
+            return Math.round(3000 - (slider / 100) * 2500);
+        },
+
+        shadowToSlider(hz) {
+            if (hz <= 0) return 0;
+            return Math.round((3000 - hz) / 2500 * 100);
+        },
+
+        handleCrossfeedShadowChange(e) {
+            const hz = this.sliderToShadow(parseInt(e.target.value, 10));
+            this.state.crossfeedShadowHz = hz;
+            player.setCrossfeedShadow(hz);
+        },
+
+        handleCrossfeedPreset(preset) {
+            player.setCrossfeedPreset(preset);
+            // Sync local state with store
+            this.state.crossfeedLevel = player.state.crossfeedLevel;
+            this.state.crossfeedDelayMs = player.state.crossfeedDelayMs;
+            this.state.crossfeedShadowHz = player.state.crossfeedShadowHz;
+        },
+
         // Loudness compensation handlers
         handleLoudnessToggle(e) {
             this.state.loudnessEnabled = e.target.checked;
@@ -393,7 +445,7 @@ export default defineComponent('eq-page', {
     },
 
     template() {
-        const { eqEnabled, eqGains, showParametricEQ, undoHistory, redoHistory, crossfeedEnabled, crossfeedLevel, loudnessEnabled, loudnessReferenceSPL, loudnessStrength, noiseEnabled, noiseMode, noiseTilt, noisePower, noiseThreshold, noiseAttack } = this.state;
+        const { eqEnabled, eqGains, showParametricEQ, undoHistory, redoHistory, crossfeedEnabled, crossfeedLevel, crossfeedDelayMs, crossfeedShadowHz, loudnessEnabled, loudnessReferenceSPL, loudnessStrength, noiseEnabled, noiseMode, noiseTilt, noisePower, noiseThreshold, noiseAttack } = this.state;
         const canUndo = undoHistory.length > 0;
         const canRedo = redoHistory.length > 0;
 
@@ -433,6 +485,12 @@ export default defineComponent('eq-page', {
                         </label>
                     </div>
                     ${when(crossfeedEnabled, html`
+                        <div class="crossfeed-presets">
+                            <button class="preset-btn" on-click="${() => this.handleCrossfeedPreset('narrow')}">Narrow</button>
+                            <button class="preset-btn" on-click="${() => this.handleCrossfeedPreset('medium')}">Medium</button>
+                            <button class="preset-btn" on-click="${() => this.handleCrossfeedPreset('wide')}">Wide</button>
+                            <button class="preset-btn" on-click="${() => this.handleCrossfeedPreset('off')}">Off</button>
+                        </div>
                         <div class="stereo-slider-row">
                             <span class="range-label-inline">Mono</span>
                             <input type="range" min="-100" max="100" step="1"
@@ -441,6 +499,22 @@ export default defineComponent('eq-page', {
                                    on-input="handleCrossfeedLevelChange">
                             <span class="range-label-inline">Wide</span>
                             <span class="stereo-value">${crossfeedLevel}</span>
+                        </div>
+                        <div class="stereo-slider-row">
+                            <span class="range-label-inline">Delay</span>
+                            <input type="range" min="0" max="100" step="1"
+                                   class="stereo-slider"
+                                   value="${this.delayToSlider(crossfeedDelayMs)}"
+                                   on-input="handleCrossfeedDelayChange">
+                            <span class="stereo-value">${crossfeedDelayMs < 1 ? crossfeedDelayMs.toFixed(2) : crossfeedDelayMs.toFixed(1)}ms</span>
+                        </div>
+                        <div class="stereo-slider-row">
+                            <span class="range-label-inline">Shadow</span>
+                            <input type="range" min="0" max="100" step="1"
+                                   class="stereo-slider"
+                                   value="${this.shadowToSlider(crossfeedShadowHz)}"
+                                   on-input="handleCrossfeedShadowChange">
+                            <span class="stereo-value">${crossfeedShadowHz === 0 ? 'Off' : crossfeedShadowHz + 'Hz'}</span>
                         </div>
                     `)}
                 </div>
@@ -902,8 +976,36 @@ export default defineComponent('eq-page', {
             font-family: monospace;
             font-size: 0.875rem;
             color: var(--text-secondary, #a0a0a0);
-            min-width: 2.5rem;
+            min-width: 3.5rem;
             text-align: right;
+        }
+
+        .crossfeed-presets {
+            display: flex;
+            gap: 0.5rem;
+            margin: 0.75rem 0;
+            flex-wrap: wrap;
+        }
+
+        .preset-btn {
+            padding: 0.35rem 0.6rem;
+            font-size: 0.75rem;
+            background: var(--surface-200, #2a2a2a);
+            border: 1px solid var(--border-color, #444);
+            border-radius: 4px;
+            color: var(--text-secondary, #a0a0a0);
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        .preset-btn:hover {
+            background: var(--surface-300, #333);
+            color: var(--text-primary, #e0e0e0);
+            border-color: var(--accent-color, #007bff);
+        }
+
+        .preset-btn:active {
+            transform: scale(0.97);
         }
 
         /* Loudness Section */

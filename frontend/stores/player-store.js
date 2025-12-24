@@ -295,6 +295,8 @@ export const playerStore = createStore({
     // Negative values widen stereo by subtracting opposite channel
     crossfeedEnabled: audioFXSettings?.crossfeedEnabled || false,
     crossfeedLevel: audioFXSettings?.crossfeedLevel ?? 0,  // -100 to +100, default 0 (off)
+    crossfeedDelayMs: audioFXSettings?.crossfeedDelayMs ?? 0,  // 0-5ms delay on cross-channels
+    crossfeedShadowHz: audioFXSettings?.crossfeedShadowHz ?? 0,  // 0=off, 500-3000Hz head shadow filter
 
     // Gapless playback
     gaplessEnabled: audioFXSettings?.gaplessEnabled ?? true,  // Default enabled
@@ -2169,6 +2171,8 @@ class AudioController {
         saveAudioFXSettings({
             crossfeedEnabled: this.store.state.crossfeedEnabled,
             crossfeedLevel: this.store.state.crossfeedLevel,
+            crossfeedDelayMs: this.store.state.crossfeedDelayMs,
+            crossfeedShadowHz: this.store.state.crossfeedShadowHz,
             gaplessEnabled: this.store.state.gaplessEnabled,
             crossfadeEnabled: this.store.state.crossfadeEnabled,
             crossfadeDuration: this.store.state.crossfadeDuration,
@@ -2630,7 +2634,21 @@ class AudioController {
         this._crossfeedLR = this._audioContext.createGain();  // L to R
         this._crossfeedRR = this._audioContext.createGain();  // R to R
 
+        // Delay nodes for cross-channel paths (ITD simulation)
+        this._crossfeedDelayLR = this._audioContext.createDelay(0.01);  // max 10ms
+        this._crossfeedDelayRL = this._audioContext.createDelay(0.01);
+
+        // Head shadow filters - low-pass to simulate high-frequency attenuation around head
+        this._crossfeedShadowLR = this._audioContext.createBiquadFilter();
+        this._crossfeedShadowLR.type = 'lowpass';
+        this._crossfeedShadowLR.Q.value = 0.707;  // Butterworth response
+        this._crossfeedShadowRL = this._audioContext.createBiquadFilter();
+        this._crossfeedShadowRL.type = 'lowpass';
+        this._crossfeedShadowRL.Q.value = 0.707;
+
         this._crossfeedInitialized = true;
+        this._updateCrossfeedDelay();
+        this._updateCrossfeedShadow();
         this._updateCrossfeedGains();
     }
 
@@ -2687,7 +2705,7 @@ class AudioController {
             return inputNode;  // Fallback if init failed
         }
 
-        // Internal connections only need to be done once
+        // Static connections only need to be done once
         if (!this._crossfeedInternalConnected) {
             // L channel (index 0) -> LL and LR gains
             this._crossfeedSplitter.connect(this._crossfeedLL, 0);  // L -> L path
@@ -2697,19 +2715,79 @@ class AudioController {
             this._crossfeedSplitter.connect(this._crossfeedRL, 1);  // R -> L path
             this._crossfeedSplitter.connect(this._crossfeedRR, 1);  // R -> R path
 
-            // Merge to output: L_out = LL + RL, R_out = LR + RR
+            // Direct paths (no processing) - these never change
             this._crossfeedLL.connect(this._crossfeedMerger, 0, 0);  // LL -> L output
-            this._crossfeedRL.connect(this._crossfeedMerger, 0, 0);  // RL -> L output
-            this._crossfeedLR.connect(this._crossfeedMerger, 0, 1);  // LR -> R output
             this._crossfeedRR.connect(this._crossfeedMerger, 0, 1);  // RR -> R output
 
             this._crossfeedInternalConnected = true;
         }
 
+        // Connect cross-channel paths (dynamic based on delay/shadow settings)
+        this._reconnectCrossfeedCrossChannels();
+
         // Connect input to splitter (this can change when EQ chain is rebuilt)
         inputNode.connect(this._crossfeedSplitter);
 
         return this._crossfeedMerger;
+    }
+
+    /**
+     * Reconnect cross-channel paths based on current delay/shadow settings.
+     * Bypasses delay nodes when delay=0, bypasses shadow filters when shadow=0.
+     * Chain: gain -> [delay] -> [shadow] -> merger
+     */
+    _reconnectCrossfeedCrossChannels() {
+        if (!this._crossfeedInitialized) return;
+
+        const useDelay = this.store.state.crossfeedDelayMs > 0;
+        const useShadow = this.store.state.crossfeedShadowHz > 0;
+
+        // Disconnect all cross-channel paths first
+        try {
+            this._crossfeedRL.disconnect();
+            this._crossfeedLR.disconnect();
+            this._crossfeedDelayRL.disconnect();
+            this._crossfeedDelayLR.disconnect();
+            this._crossfeedShadowRL.disconnect();
+            this._crossfeedShadowLR.disconnect();
+        } catch (e) {
+            // Nodes may not be connected yet
+        }
+
+        // Reconnect based on current settings
+        // RL path (R -> L output)
+        if (useDelay && useShadow) {
+            // gain -> delay -> shadow -> merger
+            this._crossfeedRL.connect(this._crossfeedDelayRL);
+            this._crossfeedDelayRL.connect(this._crossfeedShadowRL);
+            this._crossfeedShadowRL.connect(this._crossfeedMerger, 0, 0);
+        } else if (useDelay) {
+            // gain -> delay -> merger
+            this._crossfeedRL.connect(this._crossfeedDelayRL);
+            this._crossfeedDelayRL.connect(this._crossfeedMerger, 0, 0);
+        } else if (useShadow) {
+            // gain -> shadow -> merger
+            this._crossfeedRL.connect(this._crossfeedShadowRL);
+            this._crossfeedShadowRL.connect(this._crossfeedMerger, 0, 0);
+        } else {
+            // gain -> merger (bypass all)
+            this._crossfeedRL.connect(this._crossfeedMerger, 0, 0);
+        }
+
+        // LR path (L -> R output)
+        if (useDelay && useShadow) {
+            this._crossfeedLR.connect(this._crossfeedDelayLR);
+            this._crossfeedDelayLR.connect(this._crossfeedShadowLR);
+            this._crossfeedShadowLR.connect(this._crossfeedMerger, 0, 1);
+        } else if (useDelay) {
+            this._crossfeedLR.connect(this._crossfeedDelayLR);
+            this._crossfeedDelayLR.connect(this._crossfeedMerger, 0, 1);
+        } else if (useShadow) {
+            this._crossfeedLR.connect(this._crossfeedShadowLR);
+            this._crossfeedShadowLR.connect(this._crossfeedMerger, 0, 1);
+        } else {
+            this._crossfeedLR.connect(this._crossfeedMerger, 0, 1);
+        }
     }
 
     /**
@@ -2736,6 +2814,94 @@ class AudioController {
     setCrossfeedLevel(level) {
         this.store.state.crossfeedLevel = Math.max(-100, Math.min(100, level));
         this._updateCrossfeedGains();
+        this._saveAudioFXSettings();
+    }
+
+    /**
+     * Update crossfeed delay nodes with current delay setting.
+     */
+    _updateCrossfeedDelay() {
+        if (!this._crossfeedDelayLR || !this._crossfeedDelayRL) return;
+        const delaySec = this.store.state.crossfeedDelayMs / 1000;
+        this._crossfeedDelayLR.delayTime.value = delaySec;
+        this._crossfeedDelayRL.delayTime.value = delaySec;
+    }
+
+    /**
+     * Update crossfeed shadow filter frequency.
+     */
+    _updateCrossfeedShadow() {
+        if (!this._crossfeedShadowLR || !this._crossfeedShadowRL) return;
+        const hz = this.store.state.crossfeedShadowHz;
+        // When enabled, set the cutoff frequency
+        // When disabled (0), we bypass entirely via reconnection
+        if (hz > 0) {
+            this._crossfeedShadowLR.frequency.value = hz;
+            this._crossfeedShadowRL.frequency.value = hz;
+        }
+    }
+
+    /**
+     * Set crossfeed delay in milliseconds (0-5ms).
+     * Simulates inter-aural time difference (ITD) for speaker simulation.
+     */
+    setCrossfeedDelay(ms) {
+        const wasZero = this.store.state.crossfeedDelayMs === 0;
+        const newValue = Math.max(0, Math.min(5, ms));
+        const isZero = newValue === 0;
+        this.store.state.crossfeedDelayMs = newValue;
+        this._updateCrossfeedDelay();
+        // Reconnect if crossing zero boundary (for performance bypass)
+        if (wasZero !== isZero) {
+            this._reconnectCrossfeedCrossChannels();
+        }
+        this._saveAudioFXSettings();
+    }
+
+    /**
+     * Set crossfeed head shadow filter frequency (0=off, 500-3000Hz).
+     * Simulates high-frequency attenuation as sound travels around the head.
+     */
+    setCrossfeedShadow(hz) {
+        const wasZero = this.store.state.crossfeedShadowHz === 0;
+        const newValue = hz <= 0 ? 0 : Math.max(500, Math.min(3000, hz));
+        const isZero = newValue === 0;
+        this.store.state.crossfeedShadowHz = newValue;
+        this._updateCrossfeedShadow();
+        // Reconnect if crossing zero boundary (for performance bypass)
+        if (wasZero !== isZero) {
+            this._reconnectCrossfeedCrossChannels();
+        }
+        this._saveAudioFXSettings();
+    }
+
+    /**
+     * Apply a crossfeed preset with typical speaker simulation values.
+     * Crossfeed mixes opposite channels (L→R, R→L) to simulate speaker listening.
+     * Negative level = more crossfeed (more mid/blended), matching traditional crossfeed.
+     * Presets based on speaker ANGLE, not room size - wider angle = more delay/shadow.
+     * @param {string} preset - 'narrow', 'medium', 'wide', or 'off'
+     */
+    setCrossfeedPreset(preset) {
+        const presets = {
+            off: { level: 0, delay: 0, shadow: 0 },
+            narrow: { level: -25, delay: 0.25, shadow: 2500 },     // ~30° angle
+            medium: { level: -35, delay: 0.4, shadow: 1500 },      // ~60° angle
+            wide: { level: -45, delay: 0.65, shadow: 1000 }        // ~90° angle
+        };
+        const p = presets[preset];
+        if (!p) return;
+
+        // Apply all settings
+        this.store.state.crossfeedLevel = p.level;
+        this.store.state.crossfeedDelayMs = p.delay;
+        this.store.state.crossfeedShadowHz = p.shadow;
+
+        // Update audio nodes
+        this._updateCrossfeedGains();
+        this._updateCrossfeedDelay();
+        this._updateCrossfeedShadow();
+        this._reconnectCrossfeedCrossChannels();
         this._saveAudioFXSettings();
     }
 
@@ -5437,6 +5603,9 @@ export const player = {
     // Audio FX - Crossfeed
     setCrossfeedEnabled: (enabled) => audioController.setCrossfeedEnabled(enabled),
     setCrossfeedLevel: (level) => audioController.setCrossfeedLevel(level),
+    setCrossfeedDelay: (ms) => audioController.setCrossfeedDelay(ms),
+    setCrossfeedShadow: (hz) => audioController.setCrossfeedShadow(hz),
+    setCrossfeedPreset: (preset) => audioController.setCrossfeedPreset(preset),
 
     // Audio FX - Tempo
     setTempoEnabled: (enabled) => audioController.setTempoEnabled(enabled),

@@ -1,110 +1,93 @@
 /**
  * Comfort Noise AudioWorklet Processor
- *
- * Analyzes input audio RMS and generates white noise when audio is quiet.
- * Runs entirely on the audio thread, so it works when the page is backgrounded.
- *
- * Input: Music audio (for RMS analysis)
- * Output: White noise at appropriate level (filtered externally for coloring)
+ * Minimal implementation to avoid deadline misses on mobile.
  */
 class NoiseProcessor extends AudioWorkletProcessor {
     constructor() {
         super();
-
-        // Settings (updated via port messages)
         this.enabled = true;
         this.isPlaying = false;
-        this.thresholdLinear = 0.015;  // ~-36dB default
-        this.powerLinear = 0.063;       // ~-24dB default
-        this.attackMs = 25;             // 25ms = instant, up to 2000ms (log scale)
+        this.thresholdLinear = 0.015;
+        this.powerLinear = 0.063;
+        this.attackMs = 25;
+        this.level = 0;
+        this.rng = (Math.random() * 0xFFFFFFFF) >>> 0;
 
-        // Smoothing state
-        this.currentNoiseLevel = 0;
+        // Pre-compute smoothing coefficient (updated when attackMs changes)
+        // Assumes 128 sample blocks at 48kHz
+        this._updateSmoothing();
 
-        // Listen for settings updates from main thread
         this.port.onmessage = (e) => {
-            const data = e.data;
-            if (data.threshold !== undefined) {
-                // Convert dB to linear amplitude
-                this.thresholdLinear = Math.pow(10, data.threshold / 20);
+            const d = e.data;
+            if (d.threshold !== undefined) this.thresholdLinear = Math.pow(10, d.threshold / 20);
+            if (d.power !== undefined) this.powerLinear = Math.pow(10, d.power / 20);
+            if (d.attack !== undefined) {
+                this.attackMs = d.attack;
+                this._updateSmoothing();
             }
-            if (data.power !== undefined) {
-                // Convert dB to linear amplitude
-                this.powerLinear = Math.pow(10, data.power / 20);
-            }
-            if (data.attack !== undefined) {
-                this.attackMs = data.attack;
-            }
-            if (data.enabled !== undefined) {
-                this.enabled = data.enabled;
-            }
-            if (data.isPlaying !== undefined) {
-                this.isPlaying = data.isPlaying;
-            }
+            if (d.enabled !== undefined) this.enabled = d.enabled;
+            if (d.isPlaying !== undefined) this.isPlaying = d.isPlaying;
         };
+    }
+
+    _updateSmoothing() {
+        // blockTime = 128 / 48000 ≈ 0.00267s
+        const blockTime = 128 / 48000;
+        this.smooth = 1 - Math.exp(-blockTime / (this.attackMs * 0.001));
     }
 
     process(inputs, outputs) {
         const input = inputs[0];
         const output = outputs[0];
+        if (!output.length) return true;
 
-        // If disabled or not playing, output silence
-        if (!this.enabled || !this.isPlaying) {
-            // Fade out smoothly
-            for (let channel = 0; channel < output.length; channel++) {
-                const outputChannel = output[channel];
-                for (let i = 0; i < outputChannel.length; i++) {
-                    this.currentNoiseLevel *= 0.999;  // Quick fade
-                    outputChannel[i] = (Math.random() * 2 - 1) * this.currentNoiseLevel;
-                }
+        const out0 = output[0];
+        const out1 = output[1] || out0;
+        const blockSize = out0.length;
+
+        // RMS from first input channel only, strided
+        let rms = 0;
+        if (input && input[0]) {
+            const samples = input[0];
+            let sum = 0;
+            for (let i = 0; i < samples.length; i += 8) {
+                sum += samples[i] * samples[i];
             }
-            return true;
+            rms = Math.sqrt(sum / (samples.length >> 3));
         }
 
-        // Calculate RMS from input (music)
-        let sum = 0;
-        let sampleCount = 0;
-        if (input.length > 0) {
-            for (let channel = 0; channel < input.length; channel++) {
-                const samples = input[channel];
-                if (samples) {
-                    for (let i = 0; i < samples.length; i++) {
-                        sum += samples[i] * samples[i];
-                        sampleCount++;
-                    }
-                }
-            }
+        // Target level
+        let target = 0;
+        if (this.enabled && this.isPlaying && rms < this.thresholdLinear) {
+            target = this.powerLinear;
         }
 
-        const rms = sampleCount > 0 ? Math.sqrt(sum / sampleCount) : 0;
+        // Smoothing with pre-computed coefficient
+        const prevLevel = this.level;
+        let newLevel = prevLevel + (target - prevLevel) * this.smooth;
 
-        // Determine target noise level based on RMS vs threshold
-        let targetNoiseLevel = 0;
-        if (this.thresholdLinear >= 1.0) {
-            // Threshold at 0dB = always on
-            targetNoiseLevel = this.powerLinear;
-        } else if (rms < this.thresholdLinear) {
-            // Below threshold - fade in noise proportionally
-            // Use 6dB fade range (half the threshold in linear terms)
-            const fadeRange = this.thresholdLinear * 0.5;
-            const fadeAmount = Math.min(1, (this.thresholdLinear - rms) / fadeRange);
-            targetNoiseLevel = fadeAmount * this.powerLinear;
+        // Floor at -120dB instead of true zero to keep downstream filters stable
+        // (prevents transients from BiquadFilter state clearing)
+        if (newLevel < 0.000001) {
+            newLevel = 0.000001;
+        }
+        this.level = newLevel;
+
+        // Noise generation with per-sample gain ramp
+        const delta = (newLevel - prevLevel) / blockSize;
+        let lvl = prevLevel;
+        let rng = this.rng;
+
+        for (let i = 0; i < blockSize; i++) {
+            rng = (rng * 1664525 + 1013904223) | 0;
+            // Signed int / 2^31 gives -1 to +0.9999... (symmetric around 0)
+            const noise = rng / 2147483648;
+            out0[i] = noise * lvl;
+            out1[i] = noise * lvl;
+            lvl += delta;
         }
 
-        // Smooth transition based on attack time
-        // Block time = 128 samples / 48000 Hz ≈ 0.00267 seconds
-        const blockTime = 128 / sampleRate;
-        const smoothing = 1 - Math.exp(-blockTime / (this.attackMs / 1000));
-        this.currentNoiseLevel += (targetNoiseLevel - this.currentNoiseLevel) * smoothing;
-
-        // Generate white noise at calculated level
-        for (let channel = 0; channel < output.length; channel++) {
-            const outputChannel = output[channel];
-            for (let i = 0; i < outputChannel.length; i++) {
-                outputChannel[i] = (Math.random() * 2 - 1) * this.currentNoiseLevel;
-            }
-        }
-
+        this.rng = rng >>> 0;
         return true;
     }
 }
