@@ -239,6 +239,21 @@ See `backend/api/` for available methods.
 
 See [CLAUDE.md](CLAUDE.md) for development documentation.
 
+## Quality Assurance
+
+This is a side project primarily written using Claude, based on a custom web framework. I use a codebase similar to this one for my personal music system, so it gets a decent amount of manual QA testing. I've code reviewed the important bits such as authentication, so as long as no one cracks your password the attack surface is low.
+
 ## License
 
-AGPLv3 (Butterchurn, web framework, and bundled Preact are MIT licensed)
+Main Project: AGPLv3
+
+(If you host the project, you have to let your users access the code and any modifications you make if they ask for it. Most companies are allergic to this license, for good reason.)
+
+Dependencies (all bundled in minified form in this repo) are all MIT licensed:
+
+- [Butterchurn](https://github.com/jberg/butterchurn)
+- [Butterchurn Presets](https://github.com/jberg/butterchurn-presets)
+- [VDX web framework](https://github.com/iwalton3/vdx-web)
+- [Preact](https://github.com/iwalton3/vdx-web/tree/main/app/lib/vendor/preact)
+
+Butterchurn was built using the default configuration in docker and committed into the repo for your convenience and to avoid build issues in the future.
