@@ -118,36 +118,15 @@ Capabilities: `'user'`, `'admin'`, `None` (public)
 
 ## Frontend Framework (VDX)
 
-VDX is a zero-dependency reactive framework. Key patterns:
+VDX is a zero-dependency reactive framework. For complete patterns, see **[frontend/lib/FRAMEWORK.md](frontend/lib/FRAMEWORK.md)**.
 
-```javascript
-import { defineComponent, html, when, each } from './lib/framework.js';
-
-defineComponent('my-component', {
-    props: { title: '' },
-    data() { return { items: [] }; },
-
-    methods: {
-        handleClick() {
-            this.state.items.push('new');
-        }
-    },
-
-    template() {
-        return html`
-            <h1>${this.props.title}</h1>
-            ${each(this.state.items, item => html`<li>${item}</li>`)}
-            <button on-click="handleClick">Add</button>
-        `;
-    }
-});
-```
-
-**Key Rules:**
+**Critical rules:**
 - Use `on-*` for events (not onclick)
 - Use `x-model` for two-way binding
 - Never mutate reactive arrays with `.sort()` - use `[...arr].sort()`
 - Use `when()` for conditionals, `each()` for lists
+- Use `memoEach()` for large lists (queue, history)
+- Use `untracked()` for large arrays to avoid performance issues
 
 ## Database
 
