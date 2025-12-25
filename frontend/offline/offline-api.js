@@ -22,6 +22,79 @@ import { playerStore } from '../stores/player-store.js';
 
 const FAVORITES_PLAYLIST_NAME = 'Favorites';
 
+// =============================================================================
+// Device ID and Sequence Tracking
+// =============================================================================
+
+const DEVICE_ID_KEY = 'music-device-id';
+const QUEUE_SEQ_KEY = 'music-queue-seq';
+
+/**
+ * Generate a UUID v4. Works in both secure (HTTPS) and insecure (HTTP) contexts.
+ */
+function generateUUID() {
+    // Try crypto.randomUUID() first (requires secure context)
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        try {
+            return crypto.randomUUID();
+        } catch (e) {
+            // Fall through to fallback
+        }
+    }
+    // Try crypto.getRandomValues() (also may require secure context)
+    if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+        try {
+            const bytes = new Uint8Array(16);
+            crypto.getRandomValues(bytes);
+            bytes[6] = (bytes[6] & 0x0f) | 0x40;
+            bytes[8] = (bytes[8] & 0x3f) | 0x80;
+            const hex = [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
+            return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+        } catch (e) {
+            // Fall through to Math.random fallback
+        }
+    }
+    // Final fallback using Math.random() - works everywhere
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0;
+        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+    });
+}
+
+/**
+ * Get or generate a unique device ID for this browser/device.
+ * Stored in localStorage so it persists across sessions.
+ */
+function getDeviceId() {
+    let id = localStorage.getItem(DEVICE_ID_KEY);
+    if (!id) {
+        id = generateUUID();
+        localStorage.setItem(DEVICE_ID_KEY, id);
+    }
+    return id;
+}
+
+/**
+ * Get the next sequence number for queue index updates.
+ * Monotonically increasing per device - used to order updates.
+ */
+function getNextQueueSeq() {
+    let seq = parseInt(localStorage.getItem(QUEUE_SEQ_KEY) || '0', 10);
+    seq++;
+    localStorage.setItem(QUEUE_SEQ_KEY, seq.toString());
+    return seq;
+}
+
+/**
+ * Get current sequence number without incrementing.
+ */
+function getCurrentQueueSeq() {
+    return parseInt(localStorage.getItem(QUEUE_SEQ_KEY) || '0', 10);
+}
+
+// Export for use in player-store.js
+export { getDeviceId, getCurrentQueueSeq };
+
 /**
  * Queue a write operation for later sync
  */
@@ -113,12 +186,14 @@ export const queue = {
                 return {
                     items: cached.items,
                     queueIndex: cached.queueIndex,
+                    activeDeviceId: cached.activeDeviceId || null,
+                    activeDeviceSeq: cached.activeDeviceSeq || 0,
                     scaEnabled: cached.scaEnabled,
                     playMode: cached.playMode
                 };
             }
             // No cache available
-            return { items: [], queueIndex: 0, scaEnabled: false, playMode: 'sequential' };
+            return { items: [], queueIndex: 0, activeDeviceId: null, activeDeviceSeq: 0, scaEnabled: false, playMode: 'sequential' };
         }
 
         // Online - fetch from server and cache
@@ -127,6 +202,9 @@ export const queue = {
             await offlineDb.saveQueueCache({
                 items: result.items || result,
                 queueIndex: result.queueIndex || 0,
+                // Store server's device info for conflict resolution
+                activeDeviceId: result.activeDeviceId || null,
+                activeDeviceSeq: result.activeDeviceSeq || 0,
                 scaEnabled: result.scaEnabled || false,
                 playMode: result.playMode || 'sequential',
                 lastSyncedAt: Date.now()
@@ -255,31 +333,42 @@ export const queue = {
 
     /**
      * Set queue index
+     * Uses device ID and sequence number to order updates across devices.
      */
     async setIndex(index) {
+        // Get device ID and next sequence number for this update
+        const deviceId = getDeviceId();
+        const seq = getNextQueueSeq();
+
         const offlineHandler = async () => {
             const cached = await offlineDb.getQueueCache();
             if (cached) {
                 cached.queueIndex = index;
+                cached.activeDeviceId = deviceId;
+                cached.activeDeviceSeq = seq;
                 await offlineDb.saveQueueCache(cached);
             }
             // Skip queueWrite in temp queue mode
             if (!playerStore.state.tempQueueMode) {
-                await queueWrite('queue', 'setIndex', { index });
+                // Include device_id and seq so sync can pass them to server
+                await queueWrite('queue', 'setIndex', { index, deviceId, seq });
             }
             return { success: true, queued: !playerStore.state.tempQueueMode };
         };
 
         return withOfflineFallback(
             async () => {
-                const result = await api.queue.setIndex(index);
-                // Also update local cache to keep it in sync
+                // Save to local cache FIRST - if app is suspended mid-request,
+                // we still have the seq for comparison on resume
                 const cached = await offlineDb.getQueueCache();
                 if (cached) {
                     cached.queueIndex = index;
+                    cached.activeDeviceId = deviceId;
+                    cached.activeDeviceSeq = seq;
                     await offlineDb.saveQueueCache(cached);
                 }
-                return result;
+                // Then send to server
+                return await api.queue.setIndex(index, deviceId, seq);
             },
             offlineHandler
         );

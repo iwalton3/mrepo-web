@@ -779,6 +779,11 @@ export async function searchOfflineSongs(query) {
 
 /**
  * Save queue state
+ * @param {Object} queueData - Queue data to save
+ * @param {Array} queueData.items - Queue items
+ * @param {number} queueData.queueIndex - Current position
+ * @param {string} [queueData.activeDeviceId] - Device that last changed the position
+ * @param {number} [queueData.activeDeviceSeq] - Sequence number for conflict resolution
  */
 export async function saveQueueCache(queueData) {
     const db = await getDb();
@@ -787,19 +792,33 @@ export async function saveQueueCache(queueData) {
         const tx = db.transaction(STORES.QUEUE_CACHE, 'readwrite');
         const store = tx.objectStore(STORES.QUEUE_CACHE);
 
-        const record = {
-            id: 'current',
-            items: queueData.items || [],
-            queueIndex: queueData.queueIndex || 0,
-            scaEnabled: queueData.scaEnabled || false,
-            playMode: queueData.playMode || 'sequential',
-            lastSyncedAt: queueData.lastSyncedAt || Date.now(),
-            localTimestamp: Date.now()
-        };
+        // Get existing record to preserve activeDevice fields if not explicitly provided
+        const existingRequest = store.get('current');
+        existingRequest.onsuccess = () => {
+            const existing = existingRequest.result || {};
 
-        const request = store.put(record);
-        request.onsuccess = () => resolve();
-        request.onerror = () => reject(request.error);
+            const record = {
+                id: 'current',
+                items: queueData.items || [],
+                queueIndex: queueData.queueIndex || 0,
+                // Preserve existing device info unless explicitly provided
+                activeDeviceId: queueData.activeDeviceId !== undefined
+                    ? queueData.activeDeviceId
+                    : existing.activeDeviceId || null,
+                activeDeviceSeq: queueData.activeDeviceSeq !== undefined
+                    ? queueData.activeDeviceSeq
+                    : existing.activeDeviceSeq || 0,
+                scaEnabled: queueData.scaEnabled || false,
+                playMode: queueData.playMode || 'sequential',
+                lastSyncedAt: queueData.lastSyncedAt || Date.now(),
+                localTimestamp: Date.now()
+            };
+
+            const putRequest = store.put(record);
+            putRequest.onsuccess = () => resolve();
+            putRequest.onerror = () => reject(putRequest.error);
+        };
+        existingRequest.onerror = () => reject(existingRequest.error);
     });
 }
 

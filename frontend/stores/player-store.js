@@ -10,7 +10,7 @@
  */
 
 import { createStore, untracked } from '../lib/framework.js';
-import { getStreamUrl, history, queue as queueApi, playback, sca, radio, preferences, songs as songsApi, playlists as playlistsApi } from '../offline/offline-api.js';
+import { getStreamUrl, history, queue as queueApi, playback, sca, radio, preferences, songs as songsApi, playlists as playlistsApi, getDeviceId, getCurrentQueueSeq } from '../offline/offline-api.js';
 import { getAudioUrl } from '../offline/offline-audio.js';
 import offlineStore from '../offline/offline-store.js';
 import * as offlineDb from '../offline/offline-db.js';
@@ -84,6 +84,8 @@ function saveAudioFXSettings(settings) {
 
 /**
  * Load shuffle history from localStorage.
+ * History stores {uuid, index} objects to handle duplicate songs correctly.
+ * Falls back gracefully from old UUID-only format.
  */
 function loadShuffleHistory() {
     try {
@@ -91,7 +93,14 @@ function loadShuffleHistory() {
         if (saved) {
             const history = JSON.parse(saved);
             if (Array.isArray(history)) {
-                return history;
+                // Migrate old UUID-only format to new {uuid, index} format
+                return history.map(entry => {
+                    if (typeof entry === 'string') {
+                        // Old format: just UUID, use -1 as unknown index
+                        return { uuid: entry, index: -1 };
+                    }
+                    return entry;
+                });
             }
         }
     } catch (e) {
@@ -685,6 +694,10 @@ class AudioController {
         }
 
         try {
+            // Get our device ID and local sequence BEFORE calling list()
+            const myDeviceId = getDeviceId();
+            const myLocalSeq = getCurrentQueueSeq();
+
             const result = await queueApi.list({ limit: 10000 });
             if (result.error) return;
 
@@ -696,12 +709,23 @@ class AudioController {
             this.store.state.scaEnabled = result.scaEnabled || false;
             this.store.state.queueVersion++;
 
-            // Update queueIndex: if playing, preserve current song's position in queue
-            // (prevents crossfade race condition where server returns stale index)
-            if (wasPlaying && currentUuid) {
-                const oldQueueIndex = this.store.state.queueIndex;
-                const queue = this.store.state.queue;
+            const oldQueueIndex = this.store.state.queueIndex;
+            const queue = this.store.state.queue;
 
+            // Device-based conflict resolution:
+            // - If we're the active device and our local seq is higher: preserve local (pending changes)
+            // - If we're the active device and seq matches: use server (synced)
+            // - If different device is active: accept server (another device was used)
+            const serverDeviceId = result.activeDeviceId;
+            const serverSeq = result.activeDeviceSeq || 0;
+            const isMyDevice = serverDeviceId === myDeviceId;
+            const havePendingChanges = isMyDevice && myLocalSeq > serverSeq;
+
+            // Preserve local position if: we have a current song AND
+            // (we're playing OR we have pending changes on this device)
+            const shouldPreserveLocal = currentUuid && (wasPlaying || havePendingChanges);
+
+            if (shouldPreserveLocal) {
                 // First check if song at current position still matches - handles duplicates correctly
                 if (queue[oldQueueIndex]?.uuid === currentUuid) {
                     // Position still valid, keep it
@@ -724,16 +748,20 @@ class AudioController {
                     if (nearestIndex >= 0) {
                         this.store.state.queueIndex = nearestIndex;
                     } else {
-                        // Current song no longer in queue - queues are desynced
-                        // Use server's index (server is authoritative after sync)
-                        // Note: offline queue sync is handled by syncQueueState() which
-                        // compares timestamps and pushes local if newer
+                        // Current song no longer in queue - use server's index
                         this.store.state.queueIndex = result.queueIndex || 0;
                         this.store.state.currentSong = queue[this.store.state.queueIndex] || null;
                     }
                 }
+
+                // If we have pending changes and position differs, sync to server
+                if (havePendingChanges && oldQueueIndex !== result.queueIndex) {
+                    queueApi.setIndex(this.store.state.queueIndex).catch(e =>
+                        console.error('Failed to sync queue index after focus:', e)
+                    );
+                }
             } else {
-                // Not playing - use server's index
+                // Server is authoritative - use server's index
                 this.store.state.queueIndex = result.queueIndex || 0;
             }
 
@@ -3621,9 +3649,10 @@ class AudioController {
             ).catch(e => console.error('Failed to record history:', e));
         }
 
-        // In shuffle mode, save current song UUID to shuffle history for back button
+        // In shuffle mode, save current song to history for back button
+        // Store both UUID and index to handle duplicate songs correctly
         if (shuffle && currentSong?.uuid) {
-            this._shuffleHistory.push(currentSong.uuid);
+            this._shuffleHistory.push({ uuid: currentSong.uuid, index: queueIndex });
             if (this._shuffleHistory.length > this._shuffleHistoryMaxSize) {
                 this._shuffleHistory.shift();
             }
@@ -4153,10 +4182,11 @@ class AudioController {
 
         const { queue, queueIndex, repeatMode, scaEnabled, shuffle } = this.store.state;
 
-        // In shuffle mode, save current song UUID to history for back button
+        // In shuffle mode, save current song to history for back button
+        // Store both UUID and index to handle duplicate songs correctly
         const currentSong = queue[queueIndex];
         if (shuffle && currentSong?.uuid) {
-            this._shuffleHistory.push(currentSong.uuid);
+            this._shuffleHistory.push({ uuid: currentSong.uuid, index: queueIndex });
             // Trim history if it exceeds max size
             if (this._shuffleHistory.length > this._shuffleHistoryMaxSize) {
                 this._shuffleHistory.shift();
@@ -4269,12 +4299,20 @@ class AudioController {
 
         let prevIndex = -1;
 
-        // In shuffle mode, use history if available (stores UUIDs)
+        // In shuffle mode, use history if available (stores {uuid, index} objects)
         if (shuffle && this._shuffleHistory.length > 0) {
-            // Pop UUIDs until we find one still in the queue, or exhaust history
+            // Pop entries until we find one still in the queue, or exhaust history
             while (this._shuffleHistory.length > 0 && prevIndex === -1) {
-                const uuid = this._shuffleHistory.pop();
-                prevIndex = queue.findIndex(song => song.uuid === uuid);
+                const entry = this._shuffleHistory.pop();
+                const { uuid, index } = entry;
+
+                // First, check if the stored index still has the same song (handles duplicates)
+                if (index >= 0 && index < queue.length && queue[index]?.uuid === uuid) {
+                    prevIndex = index;
+                } else {
+                    // Queue changed - fall back to finding by UUID (first match)
+                    prevIndex = queue.findIndex(song => song.uuid === uuid);
+                }
             }
             // Save updated history (we may have popped multiple items)
             saveShuffleHistory(this._shuffleHistory);
@@ -4694,28 +4732,43 @@ class AudioController {
      */
     async refreshQueue() {
         try {
+            // Get our device ID and local sequence BEFORE calling list()
+            const myDeviceId = getDeviceId();
+            const myLocalSeq = getCurrentQueueSeq();
+
             const result = await queueApi.list({ limit: 10000 });
             if (!result.error) {
                 const currentUuid = this.store.state.currentSong?.uuid;
+                const oldQueueIndex = this.store.state.queueIndex;
                 const serverIndex = result.queueIndex || 0;
 
                 this.store.state.queue = result.items || [];
                 this.store.state.queueVersion++;  // Trigger re-render
 
-                // Validate server's index against current song UUID
-                if (currentUuid) {
-                    if (this.store.state.queue[serverIndex]?.uuid === currentUuid) {
-                        // Server index is valid - use it
-                        this.store.state.queueIndex = serverIndex;
+                // Device-based conflict resolution
+                const serverDeviceId = result.activeDeviceId;
+                const serverSeq = result.activeDeviceSeq || 0;
+                const isMyDevice = serverDeviceId === myDeviceId;
+                const havePendingChanges = isMyDevice && myLocalSeq > serverSeq;
+
+                // Preserve local position if we have a current song and have pending changes
+                const shouldPreserveLocal = currentUuid && havePendingChanges;
+
+                if (shouldPreserveLocal || currentUuid) {
+                    const queue = this.store.state.queue;
+                    const checkIndex = shouldPreserveLocal ? oldQueueIndex : serverIndex;
+
+                    if (queue[checkIndex]?.uuid === currentUuid) {
+                        // Position is valid - use it
+                        this.store.state.queueIndex = checkIndex;
                     } else {
-                        // Server index doesn't match our song - find nearest occurrence
-                        const queue = this.store.state.queue;
+                        // Find nearest occurrence of current song
                         let nearestIndex = -1;
                         let nearestDistance = Infinity;
 
                         for (let i = 0; i < queue.length; i++) {
                             if (queue[i].uuid === currentUuid) {
-                                const distance = Math.abs(i - serverIndex);
+                                const distance = Math.abs(i - checkIndex);
                                 if (distance < nearestDistance) {
                                     nearestDistance = distance;
                                     nearestIndex = i;
@@ -4727,10 +4780,16 @@ class AudioController {
                             this.store.state.queueIndex = nearestIndex;
                         } else {
                             // Song not in queue - use server's index
-                            // (syncQueueState handles offline/online sync conflicts)
                             this.store.state.queueIndex = serverIndex;
-                            this.store.state.currentSong = this.store.state.queue[serverIndex] || null;
+                            this.store.state.currentSong = queue[serverIndex] || null;
                         }
+                    }
+
+                    // If we have pending changes and position differs, sync to server
+                    if (havePendingChanges && this.store.state.queueIndex !== serverIndex) {
+                        queueApi.setIndex(this.store.state.queueIndex).catch(e =>
+                            console.error('Failed to sync queue index after refresh:', e)
+                        );
                     }
                 } else {
                     this.store.state.queueIndex = serverIndex;

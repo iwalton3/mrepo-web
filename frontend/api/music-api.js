@@ -503,9 +503,19 @@ export const queue = {
 
     /**
      * Set the current playback position.
+     * @param {number} index - Position in queue
+     * @param {string} [deviceId] - Device ID for conflict resolution
+     * @param {number} [seq] - Sequence number for ordering updates
      */
-    async setIndex(index) {
-        return apiCall('queue_set_index', { index });
+    async setIndex(index, deviceId = null, seq = null) {
+        const params = { index };
+        if (deviceId !== null) {
+            params.device_id = deviceId;
+        }
+        if (seq !== null) {
+            params.seq = seq;
+        }
+        return apiCall('queue_set_index', params);
     },
 
     /**

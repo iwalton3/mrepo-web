@@ -112,7 +112,8 @@ async function processQueueWrite(operation, payload) {
             await api.queue.clear();
             break;
         case 'setIndex':
-            await api.queue.setIndex(payload.index);
+            // Pass device ID and sequence for conflict resolution
+            await api.queue.setIndex(payload.index, payload.deviceId || null, payload.seq || null);
             break;
         case 'reorder':
             await api.queue.reorder(payload.fromPos, payload.toPos);
@@ -587,6 +588,9 @@ async function fetchQueueInBatches(batchSize = 1000) {
     return {
         items: allItems,
         queueIndex: queueState?.queueIndex || 0,
+        activeDeviceId: queueState?.activeDeviceId || null,
+        activeDeviceSeq: queueState?.activeDeviceSeq || 0,
+        queueIndexUpdatedAt: queueState?.queueIndexUpdatedAt || 0,
         scaEnabled: queueState?.scaEnabled || false,
         playMode: queueState?.playMode || 'sequential',
         lastModified: queueState?.lastModified || 0
@@ -632,63 +636,27 @@ export async function syncQueueState() {
     if (!offlineStore.state.isOnline) return;
 
     try {
-        const cached = await offlineDb.getQueueCache();
-        if (!cached) return;
+        // After batch sync, server has authoritative state - just fetch it
+        // All local changes were already synced via syncPendingWrites()
+        const fullServerState = await fetchQueueInBatches();
 
-        // Get server state (first batch to check timestamp)
-        const serverState = await api.queue.list({ limit: 100 });
-        const serverTimestamp = serverState.lastModified || 0;
+        await offlineDb.saveQueueCache({
+            items: fullServerState.items,
+            queueIndex: fullServerState.queueIndex,
+            activeDeviceId: fullServerState.activeDeviceId || null,
+            activeDeviceSeq: fullServerState.activeDeviceSeq || 0,
+            scaEnabled: fullServerState.scaEnabled,
+            playMode: fullServerState.playMode,
+            lastSyncedAt: Date.now()
+        });
 
-        // Compare timestamps
-        if (cached.localTimestamp > serverTimestamp) {
-            // Local is newer - push to server
-            await api.queue.clear();
-
-            if (cached.items.length > 0) {
-                const uuids = cached.items.map(s => s.uuid);
-                await addQueueItemsInBatches(uuids);
-            }
-
-            await api.queue.setIndex(cached.queueIndex);
-
-            // Fetch back to get full metadata for any incomplete items
-            // (songs that were added offline without cached metadata)
-            const updatedState = await fetchQueueInBatches();
-            const updatedItems = updatedState.items;
-
-            // Update local cache with full metadata, preserving queueIndex
-            await offlineDb.saveQueueCache({
-                items: updatedItems,
-                queueIndex: cached.queueIndex,
-                scaEnabled: updatedState.scaEnabled || cached.scaEnabled || false,
-                playMode: updatedState.playMode || cached.playMode || 'sequential',
-                lastSyncedAt: Date.now()
-            });
-
-            // Notify player to refresh with restored items
-            window.dispatchEvent(new CustomEvent('queue-items-restored', {
-                detail: { items: updatedItems, queueIndex: cached.queueIndex }
-            }));
-        } else {
-            // Server is newer - fetch all items and update local
-            const fullServerState = await fetchQueueInBatches();
-
-            await offlineDb.saveQueueCache({
+        // Notify player to refresh
+        window.dispatchEvent(new CustomEvent('queue-items-restored', {
+            detail: {
                 items: fullServerState.items,
-                queueIndex: fullServerState.queueIndex,
-                scaEnabled: fullServerState.scaEnabled,
-                playMode: fullServerState.playMode,
-                lastSyncedAt: Date.now()
-            });
-
-            // Notify player to refresh
-            window.dispatchEvent(new CustomEvent('queue-items-restored', {
-                detail: {
-                    items: fullServerState.items,
-                    queueIndex: fullServerState.queueIndex
-                }
-            }));
-        }
+                queueIndex: fullServerState.queueIndex
+            }
+        }));
 
         // Record sync completion time for refresh cooldown
         setLastQueueSyncTime();

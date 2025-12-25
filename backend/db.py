@@ -225,7 +225,28 @@ def _run_migrations(db):
                 sca_enabled INTEGER DEFAULT 0,
                 play_mode TEXT DEFAULT 'sequential',
                 volume REAL DEFAULT 1.0,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                active_device_id TEXT,
+                active_device_seq INTEGER DEFAULT 0
+            )
+        ''')
+    else:
+        # Migration: add device tracking columns
+        cur.execute("PRAGMA table_info(user_playback_state)")
+        columns = {row[1] for row in cur.fetchall()}
+        if 'active_device_id' not in columns:
+            cur.execute("ALTER TABLE user_playback_state ADD COLUMN active_device_id TEXT")
+        if 'active_device_seq' not in columns:
+            cur.execute("ALTER TABLE user_playback_state ADD COLUMN active_device_seq INTEGER DEFAULT 0")
+
+    # Per-device sequence numbers for queue index updates
+    if 'device_queue_seqs' not in existing_tables:
+        cur.execute('''
+            CREATE TABLE device_queue_seqs (
+                user_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                seq INTEGER DEFAULT 0,
+                PRIMARY KEY (user_id, device_id)
             )
         ''')
 

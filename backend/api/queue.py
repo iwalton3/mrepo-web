@@ -33,14 +33,19 @@ def queue_list(cursor=None, limit=None, details=None):
 
     # Get playback state
     cur.execute("""
-        SELECT queue_index, play_mode, sca_enabled, volume
+        SELECT queue_index, play_mode, sca_enabled, volume, active_device_id, active_device_seq
         FROM user_playback_state WHERE user_id = ?
     """, (user_id,))
     state = cur.fetchone()
 
+    active_device_id = state['active_device_id'] if state else None
+    active_device_seq = state['active_device_seq'] if state else 0
+
     return {
         'items': rows_to_list(rows),
         'queueIndex': state['queue_index'] if state else 0,
+        'activeDeviceId': active_device_id,
+        'activeDeviceSeq': active_device_seq,
         'playMode': state['play_mode'] if state else 'sequential',
         'scaEnabled': bool(state['sca_enabled']) if state else False,
         'volume': state['volume'] if state else 1.0,
@@ -401,8 +406,14 @@ def queue_reorder_batch(from_positions, to_position, details=None, _conn=None):
 
 
 @api_method('queue_set_index', require='user')
-def queue_set_index(index, details=None, _conn=None):
-    """Set the current playback position in the queue."""
+def queue_set_index(index, device_id=None, seq=None, details=None, _conn=None):
+    """Set the current playback position in the queue.
+
+    Args:
+        index: Position in queue
+        device_id: Unique device identifier (for per-device sequence tracking)
+        seq: Sequence number from this device (monotonically increasing per device)
+    """
     own_conn = _conn is None
     conn = _conn if _conn else get_db()
     cur = conn.cursor()
@@ -412,6 +423,40 @@ def queue_set_index(index, details=None, _conn=None):
         if own_conn:
             cur.execute("BEGIN IMMEDIATE")
 
+        # New device+seq approach: each device has its own sequence counter
+        if device_id is not None and seq is not None:
+            # Get stored seq for this device
+            cur.execute("""
+                SELECT seq FROM device_queue_seqs WHERE user_id = ? AND device_id = ?
+            """, (user_id, device_id))
+            row = cur.fetchone()
+            stored_seq = row['seq'] if row else 0
+
+            # Reject if seq is not higher (stale or replay)
+            if seq <= stored_seq:
+                if own_conn:
+                    cur.execute("ROLLBACK")
+                return {'success': True, 'skipped': True, 'reason': 'stale_seq'}
+
+            # Update this device's seq
+            cur.execute("""
+                INSERT INTO device_queue_seqs (user_id, device_id, seq)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id, device_id) DO UPDATE SET seq = ?
+            """, (user_id, device_id, seq, seq))
+
+            # Update position and mark this device as active
+            cur.execute("""
+                INSERT INTO user_playback_state (user_id, queue_index, updated_at, active_device_id, active_device_seq)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET queue_index = ?, updated_at = ?, active_device_id = ?, active_device_seq = ?
+            """, (user_id, index, datetime.utcnow(), device_id, seq, index, datetime.utcnow(), device_id, seq))
+
+            if own_conn:
+                cur.execute("COMMIT")
+            return {'success': True, 'skipped': False}
+
+        # Legacy path: no device tracking, just update
         cur.execute("""
             INSERT INTO user_playback_state (user_id, queue_index, updated_at)
             VALUES (?, ?, ?)
@@ -420,7 +465,7 @@ def queue_set_index(index, details=None, _conn=None):
 
         if own_conn:
             cur.execute("COMMIT")
-        return {'success': True}
+        return {'success': True, 'skipped': False}
     except Exception as e:
         if own_conn:
             try:
@@ -450,6 +495,16 @@ def queue_sort(sort_by='artist', order='asc', details=None):
     current_song = cur.fetchone()
     current_uuid = current_song['song_uuid'] if current_song else None
 
+    # Count which occurrence of this UUID we're at (1st, 2nd, 3rd, etc.)
+    # This handles duplicate songs in the queue correctly
+    current_occurrence = 0
+    if current_uuid:
+        cur.execute("""
+            SELECT COUNT(*) FROM user_queue
+            WHERE user_id = ? AND song_uuid = ? AND position <= ?
+        """, (user_id, current_uuid, current_index))
+        current_occurrence = cur.fetchone()[0]  # 1-based count
+
     sort_map = {
         'title': 's.title',
         'artist': 's.artist, s.album, s.disc_number, s.track_number',
@@ -475,14 +530,29 @@ def queue_sort(sort_by='artist', order='asc', details=None):
     # Update positions
     cur.execute("DELETE FROM user_queue WHERE user_id = ?", (user_id,))
 
-    new_index = 0
     for i, uuid in enumerate(songs):
         cur.execute("""
             INSERT INTO user_queue (user_id, song_uuid, position)
             VALUES (?, ?, ?)
         """, (user_id, uuid, i))
-        if uuid == current_uuid:
-            new_index = i
+
+    # Find new index of current song (handling duplicates)
+    new_index = 0
+    if current_uuid and current_uuid in songs:
+        # Find the nth occurrence of this UUID in the sorted list
+        occurrence_count = 0
+        for i, uuid in enumerate(songs):
+            if uuid == current_uuid:
+                occurrence_count += 1
+                if occurrence_count == current_occurrence:
+                    new_index = i
+                    break
+        else:
+            # If exact occurrence not found, use last occurrence
+            for i in range(len(songs) - 1, -1, -1):
+                if songs[i] == current_uuid:
+                    new_index = i
+                    break
 
     # Update queue_index to point to the same song
     cur.execute("""

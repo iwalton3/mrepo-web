@@ -218,6 +218,8 @@ def _execute_sync_op(op_type, payload, details, _conn=None):
         'queue.clear': lambda p: queue.queue_clear(details=details, _conn=_conn),
         'queue.setIndex': lambda p: queue.queue_set_index(
             _get_param(p, 'index', 'queue_index', default=0),
+            device_id=_get_param(p, 'deviceId', 'device_id'),
+            seq=p.get('seq'),
             details=details, _conn=_conn),
         'queue.reorder': lambda p: queue.queue_reorder(
             _get_param(p, 'fromPos', 'from_pos'),
