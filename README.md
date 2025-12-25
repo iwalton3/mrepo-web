@@ -1,20 +1,36 @@
-# mrepo
+# MRepo-Web - Music Repository Web Player
 
-A self-hosted music streaming application with offline support, built with Flask and the VDX frontend framework.
+This is a fully-featured PWA music app, supporting extremely large music libraries with all the bells and whistles you would expect from such an application, and probably more you did not.
+
+It builds on a decade of me managing a music collection and being really frustrated with less than ideal systems such as mpd, Plex music support, Jellyfin music support, local application, a bespoke command line music player, and several more minimal webapps. I've tried to build on top of other systems but they always felt like they came short in some area.
 
 ## Features
 
-- **Music Library** - Import your existing music collection without reorganizing files
-- **Offline Support** - Progressive Web App with full offline playback
-- **Playlists** - Create, edit, import/export playlists
-- **Smart Radio** - Automatic playlist generation based on listening history
-- **Equalizer** - 10-band and parametric EQ with presets
-- **Visualizer** - Butterchurn/Milkdrop audio visualizations
-- **Queue Management** - Server-synced queue that persists across devices
-- **Crossfade & Gapless** - Smooth transitions between tracks
-- **Replay Gain** - Automatic volume normalization
-- **Multi-user** - Password-based authentication with admin capabilities
-- **Tracker Format Support** - FFmpeg transcoding for mod, xm, s3m, it, and other tracker formats
+- **No pages or loading spinners!** - Scroll through your entire music library seamlessly on your phone or desktop without your browser crashing.
+- **Synced Queue** - Play music on your desktop, then pick up where you left off on your phone! (Optional temporary queue also available for ad-hoc playback.)
+- **Offline Sync** - Download arbitrary folders, playlists, genres, artists, etc to your phone and play them on the go, even with airplane mode. Downloads automatically take priority, saving your cellular bandwidth and reducing glitches.
+- **Audio Pipeline** - Replaygain, Crossfade, Parametric EQ (incl AutoEQ import), Crossfeed, Tempo Control, Fletcher Munson Loudness Compensation, Customizable White Noise - it's all supported even on mobile!
+- **Visualizers** - Winamp-style visualizers are included thanks to Butterchurn, even on mobile!
+- **Multi User** - Create playlists and share them with other users
+- **Browse & Search** - Browse and search your library by filesystem, category, genre, artist, and albums
+- **Radio Mode** - Automatically generate a queue of music that evolves and explores your library, avoiding adjacent duplicate/similar songs and supporting very large pools of music to play.
+- **Auto Sleep Timer** - Intelligently stop background music playback after your bedtime on mobile, just set how long to play and it does the rest.
+- **History** - Keep a history of what you play and make arbitrary "recap" playlists whenever you want with your most played songs.
+- **Infinite Jukebox** - Create a permalink for a specific song that loops forever, seamlessly where possible.
+- **Transcoding** - Limited support is available for playing formats which don't support mobile/web playback, such as xm/mod/s3m/it.
+- **Metadata Scanner** - Scans and indexes your music metadata for performant library support. Uses sqlite.
+
+### Non-Features
+
+These features are not included currently, and some may never be.
+
+- Metadata Fetching/Editing - System uses metadata as-is, no external sources
+- Lyrics
+- Album Art - Not displayed, used, or fetched
+- CUE Sheets
+- Scrobbling to external services
+- Subsonic API
+- Chromecast/DLNA support
 
 ## Quick Start with Docker
 
