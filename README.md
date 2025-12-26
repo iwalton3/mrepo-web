@@ -270,6 +270,5 @@ Dependencies (all bundled in minified form in this repo) are all MIT licensed:
 - [Butterchurn](https://github.com/jberg/butterchurn)
 - [Butterchurn Presets](https://github.com/jberg/butterchurn-presets)
 - [VDX web framework](https://github.com/iwalton3/vdx-web)
-- [Preact](https://github.com/iwalton3/vdx-web/tree/main/app/lib/vendor/preact)
 
 Butterchurn was built using the default configuration in docker and committed into the repo for your convenience and to avoid build issues in the future.

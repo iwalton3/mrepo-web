@@ -495,11 +495,15 @@ export default defineComponent('browse-page', {
             // Use totalCount if available, otherwise fall back to items.length
             const itemCount = this.state.totalCount || this.state.items.length;
 
-            const startIndex = Math.max(0, Math.floor(viewportTop / itemHeight) - bufferAbove);
-            const endIndex = Math.min(
+            let startIndex = Math.max(0, Math.floor(viewportTop / itemHeight) - bufferAbove);
+            let endIndex = Math.min(
                 itemCount,
                 Math.ceil(viewportBottom / itemHeight) + bufferBelow
             );
+
+            // Ensure valid range: startIndex must not exceed itemCount or endIndex
+            startIndex = Math.min(startIndex, Math.max(0, itemCount - 1));
+            endIndex = Math.max(endIndex, startIndex + 1);
 
             if (startIndex !== this.state.visibleStart || endIndex !== this.state.visibleEnd) {
                 this.state.visibleStart = startIndex;
@@ -1715,7 +1719,7 @@ export default defineComponent('browse-page', {
                                 return html`
                                     <div class="items-container" ref="itemsContainer"
                                          style="height: ${itemCount * itemHeight}px; position: relative;">
-                                        <div class="items-list" style="position: absolute; top: ${visibleStart * itemHeight}px; left: 0; right: 0;">
+                                        <div class="items-list" style="transform: translateY(${visibleStart * itemHeight}px);">
                                             ${memoEach(visibleItems, (item, idx) => {
                                                 if (!item) {
                                                     return html`
@@ -1760,7 +1764,7 @@ export default defineComponent('browse-page', {
                                                         `)}
                                                     </div>
                                                 `;
-                                            }, (item, idx) => item?.uuid ?? item?.path ?? `loading-${visibleStart + idx}`)}
+                                            }, (item, idx) => item?.uuid ?? item?.path ?? item?.name ?? `loading-${visibleStart + idx}`)}
                                         </div>
                                     </div>
                                 `;
@@ -1807,7 +1811,7 @@ export default defineComponent('browse-page', {
                                             </button>
                                         `)}
                                     </div>
-                                `)}
+                                `, item => item.uuid || `${item.type}-${item.name}`)}
                             </div>
 
                             ${when(this.state.hasMore && !filterText, html`
@@ -1892,6 +1896,10 @@ export default defineComponent('browse-page', {
             padding: 1rem;
             max-width: 800px;
             margin: 0 auto;
+        }
+
+        .browse-content {
+            position: relative;
         }
 
         .offline-mode-banner {
@@ -2111,10 +2119,13 @@ export default defineComponent('browse-page', {
         .items-list {
             display: flex;
             flex-direction: column;
+            /* Match componentlib virtual-list positioning */
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
             /* Hint browser this element transforms during scroll */
             will-change: transform;
-            /* Contain paint to this element */
-            contain: paint;
         }
 
         .item {
