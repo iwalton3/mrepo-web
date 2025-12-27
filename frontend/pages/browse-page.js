@@ -1764,7 +1764,7 @@ export default defineComponent('browse-page', {
                                                         `)}
                                                     </div>
                                                 `;
-                                            }, (item, idx) => item?.uuid ?? item?.path ?? item?.name ?? `loading-${visibleStart + idx}`)}
+                                            }, (item, idx) => item?.uuid ?? item?.path ?? item?.name ?? `loading-${idx}`, { trustKey: true })}
                                         </div>
                                     </div>
                                 `;

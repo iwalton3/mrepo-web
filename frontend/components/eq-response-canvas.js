@@ -536,9 +536,11 @@ export default defineComponent('eq-response-canvas', {
         this._handleMouseMove = this.handleMouseMove.bind(this);
         this._handleMouseUp = this.handleMouseUp.bind(this);
 
-        // Initial size update
-        this._updateCanvasSize();
-        this._draw();
+        // Update canvas if refs are available (may not be on first render before mounted)
+        if (this._canvas) {
+            this._updateCanvasSize();
+            this._draw();
+        }
     },
 
     template() {

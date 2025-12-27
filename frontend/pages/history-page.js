@@ -640,7 +640,7 @@ export default defineComponent('history-page', {
                                             ${memoEach(visibleItems, (item, idx) => {
                                                 const actualIndex = visibleStart + idx;
                                                 return this.renderHistoryItem(item, actualIndex);
-                                            }, (item, idx) => `${item?.uuid ?? 'loading'}-${visibleStart + idx}`)}
+                                            }, (item, idx) => item?.uuid ?? `loading-${idx}`, { trustKey: true })}
                                         </div>
                                     </div>
                                 `;

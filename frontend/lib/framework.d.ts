@@ -5,7 +5,7 @@
  * Zero-dependency reactive web framework with:
  * - Web Components based architecture
  * - Vue 3-style proxy reactivity
- * - Preact rendering for efficient DOM updates
+ * - Fine-grained reactive rendering for efficient DOM updates
  * - Compile-once template system
  */
 
@@ -58,7 +58,7 @@ export interface HtmlTemplate {
 export interface CompiledTemplate {
   readonly op: number;
   readonly type: string;
-  readonly vnode?: unknown;
+  readonly template?: Node;
   readonly wrapped?: boolean;
   readonly children?: CompiledTemplate[];
   readonly key?: string | number;
@@ -241,6 +241,22 @@ export interface ComponentOptions<
    * @param oldValue - Previous value
    */
   propsChanged?(this: ComponentInstance<P, S, St>, prop: string, newValue: unknown, oldValue: unknown): void;
+
+  /**
+   * Error boundary - called when template() throws an error.
+   * Return an html`` template to render fallback UI, or nothing to render blank.
+   * The error is also logged to console automatically.
+   *
+   * @param error - The error that was thrown
+   * @returns Fallback template to render, or void for blank
+   *
+   * @example
+   * renderError(error) {
+   *   console.error('Render failed:', error);
+   *   return html`<div class="error">Something went wrong</div>`;
+   * }
+   */
+  renderError?(this: ComponentInstance<P, S, St>, error: Error): HtmlTemplate | void;
 }
 
 /**
@@ -380,6 +396,25 @@ export function untracked<T>(obj: T): T;
  * @returns True if object is untracked
  */
 export function isUntracked(obj: unknown): boolean;
+
+/**
+ * Execute a function without tracking reactive dependencies.
+ * Any state accessed during the callback won't become a dependency
+ * of the current effect. However, new effects created inside the callback
+ * will track their own dependencies normally.
+ *
+ * @param fn - Callback to execute without current effect context
+ * @returns Return value of the callback
+ *
+ * @example
+ * createEffect(() => {
+ *   // This will NOT be tracked as a dependency:
+ *   const largeData = withoutTracking(() => this.state.hugeArray);
+ *   // This WILL be tracked:
+ *   console.log(this.state.filter);
+ * });
+ */
+export function withoutTracking<T>(fn: () => T): T;
 
 /**
  * Watch reactive dependencies and call callback when they change.
@@ -564,7 +599,7 @@ export function when<T, E = null>(
 export function each<T>(
   array: T[] | null | undefined,
   mapFn: (item: T, index: number) => HtmlTemplate,
-  keyFn?: (item: T) => string | number
+  keyFn?: (item: T, index: number) => string | number
 ): HtmlTemplate;
 
 /**
@@ -608,7 +643,7 @@ export function createMemoCache(): MemoCache;
 export function memoEach<T>(
   array: T[] | null | undefined,
   mapFn: (item: T, index: number) => HtmlTemplate,
-  keyFn: (item: T) => string | number,
+  keyFn: (item: T, index: number) => string | number,
   cache?: MemoCache
 ): HtmlTemplate;
 
@@ -696,54 +731,3 @@ export interface Store<T> {
  * unsubscribe(); // Stop listening
  */
 export function createStore<T extends object>(initialState: T): Store<T>;
-
-// =============================================================================
-// Preact Exports (for advanced usage)
-// =============================================================================
-
-/**
- * Virtual DOM node (Preact VNode)
- */
-export interface VNode<P = Record<string, unknown>> {
-  type: string | ComponentType<P>;
-  props: P & { children?: VNode | VNode[] | string | null };
-  key: string | number | null;
-}
-
-/**
- * Component type (function or class)
- */
-export type ComponentType<P = Record<string, unknown>> = (props: P) => VNode | null;
-
-/**
- * Preact's createElement function.
- * For advanced usage when you need to create VNodes directly.
- *
- * @param type - Element type or component
- * @param props - Props/attributes
- * @param children - Child elements
- * @returns VNode
- */
-export function h<P extends Record<string, unknown>>(
-  type: string | ComponentType<P>,
-  props: P | null,
-  ...children: (VNode | string | number | null | undefined)[]
-): VNode<P>;
-
-/**
- * Preact's Fragment component.
- * For grouping elements without a wrapper DOM element.
- *
- * @example
- * h(Fragment, null, h('span', null, 'A'), h('span', null, 'B'))
- */
-export const Fragment: ComponentType<{ children?: VNode | VNode[] }>;
-
-/**
- * Preact's render function.
- * For manual rendering when needed.
- *
- * @param vnode - Virtual node to render
- * @param container - Container element
- */
-export function render(vnode: VNode | null, container: Element): void;

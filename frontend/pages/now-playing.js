@@ -1471,8 +1471,9 @@ export default defineComponent('now-playing-page', {
                         <div class="queue-container" ref="queueContainer"
                              style="height: ${visibleQueueLength * itemHeight}px; position: relative;">
                         <div class="queue-list" style="position: absolute; top: ${visibleStart * itemHeight}px; left: 0; right: 0;">
-                            ${memoEach(windowedItems, ({ item, index }, displayIdx) => {
-                                const displayIndex = visibleStart + displayIdx;
+                            ${memoEach(windowedItems, ({ item, index }) => {
+                                // Use stable 'index' from wrapper (real queue position)
+                                // NOT displayIdx which changes on scroll
                                 const isSelected = this.isSelected(index);
                                 const selectionMode = this.state.selectionMode;
                                 return html`
@@ -1498,7 +1499,7 @@ export default defineComponent('now-playing-page', {
                                               on-touchmove="${(e) => this.handleHandleTouchMove(e)}"
                                               on-touchend="${(e) => this.handleHandleTouchEnd(e)}">⋮⋮</span>
                                     `)}
-                                    <span class="queue-index">${displayIndex + 1}</span>
+                                    <span class="queue-index">${index + 1}</span>
                                     <div class="queue-info">
                                         <div class="queue-title">${item.track_number ? html`<span class="track-number">${String(item.track_number).padStart(2, '0')}</span>` : ''}${this.getDisplayTitle(item)}</div>
                                         <div class="queue-meta">
@@ -1512,7 +1513,7 @@ export default defineComponent('now-playing-page', {
                                         <button class="queue-remove" on-click="${(e) => this.handleRemoveFromQueue(index, e)}" title="Remove">✕</button>
                                     </div>
                                 </div>
-                            `}, ({ item, index }) => `${item.uuid}-${this.state.selectionVersion}-${index === queueIndex}`)}
+                            `}, ({ item, index }) => `${item.uuid}-${this.state.selectionVersion}-${index === queueIndex}`, { trustKey: true })}
                         </div>
                     </div>
 

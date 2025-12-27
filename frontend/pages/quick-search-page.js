@@ -750,7 +750,7 @@ export default defineComponent('quick-search-page', {
                                                 </button>
                                             </div>
                                         `;
-                                    }, (song, idx) => song?.uuid ?? `loading-${visibleStart + idx}`)}
+                                    }, (song, idx) => song?.uuid ?? `loading-${idx}`, { trustKey: true })}
                                 </div>
                             </div>
                         </div>

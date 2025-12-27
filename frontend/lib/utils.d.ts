@@ -447,6 +447,88 @@ export interface DarkThemeState {
 export const darkTheme: Store<DarkThemeState>;
 
 // =============================================================================
+// Lazy Component Loading
+// =============================================================================
+
+/**
+ * Lazy load a component module.
+ * Returns a cached promise that resolves when the component is registered.
+ * Works seamlessly with awaitThen() for loading states.
+ *
+ * @param importFn - Dynamic import function, e.g., () => import('./my-component.js')
+ * @returns Promise that resolves to true when component is ready
+ *
+ * @example
+ * import { lazy } from './lib/utils.js';
+ * import { awaitThen, html } from './lib/framework.js';
+ *
+ * const LazyChart = lazy(() => import('./chart-component.js'));
+ *
+ * template() {
+ *     return html`
+ *         ${awaitThen(LazyChart,
+ *             () => html`<chart-component data="${this.state.data}"></chart-component>`,
+ *             html`<cl-spinner></cl-spinner>`
+ *         )}
+ *     `;
+ * }
+ */
+export function lazy(importFn: () => Promise<any>): Promise<true>;
+
+/**
+ * Preload a lazy component without rendering it.
+ * Useful for preloading components the user is likely to need.
+ *
+ * @param importFn - Dynamic import function
+ * @returns Promise that resolves when loaded
+ *
+ * @example
+ * import { preloadLazy } from './lib/utils.js';
+ *
+ * // Preload on hover for instant display when clicked
+ * <button on-mouseenter="${() => preloadLazy(() => import('./heavy-dialog.js'))}">
+ */
+export function preloadLazy(importFn: () => Promise<any>): Promise<true>;
+
+/**
+ * Clear the lazy loading cache.
+ * Rarely needed - mainly for testing or memory optimization.
+ */
+export function clearLazyCache(): void;
+
+// =============================================================================
+// Debug Logging
+// =============================================================================
+
+/**
+ * Options for rlog function
+ */
+export interface RlogOptions {
+  /** If true, output as JSON (useful for puppeteer) */
+  json?: boolean;
+}
+
+/**
+ * Debug logging helper that doesn't create reactive dependencies.
+ * Strips reactive proxies so objects print cleanly in console.
+ *
+ * Must pass a function to avoid tracking - the function is called inside
+ * withoutTracking() so state access won't create dependencies.
+ *
+ * @param fn - Function that returns array of values to log
+ * @param options - Optional settings
+ *
+ * @example
+ * // Basic usage - pass a function to avoid creating dependencies
+ * rlog(() => ['Current state:', this.state]);
+ * rlog(() => ['Queue:', this.state.queue, 'Index:', this.state.index]);
+ *
+ * // With JSON output (useful for puppeteer)
+ * rlog(() => ['Data:', this.state.items], { json: true });
+ */
+export function rlog(fn: () => unknown[], options?: RlogOptions): void;
+
+// =============================================================================
 // Default Export
 // =============================================================================
 

@@ -1595,7 +1595,7 @@ export default defineComponent('playlists-page', {
                                         ${memoEach(visibleSongs, (song, idx) => {
                                             const actualIndex = visibleStart + idx;
                                             return this.renderSongItem(song, actualIndex);
-                                        }, (song) => `${song?.uuid ?? 'loading'}-${this.state.playlistVersion ?? 0}`)}
+                                        }, (song, idx) => `${song?.uuid ?? `loading-${idx}`}-${this.state.playlistVersion ?? 0}`, { trustKey: true })}
                                     </div>
                                 </div>
                             `;
