@@ -9,7 +9,7 @@
  * - Volume control
  */
 
-import { defineComponent, html, when, each, memoEach } from '../lib/framework.js';
+import { defineComponent, html, when, each, memoEach, contain } from '../lib/framework.js';
 import { debounce, rafThrottle } from '../lib/utils.js';
 import { player, playerStore } from '../stores/player-store.js';
 import { playlists as playlistsApi } from '../offline/offline-api.js';
@@ -151,25 +151,53 @@ export default defineComponent('now-playing-page', {
         getVisibleQueue() {
             const queue = this.stores.player.queue;
             const queueVersion = this.stores.player.queueVersion;
-            const queueIndex = this.stores.player.queueIndex;
             const isOffline = this.stores.offline.workOfflineMode || !this.stores.offline.isOnline;
 
-            // Cache key: queueVersion changes on queue modification, queueIndex on playback
-            const cacheKey = `${queueVersion}-${queueIndex}-${isOffline}`;
+            // Cache key: queueVersion changes on queue modification
+            // Note: queueIndex is NOT included - it doesn't affect queue content
+            const cacheKey = `${queueVersion}-${isOffline}`;
 
             // Return cached result if inputs haven't changed
             if (this._visibleQueueKey === cacheKey && this._visibleQueueCache) {
                 return this._visibleQueueCache;
             }
 
+            // Create stable wrapper objects that persist across renders
+            // This is critical for memoEach cache hits (it checks item === cachedItem)
+            if (!this._wrapperCache) {
+                this._wrapperCache = new Map();
+            }
+
+            // Clear wrappers for items no longer in queue
+            const currentUuids = new Set(queue.map(item => item.uuid));
+            for (const uuid of this._wrapperCache.keys()) {
+                if (!currentUuids.has(uuid)) {
+                    this._wrapperCache.delete(uuid);
+                }
+            }
+
             let result;
             if (!isOffline) {
                 // Online - show all items with their indices
-                result = queue.map((item, index) => ({ item, index }));
+                result = queue.map((item, index) => {
+                    let wrapper = this._wrapperCache.get(item.uuid);
+                    if (!wrapper || wrapper.item !== item || wrapper.index !== index) {
+                        wrapper = { item, index };
+                        this._wrapperCache.set(item.uuid, wrapper);
+                    }
+                    return wrapper;
+                });
             } else {
                 // Offline - only show items with metadata (have title)
                 result = queue
-                    .map((item, index) => ({ item, index }))
+                    .map((item, index) => {
+                        let wrapper = this._wrapperCache.get(item.uuid);
+                        if (!wrapper || wrapper.item !== item || wrapper.index !== index) {
+                            wrapper = { item, index };
+                            this._wrapperCache.set(item.uuid, wrapper);
+                        }
+                        return wrapper;
+                    })
                     .filter(({ item }) => item.title);
             }
 
@@ -1351,8 +1379,8 @@ export default defineComponent('now-playing-page', {
         const song = this.stores.player.currentSong;
         const isPlaying = this.stores.player.isPlaying;
         const isLoading = this.stores.player.isLoading;
-        const currentTime = this.stores.player.currentTime;
-        const duration = this.stores.player.duration;
+        // NOTE: currentTime and duration are accessed ONLY inside contain() blocks
+        // to prevent high-frequency updates from triggering template() re-runs
         const volume = this.stores.player.volume * 100;
         const muted = this.stores.player.muted;
         const shuffle = this.stores.player.shuffle;
@@ -1380,7 +1408,7 @@ export default defineComponent('now-playing-page', {
                             ? 'Browse your library to add songs, or exit temp queue to restore your synced queue'
                             : 'Browse your library or start a radio session to play music'}</p>
                         <div class="empty-actions">
-                            ${when(this.stores.player.tempQueueMode, html`
+                            ${when(this.stores.player.tempQueueMode, () => html`
                                 <cl-button severity="warning" on-click="handleToggleTempQueue">
                                     Exit Temp Queue
                                 </cl-button>
@@ -1388,7 +1416,7 @@ export default defineComponent('now-playing-page', {
                             <cl-button severity="primary" on-click="${() => window.location.hash = '/browse/'}">
                                 Browse Music
                             </cl-button>
-                            ${when(!this.stores.player.tempQueueMode, html`
+                            ${when(!this.stores.player.tempQueueMode, () => html`
                                 <cl-button severity="secondary" on-click="${() => window.location.hash = '/radio/'}">
                                     Start Radio
                                 </cl-button>
@@ -1411,8 +1439,8 @@ export default defineComponent('now-playing-page', {
                                     ♻️<span class="btn-label">${this.stores.player.tempQueueMode ? 'Exit Temp' : 'Temp'}</span>
                                 </button>
                                 ${when(scaEnabled,
-                                    html`<button class="queue-action-btn stop-radio" on-click="handleStopRadio" title="Stop Radio">⏹<span class="btn-label">Stop Radio</span></button>`,
-                                    html`<button class="queue-action-btn" on-click="handleStartRadio" title="Start Radio">📻<span class="btn-label">Radio</span></button>`
+                                    () => html`<button class="queue-action-btn stop-radio" on-click="handleStopRadio" title="Stop Radio">⏹<span class="btn-label">Stop Radio</span></button>`,
+                                    () => html`<button class="queue-action-btn" on-click="handleStartRadio" title="Start Radio">📻<span class="btn-label">Radio</span></button>`
                                 )}
                                 <div class="sort-dropdown">
                                     <button class="queue-action-btn" on-click="toggleSortMenu" title="Sort Queue" disabled="${this.state.isSorting}">
@@ -1516,17 +1544,22 @@ export default defineComponent('now-playing-page', {
 
                     <!-- Bottom Control Bar -->
                     <div class="bottom-bar">
-                        <!-- Row 1: Progress -->
-                        <div class="progress-row">
-                            <span class="time">${this.formatTime(currentTime)}</span>
-                            ${when(seekable,
-                                html`<div class="seek-wrapper" on-click="${(e) => this.handleSeekWrapperClick(e)}">
-                                    <input type="range" class="seek-slider" min="0" max="${duration || 100}" step="1" value="${currentTime}" on-input="handleSeek">
-                                </div>`,
-                                html`<div class="progress-bar"><div class="progress-fill" style="width: ${duration ? (currentTime / duration * 100) : 0}%"></div></div>`
-                            )}
-                            <span class="time">${this.formatTime(duration)}</span>
-                        </div>
+                        <!-- Row 1: Progress (isolated to prevent queue re-renders on time updates) -->
+                        ${contain(() => {
+                            const currentTime = this.stores.player.currentTime;
+                            const duration = this.stores.player.duration;
+                            return html`
+                            <div class="progress-row">
+                                <span class="time">${this.formatTime(currentTime)}</span>
+                                ${when(seekable,
+                                    () => html`<div class="seek-wrapper" on-click="${(e) => this.handleSeekWrapperClick(e)}">
+                                        <input type="range" class="seek-slider" min="0" max="${duration || 100}" step="1" value="${currentTime}" on-input="handleSeek">
+                                    </div>`,
+                                    () => html`<div class="progress-bar"><div class="progress-fill" style="width: ${duration ? (currentTime / duration * 100) : 0}%"></div></div>`
+                                )}
+                                <span class="time">${this.formatTime(duration)}</span>
+                            </div>`;
+                        })}
 
                         <!-- Row 2: Controls -->
                         <div class="controls-row">
@@ -1637,12 +1670,12 @@ export default defineComponent('now-playing-page', {
                 `)}
 
                 <!-- Save as Playlist Dialog -->
-                ${when(showSaveDialog, html`
+                ${when(showSaveDialog, () => html`
                     <div class="dialog-overlay" on-click="handleCloseSaveDialog">
                         <div class="dialog" on-click="${(e) => e.stopPropagation()}">
                             <h3>Save Queue as Playlist</h3>
                             <input type="text" class="dialog-input" placeholder="Playlist name..." x-model="playlistName">
-                            ${when(saveError, html`<div class="dialog-error">${saveError}</div>`)}
+                            ${when(saveError, () => html`<div class="dialog-error">${saveError}</div>`)}
                             <div class="dialog-actions">
                                 <cl-button severity="secondary" on-click="handleCloseSaveDialog">Cancel</cl-button>
                                 <cl-button severity="primary" on-click="handleSaveAsPlaylist" loading="${isSaving}">Save</cl-button>
@@ -1652,7 +1685,7 @@ export default defineComponent('now-playing-page', {
                 `)}
 
                 <!-- Add to Playlist Dialog -->
-                ${when(this.state.showAddToPlaylist, html`
+                ${when(this.state.showAddToPlaylist, () => html`
                     <div class="dialog-overlay" on-click="handleCloseAddToPlaylist">
                         <div class="dialog" on-click="${(e) => e.stopPropagation()}">
                             <h3>Add to Playlist</h3>

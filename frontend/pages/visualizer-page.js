@@ -826,14 +826,14 @@ export default defineComponent('visualizer-page', {
 
         return html`
             <div class="visualizer-container" ref="container">
-                ${when(loading, html`
+                ${when(loading, () => html`
                     <div class="loading-overlay">
                         <div class="loading-spinner"></div>
                         <p>Loading visualizer...</p>
                     </div>
                 `)}
 
-                ${when(error, html`
+                ${when(error, () => html`
                     <div class="error-overlay">
                         <div class="error-icon">⚠️</div>
                         <h2>Visualizer Unavailable</h2>
@@ -921,7 +921,7 @@ export default defineComponent('visualizer-page', {
                         </div>
 
                         <!-- Butterchurn preset controls (only show in butterchurn mode) -->
-                        ${when(mode === 'butterchurn', html`
+                        ${when(mode === 'butterchurn', () => html`
                             <button class="toolbar-btn" on-click="togglePresetMenu" title="Change preset">
                                 🎨
                             </button>

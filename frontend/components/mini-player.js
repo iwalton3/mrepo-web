@@ -5,7 +5,7 @@
  * Displays current song info with basic controls.
  */
 
-import { defineComponent, html, when } from '../lib/framework.js';
+import { defineComponent, html, when, contain } from '../lib/framework.js';
 import { debounce } from '../lib/utils.js';
 import { player, playerStore } from '../stores/player-store.js';
 
@@ -108,11 +108,14 @@ export default defineComponent('mini-player', {
 
         return html`
             <div class="mini-player">
-                <div class="progress-bar ${this.isSeekable() ? 'seekable' : ''}"
-                     on-click="handleSeek"
-                     title="${this.isSeekable() ? 'Click to seek' : ''}">
-                    <div class="progress-fill" style="width: ${this.getProgressPercent()}%"></div>
-                </div>
+                <!-- Progress bar isolated to prevent re-renders on time updates -->
+                ${contain(() => html`
+                    <div class="progress-bar ${this.isSeekable() ? 'seekable' : ''}"
+                         on-click="handleSeek"
+                         title="${this.isSeekable() ? 'Click to seek' : ''}">
+                        <div class="progress-fill" style="width: ${this.getProgressPercent()}%"></div>
+                    </div>
+                `)}
 
                 <div class="song-info">
                     <div class="title" title="${song.title}">${song.title}</div>
@@ -134,7 +137,7 @@ export default defineComponent('mini-player', {
                     </button>
                 </div>
 
-                ${when(scaEnabled, html`
+                ${when(scaEnabled, () => html`
                     <div class="radio-indicator" title="Radio Mode">📻</div>
                 `)}
 
@@ -142,14 +145,17 @@ export default defineComponent('mini-player', {
                 <div class="volume-time-wrapper"
                      on-mouseenter="handlePlayerMouseEnter"
                      on-mouseleave="handlePlayerMouseLeave">
-                    <div class="time-display">
-                        ${this.formatTime(this.stores.player.currentTime)}
-                        /
-                        ${this.formatTime(this.stores.player.duration)}
-                    </div>
+                    <!-- Time display isolated to prevent re-renders on time updates -->
+                    ${contain(() => html`
+                        <div class="time-display">
+                            ${this.formatTime(this.stores.player.currentTime)}
+                            /
+                            ${this.formatTime(this.stores.player.duration)}
+                        </div>
+                    `)}
 
                     <!-- Volume slider appears on hover -->
-                    ${when(this.state.showVolumePopup, html`
+                    ${when(this.state.showVolumePopup, () => html`
                         <div class="volume-section">
                             <button class="volume-btn" on-click="handleToggleMute"
                                     title="${this.stores.player.muted ? 'Unmute' : 'Mute'}">

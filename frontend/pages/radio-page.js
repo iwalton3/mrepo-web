@@ -7,7 +7,7 @@
  * - Skip and filter controls
  */
 
-import { defineComponent, html, when, each } from '../lib/framework.js';
+import { defineComponent, html, when, each, contain } from '../lib/framework.js';
 import { browse } from '../offline/offline-api.js';
 import { player, playerStore } from '../stores/player-store.js';
 import offlineStore from '../offline/offline-store.js';
@@ -151,7 +151,7 @@ export default defineComponent('radio-page', {
 
         return html`
             <div class="radio-page">
-                ${when(isOffline, html`
+                ${when(isOffline, () => html`
                     <div class="offline-warning">
                         <span class="warning-icon">⚠️</span>
                         <span>Radio requires network connection. ${this.stores.offline.workOfflineMode
@@ -160,11 +160,11 @@ export default defineComponent('radio-page', {
                     </div>
                 `)}
 
-                ${when(error && !isOffline, html`
+                ${when(error && !isOffline, () => html`
                     <div class="error-message">${error}</div>
                 `)}
 
-                ${when(!scaEnabled, html`
+                ${when(!scaEnabled, () => html`
                     <!-- Radio Setup -->
                     <div class="radio-setup">
                         <div class="setup-header">
@@ -197,7 +197,7 @@ export default defineComponent('radio-page', {
                                 </select>
                             </div>
 
-                            ${when(selectedCategory, html`
+                            ${when(selectedCategory, () => html`
                                 <div class="filter-row">
                                     <label>Genre</label>
                                     <select class="filter-select" value="${selectedGenre}"
@@ -215,7 +215,7 @@ export default defineComponent('radio-page', {
                                 ${showAdvanced ? '▼ Hide Advanced' : '▶ Advanced Filter'}
                             </button>
 
-                            ${when(showAdvanced, html`
+                            ${when(showAdvanced, () => html`
                                 <div class="filter-row">
                                     <label>Custom Filter</label>
                                     <input type="text"
@@ -258,17 +258,19 @@ export default defineComponent('radio-page', {
                                     <p class="song-album">${currentSong.album || ''}</p>
                                 </div>
 
-                                <!-- Progress -->
-                                <div class="progress-section">
-                                    <div class="progress-bar">
-                                        <div class="progress-fill" style="width: ${this.getProgressPercent()}%"></div>
+                                <!-- Progress (isolated to prevent re-renders on time updates) -->
+                                ${contain(() => html`
+                                    <div class="progress-section">
+                                        <div class="progress-bar">
+                                            <div class="progress-fill" style="width: ${this.getProgressPercent()}%"></div>
+                                        </div>
+                                        <div class="time-display">
+                                            ${this.formatTime(this.stores.player.currentTime)}
+                                            /
+                                            ${this.formatTime(this.stores.player.duration)}
+                                        </div>
                                     </div>
-                                    <div class="time-display">
-                                        ${this.formatTime(this.stores.player.currentTime)}
-                                        /
-                                        ${this.formatTime(this.stores.player.duration)}
-                                    </div>
-                                </div>
+                                `)}
 
                                 <!-- Controls -->
                                 <div class="radio-controls">
@@ -284,7 +286,7 @@ export default defineComponent('radio-page', {
                         `)}
 
                         <!-- Up Next -->
-                        ${when(queue.length > 0, html`
+                        ${when(queue.length > 0, () => html`
                             <div class="up-next">
                                 <h3>Up Next</h3>
                                 <div class="queue-list">
