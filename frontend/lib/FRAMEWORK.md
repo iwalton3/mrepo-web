@@ -56,8 +56,8 @@ template() {
 ## Template Helpers
 
 ```javascript
-// Conditional
-${when(condition, html`<p>Yes</p>`, html`<p>No</p>`)}
+// Conditional (function form preferred - caches by condition)
+${when(condition, () => html`<p>Yes</p>`, () => html`<p>No</p>`)}
 
 // Lists
 ${each(items, item => html`<li>${item.name}</li>`)}
@@ -67,6 +67,9 @@ ${each(items, item => html`<li>${item.name}</li>`, item => item.id)}
 
 // Memoized lists (performance)
 ${memoEach(items, item => html`<div>${item.name}</div>`, item => item.id)}
+
+// Reactive boundary (isolates high-frequency updates from parent)
+${contain(() => html`<div>${this.state.timer}</div>`)}
 
 // Async data
 ${awaitThen(promise, data => html`<p>${data}</p>`, html`<p>Loading...</p>`)}
@@ -120,26 +123,33 @@ methods: {
 
 ## Reactivity Rules
 
-**Critical - avoid infinite loops:**
+**sort()/reverse() are safe** - made atomic automatically:
 ```javascript
-// WRONG - mutates in place, causes infinite loop
-this.state.items.sort((a, b) => a.time - b.time)
-
-// CORRECT - create copy first
-[...this.state.items].sort((a, b) => a.time - b.time)
+this.state.items.sort((a, b) => a.time - b.time)  // ✅ Works
+this.state.items.reverse()  // ✅ Works
 ```
 
-**Sets/Maps must be reassigned:**
+**Sets/Maps are automatically reactive:**
 ```javascript
-const newSet = new Set(this.state.items);
-newSet.add(item);
-this.state.items = newSet;
+data() { return { ids: new Set(), scores: new Map() }; }
+this.state.ids.add(1);        // ✅ Triggers re-render
+this.state.scores.set('a', 1); // ✅ Triggers re-render
+
+// Batch operations (single trigger):
+this.state.ids.addAll([1, 2, 3]);
+this.state.scores.setAll([['a', 1], ['b', 2]]);
 ```
 
-**Large arrays (100+ items):**
+**Array iteration is O(1)** - large arrays work efficiently:
+```javascript
+// Iterating 2000 items creates 1 dependency, not 2000
+each(this.state.items, item => html`<div>${item.name}</div>`)
+```
+
+**Optional: untracked() to skip proxying entirely:**
 ```javascript
 import { untracked } from 'vdx/lib/framework.js';
-data() { return { songs: untracked([]) }; }
+data() { return { songs: untracked([]) }; }  // Items aren't reactive
 ```
 
 **Immediate DOM updates:**
@@ -214,6 +224,36 @@ Common components from `vdx/componentlib/`:
 <cl-datatable items="${rows}" columns="${cols}"></cl-datatable>
 ```
 
+## Reactive Boundaries (Critical for Performance)
+
+Templates re-evaluate as a single unit - you can't track individual `${}` slots separately. For frequently updating values mixed with expensive content, use reactive boundaries:
+
+```javascript
+// ❌ ANTIPATTERN: High-frequency updates in large templates
+// Every currentTime update re-evaluates the entire template including memoEach
+template() {
+    return html`
+        <div class="time">${this.stores.player.currentTime}</div>
+        ${memoEach(this.state.songs, song => html`...`, song => song.uuid)}
+    `;
+}
+
+// ✅ CORRECT: Isolate high-frequency updates with contain()
+template() {
+    return html`
+        ${contain(() => html`<div class="time">${this.stores.player.currentTime}</div>`)}
+        ${memoEach(this.state.songs, song => html`...`, song => song.uuid)}
+    `;
+}
+```
+
+**When to use reactive boundaries:**
+- `contain()` - Isolate frequently updating values (timers, progress, animations)
+- `when(() => html\`...\`)` - Function form creates boundary for conditional content
+- Child components - Moving content to a child naturally isolates its updates
+
+**The rule:** If a template has both high-frequency updates AND expensive content (large lists, complex rendering), they must be separated by a reactive boundary.
+
 ## Anti-Patterns
 
 ```javascript
@@ -232,4 +272,16 @@ renderItem="${this.method}"           // CORRECT
 // DON'T mutate reactive arrays in place
 this.state.items.sort()        // WRONG - infinite loop
 [...this.state.items].sort()   // CORRECT
+```
+
+---
+
+## Using This File
+
+Projects using VDX can reference this in their CLAUDE.md:
+
+```markdown
+## Framework
+
+This project uses the VDX framework. See [FRAMEWORK.md](path/to/vdx/FRAMEWORK.md) for patterns.
 ```

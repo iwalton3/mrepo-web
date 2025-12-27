@@ -275,18 +275,14 @@ export function setLastQueueSyncTime(time = Date.now()) {
  * Add a song UUID to offline set
  */
 export function addOfflineSong(uuid) {
-    const newSet = new Set(offlineStore.state.offlineSongUuids);
-    newSet.add(uuid);
-    offlineStore.state.offlineSongUuids = newSet;
+    offlineStore.state.offlineSongUuids.add(uuid);
 }
 
 /**
  * Remove a song UUID from offline set
  */
 export function removeOfflineSong(uuid) {
-    const newSet = new Set(offlineStore.state.offlineSongUuids);
-    newSet.delete(uuid);
-    offlineStore.state.offlineSongUuids = newSet;
+    offlineStore.state.offlineSongUuids.delete(uuid);
 }
 
 /**
@@ -371,18 +367,14 @@ export function setFavorites(uuids) {
  * Add a favorite
  */
 export function addFavorite(uuid) {
-    const newSet = new Set(offlineStore.state.favoriteSongs);
-    newSet.add(uuid);
-    offlineStore.state.favoriteSongs = newSet;
+    offlineStore.state.favoriteSongs.add(uuid);
 }
 
 /**
  * Remove a favorite
  */
 export function removeFavorite(uuid) {
-    const newSet = new Set(offlineStore.state.favoriteSongs);
-    newSet.delete(uuid);
-    offlineStore.state.favoriteSongs = newSet;
+    offlineStore.state.favoriteSongs.delete(uuid);
 }
 
 /**

@@ -350,10 +350,25 @@ export function createEffect(fn: () => void): EffectResult;
 /**
  * Track all reactive dependencies deeply in an object.
  * Useful for ensuring all nested properties trigger re-renders.
+ * Note: Consider using trackMutations() for O(1) tracking instead.
  *
  * @param obj - Object to track
  */
 export function trackAllDependencies(obj: unknown): void;
+
+/**
+ * Track mutations to a reactive object using O(1) mutation counter.
+ * Much more efficient than trackAllDependencies() for large objects.
+ *
+ * @param obj - The reactive object to track
+ *
+ * @example
+ * createEffect(() => {
+ *     trackMutations(state);  // O(1) - just reads mutation counter
+ *     console.log('State changed!');
+ * });
+ */
+export function trackMutations(obj: unknown): void;
 
 /**
  * Check if a value is a reactive proxy.
@@ -396,6 +411,75 @@ export function untracked<T>(obj: T): T;
  * @returns True if object is untracked
  */
 export function isUntracked(obj: unknown): boolean;
+
+/**
+ * A reactive Set-like object that triggers updates on mutations.
+ */
+export interface ReactiveSet<T> {
+    add(value: T): ReactiveSet<T>;
+    delete(value: T): boolean;
+    has(value: T): boolean;
+    clear(): void;
+    readonly size: number;
+    forEach(callback: (value: T, value2: T, set: ReactiveSet<T>) => void, thisArg?: unknown): void;
+    keys(): IterableIterator<T>;
+    values(): IterableIterator<T>;
+    entries(): IterableIterator<[T, T]>;
+    [Symbol.iterator](): IterableIterator<T>;
+    /** Add multiple values at once (single trigger) */
+    addAll(values: Iterable<T>): ReactiveSet<T>;
+    /** Delete multiple values at once (single trigger) */
+    deleteAll(values: Iterable<T>): number;
+}
+
+/**
+ * A reactive Map-like object that triggers updates on mutations.
+ */
+export interface ReactiveMap<K, V> {
+    set(key: K, value: V): ReactiveMap<K, V>;
+    get(key: K): V | undefined;
+    delete(key: K): boolean;
+    has(key: K): boolean;
+    clear(): void;
+    readonly size: number;
+    forEach(callback: (value: V, key: K, map: ReactiveMap<K, V>) => void, thisArg?: unknown): void;
+    keys(): IterableIterator<K>;
+    values(): IterableIterator<V>;
+    entries(): IterableIterator<[K, V]>;
+    [Symbol.iterator](): IterableIterator<[K, V]>;
+    /** Set multiple key-value pairs at once (single trigger) */
+    setAll(entries: Iterable<[K, V]>): ReactiveMap<K, V>;
+    /** Delete multiple keys at once (single trigger) */
+    deleteAll(keys: Iterable<K>): number;
+}
+
+/**
+ * Create a reactive Set that triggers updates on mutations.
+ * Note: Sets in reactive state are auto-wrapped, so this is mainly for
+ * creating reactive sets outside of component state.
+ *
+ * @param initial - Initial values for the Set
+ * @returns A reactive Set-like object
+ */
+export function reactiveSet<T>(initial?: Iterable<T>): ReactiveSet<T>;
+
+/**
+ * Create a reactive Map that triggers updates on mutations.
+ * Note: Maps in reactive state are auto-wrapped, so this is mainly for
+ * creating reactive maps outside of component state.
+ *
+ * @param initial - Initial entries for the Map
+ * @returns A reactive Map-like object
+ */
+export function reactiveMap<K, V>(initial?: Iterable<[K, V]>): ReactiveMap<K, V>;
+
+/**
+ * Check if an object is a reactive collection (reactiveSet or reactiveMap).
+ *
+ * @param obj - Object to check
+ * @returns True if object is a reactive collection
+ */
+export function isReactiveCollection(obj: unknown): boolean;
 
 /**
  * Execute a function without tracking reactive dependencies.
