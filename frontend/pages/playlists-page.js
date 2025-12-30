@@ -8,7 +8,7 @@
  * - Sharing functionality
  */
 
-import { defineComponent, html, when, each, memoEach, untracked } from '../lib/framework.js';
+import { defineComponent, html, when, each, memoEach, untracked, flushSync } from '../lib/framework.js';
 import { rafThrottle } from '../lib/utils.js';
 import { songs as songsApi, playlists as playlistsApi, auth } from '../offline/offline-api.js';
 import offlineStore, { shouldShowOfflineWarnings, setDownloadProgress, computeOfflineFilterSets } from '../offline/offline-store.js';
@@ -1267,15 +1267,31 @@ export default defineComponent('playlists-page', {
             const viewportTop = Math.max(0, -rect.top);
             const viewportBottom = viewportTop + window.innerHeight;
 
-            const startIndex = Math.max(0, Math.floor(viewportTop / itemHeight) - buffer);
-            const endIndex = Math.min(
+            let startIndex = Math.max(0, Math.floor(viewportTop / itemHeight) - buffer);
+            let endIndex = Math.min(
                 this.state.totalCount,
                 Math.ceil(viewportBottom / itemHeight) + buffer
             );
 
+            // Clamp to actual loaded items
+            const loadedCount = this.state.playlistSongs.length;
+            if (loadedCount > 0) {
+                startIndex = Math.min(startIndex, loadedCount - 1);
+                endIndex = Math.min(endIndex, loadedCount);
+            }
+            endIndex = Math.max(endIndex, startIndex + 1);
+
+            // Bottom locking: ensure visibleStart doesn't cause content to extend past container
+            const renderCount = endIndex - startIndex;
+            const maxVisibleStart = Math.max(0, loadedCount - renderCount);
+            startIndex = Math.min(startIndex, maxVisibleStart);
+
             if (startIndex !== this.state.visibleStart || endIndex !== this.state.visibleEnd) {
-                this.state.visibleStart = startIndex;
-                this.state.visibleEnd = endIndex;
+                // Use flushSync to ensure translateY and item slice update atomically
+                flushSync(() => {
+                    this.state.visibleStart = startIndex;
+                    this.state.visibleEnd = endIndex;
+                });
             }
         },
 

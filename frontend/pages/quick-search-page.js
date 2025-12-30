@@ -11,7 +11,7 @@
  * Includes syntax help for advanced query operators.
  */
 
-import { defineComponent, html, when, each, memoEach, untracked } from '../lib/framework.js';
+import { defineComponent, html, when, each, memoEach, untracked, flushSync } from '../lib/framework.js';
 import { rafThrottle } from '../lib/utils.js';
 import { songs } from '../offline/offline-api.js';
 import { player } from '../stores/player-store.js';
@@ -579,11 +579,10 @@ export default defineComponent('quick-search-page', {
 
     template() {
         const { searchQuery, results, advancedResults, isLoading, searchPerformed, showHelp, advancedMode } = this.state;
-        const isOffline = this.stores.offline.workOfflineMode || !this.stores.offline.isOnline;
 
         return html`
             <div class="quick-search-page">
-                ${when(isOffline, html`
+                ${when(this.stores.offline.workOfflineMode || !this.stores.offline.isOnline, () => html`
                     <div class="offline-notice">
                         📴 Searching downloaded songs only (${this.stores.offline.offlineSongUuids.size} available)
                     </div>

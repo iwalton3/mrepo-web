@@ -188,8 +188,6 @@ export default defineComponent('cl-input-password', {
     },
 
     template() {
-        const error = this.props.error || this.state.internalError;
-        const hasError = !!error;
         const feedback = this.getFeedback();
 
         return html`
@@ -203,7 +201,7 @@ export default defineComponent('cl-input-password', {
                 <div class="password-input-wrapper">
                     <input
                         type="${this.state.passwordVisible ? 'text' : 'password'}"
-                        class="${hasError ? 'error' : ''}"
+                        class="${(this.props.error || this.state.internalError) ? 'error' : ''}"
                         value="${this.state.internalValue}"
                         placeholder="${this.props.placeholder}"
                         disabled="${this.props.disabled}"
@@ -237,18 +235,18 @@ export default defineComponent('cl-input-password', {
                         </span>
                     </div>
                 `)}
-                ${when(feedback.length > 0 && !hasError, html`
+                ${when(feedback.length > 0 && !(this.props.error || this.state.internalError), html`
                     <div class="feedback-list">
                         ${feedback.map(f => html`
                             <small class="feedback-item">${f}</small>
                         `)}
                     </div>
                 `)}
-                ${when(this.props.helptext && !hasError && feedback.length === 0, html`
+                ${when(this.props.helptext && !(this.props.error || this.state.internalError) && feedback.length === 0, html`
                     <small class="help-text">${this.props.helptext}</small>
                 `)}
-                ${when(hasError, html`
-                    <small class="error-text">${error}</small>
+                ${when(this.props.error || this.state.internalError, html`
+                    <small class="error-text">${this.props.error || this.state.internalError}</small>
                 `)}
             </div>
         `;

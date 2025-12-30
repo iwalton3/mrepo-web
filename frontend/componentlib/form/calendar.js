@@ -402,7 +402,6 @@ export default defineComponent('cl-calendar', {
         const weekDays = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
         const months = this.getMonths();
         const years = this.getYears();
-        const hasError = !!this.state.inputError;
         return html`
             <div class="cl-calendar-wrapper">
                 ${when(this.props.label, html`
@@ -423,7 +422,7 @@ export default defineComponent('cl-calendar', {
                             on-keydown="handleInputKeydown">
                         </cl-input-mask>
                         <button
-                            class="calendar-toggle ${hasError ? 'error' : ''}"
+                            class="calendar-toggle ${this.state.inputError ? 'error' : ''}"
                             type="button"
                             disabled="${this.props.disabled}"
                             on-click="togglePicker">
@@ -435,7 +434,7 @@ export default defineComponent('cl-calendar', {
                             </svg>
                         </button>
                     </div>
-                    ${when(hasError, html`
+                    ${when(this.state.inputError, html`
                         <small class="error-text">${this.state.inputError}</small>
                     `)}
                 `)}

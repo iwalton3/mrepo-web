@@ -9,7 +9,7 @@
  * - Volume control
  */
 
-import { defineComponent, html, when, each, memoEach, contain } from '../lib/framework.js';
+import { defineComponent, html, when, each, memoEach, contain, flushSync } from '../lib/framework.js';
 import { debounce, rafThrottle } from '../lib/utils.js';
 import { player, playerStore } from '../stores/player-store.js';
 import { playlists as playlistsApi } from '../offline/offline-api.js';
@@ -1123,9 +1123,17 @@ export default defineComponent('now-playing-page', {
                 endIndex = Math.min(queueLength, startIndex + minVisibleItems);
             }
 
+            // Bottom locking: ensure visibleStart doesn't cause content to extend past container
+            const renderCount = endIndex - startIndex;
+            const maxVisibleStart = Math.max(0, queueLength - renderCount);
+            startIndex = Math.min(startIndex, maxVisibleStart);
+
             if (startIndex !== this.state.visibleStart || endIndex !== this.state.visibleEnd) {
-                this.state.visibleStart = startIndex;
-                this.state.visibleEnd = endIndex;
+                // Use flushSync to ensure translateY and item slice update atomically
+                flushSync(() => {
+                    this.state.visibleStart = startIndex;
+                    this.state.visibleEnd = endIndex;
+                });
             }
 
             // Check if current song is in view and update jump button visibility
@@ -1387,7 +1395,6 @@ export default defineComponent('now-playing-page', {
         const scaEnabled = this.stores.player.scaEnabled;
         const queueIndex = this.stores.player.queueIndex;
         const eqEnabled = this.stores.player.eqEnabled;
-        const seekable = song?.seekable !== false && song?.seekable !== 0;
         const { showSaveDialog, playlistName, isSaving, saveError, showEQMenu, showVolumePopup, showJumpToCurrent, jumpDirection } = this.state;
 
         // Get visible queue (filtered when offline)
@@ -1395,7 +1402,6 @@ export default defineComponent('now-playing-page', {
         const visibleQueueLength = visibleQueue.length;
         const itemHeight = 48;
         const { visibleStart, visibleEnd } = this.state;
-        const windowedItems = visibleQueue.slice(visibleStart, visibleEnd);
 
         return html`
             <div class="now-playing">
@@ -1470,8 +1476,8 @@ export default defineComponent('now-playing-page', {
                         <!-- Queue List -->
                         <div class="queue-container" ref="queueContainer"
                              style="height: ${visibleQueueLength * itemHeight}px; position: relative;">
-                        <div class="queue-list" style="position: absolute; top: ${visibleStart * itemHeight}px; left: 0; right: 0;">
-                            ${memoEach(windowedItems, ({ item, index }) => {
+                        <div class="queue-list" style="position: absolute; top: 0; left: 0; right: 0; transform: translateY(${visibleStart * itemHeight}px);">
+                            ${memoEach(this.getVisibleQueue().slice(this.state.visibleStart, this.state.visibleEnd), ({ item, index }) => {
                                 // Use stable 'index' from wrapper (real queue position)
                                 // NOT displayIdx which changes on scroll
                                 const isSelected = this.isSelected(index);
@@ -1552,7 +1558,7 @@ export default defineComponent('now-playing-page', {
                             return html`
                             <div class="progress-row">
                                 <span class="time">${this.formatTime(currentTime)}</span>
-                                ${when(seekable,
+                                ${when(this.stores.player.currentSong?.seekable !== false && this.stores.player.currentSong?.seekable !== 0,
                                     () => html`<div class="seek-wrapper" on-click="${(e) => this.handleSeekWrapperClick(e)}">
                                         <input type="range" class="seek-slider" min="0" max="${duration || 100}" step="1" value="${currentTime}" on-input="handleSeek">
                                     </div>`,

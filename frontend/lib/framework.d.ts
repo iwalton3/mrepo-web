@@ -692,6 +692,28 @@ export function each<T>(
 export type MemoCache = Map<string | number, { item: unknown; result: HtmlTemplate }>;
 
 /**
+ * Options for memoEach().
+ */
+export interface MemoEachOptions {
+  /**
+   * If true, only compare keys (not item references).
+   * Useful for virtual scroll where items may be different object refs with same key.
+   * @default false
+   */
+  trustKey?: boolean;
+  /**
+   * External dependencies array. When any value changes, ALL items re-render.
+   * Useful when item rendering depends on state outside the item itself.
+   */
+  deps?: unknown[];
+  /**
+   * Explicit cache Map (for advanced use cases).
+   * Usually not needed - memoEach() automatically manages caches inside component templates.
+   */
+  cache?: MemoCache;
+}
+
+/**
  * Create a memoization cache for use with memoEach().
  * Usually not needed - memoEach() automatically manages caches inside component templates.
  *
@@ -706,29 +728,38 @@ export function createMemoCache(): MemoCache;
 
 /**
  * Memoized list rendering - caches rendered templates per item key.
- * Only re-renders items that have changed (by reference).
+ * Only re-renders items that have changed (by reference, or by key if trustKey is true).
  *
  * When used inside a component template, caching is automatic.
- * Pass an explicit cache for advanced use cases.
+ * Pass an explicit cache or options object for advanced use cases.
  *
  * @param array - Array to iterate over
  * @param mapFn - Function that returns template for each item
  * @param keyFn - Required function to extract unique key from item
- * @param cache - Optional explicit cache (omit for automatic caching)
+ * @param options - Optional cache Map or options object with trustKey, deps, cache
  * @returns Compiled fragment template
  *
  * @example
  * // Automatic caching (recommended)
  * memoEach(songs, song => html`<div>${song.title}</div>`, song => song.uuid)
  *
- * // With explicit cache
+ * // With explicit cache (backward compatible)
  * memoEach(songs, song => html`<div>${song.title}</div>`, song => song.uuid, this._cache)
+ *
+ * // With trustKey for virtual scroll (items may be different object refs with same key)
+ * memoEach(songs, song => html`<div>${song.title}</div>`, song => song.uuid, { trustKey: true })
+ *
+ * // With deps for external state (busts ALL item caches when selection changes)
+ * memoEach(items, (item, idx) => {
+ *     const isSelected = this.state.selectedIndex === idx;
+ *     return html`<div class="${isSelected ? 'selected' : ''}">${item.name}</div>`;
+ * }, item => item.id, { deps: [this.state.selectedIndex] })
  */
 export function memoEach<T>(
   array: T[] | null | undefined,
   mapFn: (item: T, index: number) => HtmlTemplate,
   keyFn: (item: T, index: number) => string | number,
-  cache?: MemoCache
+  options?: MemoCache | MemoEachOptions
 ): HtmlTemplate;
 
 /**

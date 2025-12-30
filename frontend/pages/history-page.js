@@ -9,7 +9,7 @@
  * - Batch add to queue/playlist
  */
 
-import { defineComponent, html, when, each, memoEach, untracked } from '../lib/framework.js';
+import { defineComponent, html, when, each, memoEach, untracked, flushSync } from '../lib/framework.js';
 import { rafThrottle, notify } from '../lib/utils.js';
 import { history as historyApi, playlists as playlistsApi, auth, shouldUseOffline } from '../offline/offline-api.js';
 import { player } from '../stores/player-store.js';
@@ -194,15 +194,31 @@ export default defineComponent('history-page', {
             const viewportTop = Math.max(0, -rect.top);
             const viewportBottom = viewportTop + window.innerHeight;
 
-            const startIndex = Math.max(0, Math.floor(viewportTop / itemHeight) - buffer);
-            const endIndex = Math.min(
+            let startIndex = Math.max(0, Math.floor(viewportTop / itemHeight) - buffer);
+            let endIndex = Math.min(
                 this.state.totalCount,
                 Math.ceil(viewportBottom / itemHeight) + buffer
             );
 
+            // Clamp to actual loaded items
+            const loadedCount = this.state.historyItems.length;
+            if (loadedCount > 0) {
+                startIndex = Math.min(startIndex, loadedCount - 1);
+                endIndex = Math.min(endIndex, loadedCount);
+            }
+            endIndex = Math.max(endIndex, startIndex + 1);
+
+            // Bottom locking: ensure visibleStart doesn't cause content to extend past container
+            const renderCount = endIndex - startIndex;
+            const maxVisibleStart = Math.max(0, loadedCount - renderCount);
+            startIndex = Math.min(startIndex, maxVisibleStart);
+
             if (startIndex !== this.state.visibleStart || endIndex !== this.state.visibleEnd) {
-                this.state.visibleStart = startIndex;
-                this.state.visibleEnd = endIndex;
+                // Use flushSync to ensure translateY and item slice update atomically
+                flushSync(() => {
+                    this.state.visibleStart = startIndex;
+                    this.state.visibleEnd = endIndex;
+                });
             }
         },
 
@@ -636,11 +652,11 @@ export default defineComponent('history-page', {
                                     <div class="history-container" ref="historyContainer"
                                          style="height: ${totalCount * itemHeight}px; position: relative;">
                                         <div class="history-list"
-                                             style="position: absolute; top: ${visibleStart * itemHeight}px; left: 0; right: 0;">
+                                             style="position: absolute; top: 0; left: 0; right: 0; transform: translateY(${visibleStart * itemHeight}px);">
                                             ${memoEach(visibleItems, (item, idx) => {
                                                 const actualIndex = visibleStart + idx;
                                                 return this.renderHistoryItem(item, actualIndex);
-                                            }, (item, idx) => item?.uuid ?? `loading-${idx}`, { trustKey: true })}
+                                            }, (item, idx) => `${item?.uuid ?? 'loading'}-${visibleStart + idx}`, { trustKey: true })}
                                         </div>
                                     </div>
                                 `;

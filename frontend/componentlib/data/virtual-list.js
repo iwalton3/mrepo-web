@@ -7,7 +7,7 @@
  * - Parent scrolling - tracks a parent scrollable container
  * - Window scrolling - tracks the window/document scroll
  */
-import { defineComponent, html, memoEach, when } from '../../lib/framework.js';
+import { defineComponent, html, memoEach, when, flushSync } from '../../lib/framework.js';
 import { rafThrottle } from '../../lib/utils.js';
 
 export default defineComponent('cl-virtual-list', {
@@ -21,7 +21,8 @@ export default defineComponent('cl-virtual-list', {
         emptyMessage: 'No items to display',
         loading: false,
         selectable: false,
-        selectedIndex: -1,
+        selectedIndex: -1,      // DEPRECATED: Use selectedKey for memoization compatibility
+        selectedKey: null,      // Key of selected item (using keyFn) - preferred for virtual scroll
         scrollContainer: 'self' // 'self' | 'parent' | 'window' | CSS selector
     },
 
@@ -31,12 +32,13 @@ export default defineComponent('cl-virtual-list', {
             containerHeight: 0,
             visibleStart: 0,
             visibleEnd: 0,
-            internalSelectedIndex: -1
+            internalSelectedKey: null  // Track selection by key for memoization compatibility
         };
     },
 
     mounted() {
-        this.state.internalSelectedIndex = this.props.selectedIndex;
+        // Initialize selection - prefer selectedKey, fall back to selectedIndex
+        this._initializeSelection();
 
         // Reflect scrollContainer prop to attribute for CSS styling
         this._updateScrollContainerAttribute();
@@ -66,8 +68,16 @@ export default defineComponent('cl-virtual-list', {
         if (prop === 'items') {
             this._updateVisibleRange();
         }
-        if (prop === 'selectedIndex') {
-            this.state.internalSelectedIndex = newValue;
+        if (prop === 'selectedKey') {
+            this.state.internalSelectedKey = newValue;
+        }
+        if (prop === 'selectedIndex' && newValue !== -1) {
+            // Legacy support: convert index to key
+            const keyFn = this.props.keyFn || this._defaultKeyFn;
+            const items = this.props.items || [];
+            if (newValue >= 0 && newValue < items.length) {
+                this.state.internalSelectedKey = keyFn(items[newValue], newValue);
+            }
         }
         if (prop === 'scrollContainer') {
             this._updateScrollContainerAttribute();
@@ -77,6 +87,29 @@ export default defineComponent('cl-virtual-list', {
     },
 
     methods: {
+        _initializeSelection() {
+            const keyFn = this.props.keyFn || this._defaultKeyFn;
+            const items = this.props.items || [];
+
+            // Prefer selectedKey if provided
+            if (this.props.selectedKey !== null) {
+                this.state.internalSelectedKey = this.props.selectedKey;
+            } else if (this.props.selectedIndex >= 0 && this.props.selectedIndex < items.length) {
+                // Legacy: convert selectedIndex to key
+                this.state.internalSelectedKey = keyFn(items[this.props.selectedIndex], this.props.selectedIndex);
+            }
+        },
+
+        _findIndexByKey(key) {
+            if (key === null) return -1;
+            const keyFn = this.props.keyFn || this._defaultKeyFn;
+            const items = this.props.items || [];
+            for (let i = 0; i < items.length; i++) {
+                if (keyFn(items[i], i) === key) return i;
+            }
+            return -1;
+        },
+
         _updateScrollContainerAttribute() {
             // Reflect prop to attribute for CSS styling
             const container = this.props.scrollContainer;
@@ -198,12 +231,20 @@ export default defineComponent('cl-virtual-list', {
             const visibleCount = Math.ceil(this.state.containerHeight / itemHeight);
             const visibleEnd = visibleStart + visibleCount;
 
-            const newStart = Math.max(0, visibleStart - bufferSize);
-            const newEnd = Math.min(totalItems, visibleEnd + bufferSize);
+            let newStart = Math.max(0, visibleStart - bufferSize);
+            let newEnd = Math.min(totalItems, visibleEnd + bufferSize);
+
+            // Bottom locking: ensure visibleStart doesn't cause content to extend past container
+            const renderCount = newEnd - newStart;
+            const maxVisibleStart = Math.max(0, totalItems - renderCount);
+            newStart = Math.min(newStart, maxVisibleStart);
 
             if (this.state.visibleStart !== newStart || this.state.visibleEnd !== newEnd) {
-                this.state.visibleStart = newStart;
-                this.state.visibleEnd = newEnd;
+                // Use flushSync to ensure translateY and item slice update atomically
+                flushSync(() => {
+                    this.state.visibleStart = newStart;
+                    this.state.visibleEnd = newEnd;
+                });
             }
         },
 
@@ -234,20 +275,23 @@ export default defineComponent('cl-virtual-list', {
             this.scrollToIndex(Math.max(0, totalItems - 1));
         },
 
-        handleItemClick(item, index) {
+        handleItemClick(item, key) {
+            // Find the index in the full items array
+            const index = this._findIndexByKey(key);
+
             if (this.props.selectable) {
-                this.state.internalSelectedIndex = index;
+                this.state.internalSelectedKey = key;
                 this.dispatchEvent(new CustomEvent('select', {
                     bubbles: true,
                     composed: true,
-                    detail: { item, index }
+                    detail: { item, index, key }
                 }));
             }
 
             this.dispatchEvent(new CustomEvent('item-click', {
                 bubbles: true,
                 composed: true,
-                detail: { item, index }
+                detail: { item, index, key }
             }));
         },
 
@@ -257,34 +301,39 @@ export default defineComponent('cl-virtual-list', {
             const items = this.props.items;
             if (!items || items.length === 0) return;
 
+            const keyFn = this.props.keyFn || this._defaultKeyFn;
+            const currentIndex = this._findIndexByKey(this.state.internalSelectedKey);
+
             if (e.key === 'ArrowDown') {
                 e.preventDefault();
-                const newIndex = Math.min(this.state.internalSelectedIndex + 1, items.length - 1);
-                this.state.internalSelectedIndex = newIndex;
+                const newIndex = Math.min(currentIndex + 1, items.length - 1);
+                const newKey = keyFn(items[newIndex], newIndex);
+                this.state.internalSelectedKey = newKey;
                 this.scrollToIndex(newIndex);
                 this.dispatchEvent(new CustomEvent('select', {
                     bubbles: true,
                     composed: true,
-                    detail: { item: items[newIndex], index: newIndex }
+                    detail: { item: items[newIndex], index: newIndex, key: newKey }
                 }));
             } else if (e.key === 'ArrowUp') {
                 e.preventDefault();
-                const newIndex = Math.max(this.state.internalSelectedIndex - 1, 0);
-                this.state.internalSelectedIndex = newIndex;
+                const newIndex = Math.max(currentIndex - 1, 0);
+                const newKey = keyFn(items[newIndex], newIndex);
+                this.state.internalSelectedKey = newKey;
                 this.scrollToIndex(newIndex);
                 this.dispatchEvent(new CustomEvent('select', {
                     bubbles: true,
                     composed: true,
-                    detail: { item: items[newIndex], index: newIndex }
+                    detail: { item: items[newIndex], index: newIndex, key: newKey }
                 }));
             } else if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
-                const index = this.state.internalSelectedIndex;
-                if (index >= 0 && index < items.length) {
+                if (currentIndex >= 0 && currentIndex < items.length) {
+                    const key = this.state.internalSelectedKey;
                     this.dispatchEvent(new CustomEvent('item-click', {
                         bubbles: true,
                         composed: true,
-                        detail: { item: items[index], index }
+                        detail: { item: items[currentIndex], index: currentIndex, key }
                     }));
                 }
             }
@@ -302,12 +351,6 @@ export default defineComponent('cl-virtual-list', {
         const totalHeight = items.length * itemHeight;
         const isSelfScroll = this.props.scrollContainer === 'self';
 
-        // Safeguard: if dimensions not yet calculated, limit visible items
-        const safeEnd = this.state.containerHeight > 0
-            ? this.state.visibleEnd
-            : Math.min(this.state.visibleEnd, this.props.bufferSize * 2);
-
-        const visibleItems = items.slice(this.state.visibleStart, safeEnd);
         const offsetY = this.state.visibleStart * itemHeight;
 
         // Use provided keyFn or default
@@ -330,6 +373,9 @@ export default defineComponent('cl-virtual-list', {
             `;
         }
 
+        // Read selection state for dependency tracking and key generation
+        const selectedKey = this.props.selectable ? this.state.internalSelectedKey : null;
+
         return html`
             <div
                 class="virtual-list-container ${isSelfScroll ? '' : 'parent-scroll'}"
@@ -338,31 +384,33 @@ export default defineComponent('cl-virtual-list', {
                 <div class="virtual-list-spacer" style="height: ${totalHeight}px;"></div>
 
                 <div class="virtual-list-items" style="transform: translateY(${offsetY}px);">
-                    ${memoEach(visibleItems, (item, idx) => {
-                        const actualIndex = this.state.visibleStart + idx;
-                        const isSelected = this.props.selectable && actualIndex === this.state.internalSelectedIndex;
+                    ${memoEach(items.slice(this.state.visibleStart, this.state.visibleEnd), (item) => {
+                        // Position is handled by parent's translateY.
+                        // Selection is included in key so only affected items re-render.
+                        const itemKey = keyFn(item);
+                        const isSelected = this.props.selectable && itemKey === selectedKey;
 
                         if (this.props.renderItem && typeof this.props.renderItem === 'function') {
                             return html`
                                 <div
                                     class="virtual-list-item ${isSelected ? 'selected' : ''}"
                                     style="height: ${itemHeight}px;"
-                                    data-index="${actualIndex}"
-                                    on-click="${() => this.handleItemClick(item, actualIndex)}">
-                                    ${this.props.renderItem(item, actualIndex)}
+                                    data-key="${itemKey}"
+                                    on-click="${() => this.handleItemClick(item, itemKey)}">
+                                    ${this.props.renderItem(item, itemKey)}
                                 </div>
                             `;
                         }
 
-                        const title = item.title || item.name || item.label || `Item ${actualIndex + 1}`;
+                        const title = item.title || item.name || item.label || String(itemKey);
                         const subtitle = item.subtitle || item.description || '';
 
                         return html`
                             <div
                                 class="virtual-list-item ${isSelected ? 'selected' : ''}"
                                 style="height: ${itemHeight}px;"
-                                data-index="${actualIndex}"
-                                on-click="${() => this.handleItemClick(item, actualIndex)}">
+                                data-key="${itemKey}"
+                                on-click="${() => this.handleItemClick(item, itemKey)}">
                                 <div class="item-content">
                                     <div class="item-title">${title}</div>
                                     ${when(subtitle, html`
@@ -371,7 +419,12 @@ export default defineComponent('cl-virtual-list', {
                                 </div>
                             </div>
                         `;
-                    }, keyFn)}
+                    }, (item) => {
+                        // Include selection state in key so selected/deselected items re-render
+                        const itemKey = keyFn(item);
+                        const isSelected = this.props.selectable && itemKey === selectedKey;
+                        return isSelected ? `${itemKey}-selected` : itemKey;
+                    }, { trustKey: true })}
                 </div>
             </div>
         `;

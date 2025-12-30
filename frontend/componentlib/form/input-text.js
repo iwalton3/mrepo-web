@@ -41,7 +41,13 @@ export default defineComponent('cl-input-text', {
 
     propsChanged(prop, newValue, oldValue) {
         // Sync internal value when prop changes (controlled mode)
+        // But skip if input is focused - user is actively typing
         if (prop === 'value' && newValue !== this.state.internalValue) {
+            const input = this.querySelector('input');
+            if (input && document.activeElement === input) {
+                // Input is focused, user is typing - don't overwrite
+                return;
+            }
             this.state.internalValue = newValue || '';
         }
     },
@@ -116,17 +122,9 @@ export default defineComponent('cl-input-text', {
     },
 
     template() {
-        const error = this.props.error || this.state.internalError;
-        const hasError = !!error;
         const inputId = this.state.inputId;
         const helpTextId = `${inputId}-help`;
         const errorId = `${inputId}-error`;
-
-        // Build aria-describedby from available elements
-        const describedByParts = [];
-        if (this.props.helptext && !hasError) describedByParts.push(helpTextId);
-        if (hasError) describedByParts.push(errorId);
-        const ariaDescribedby = describedByParts.length > 0 ? describedByParts.join(' ') : undefined;
 
         return html`
             <div class="cl-input-wrapper">
@@ -139,21 +137,24 @@ export default defineComponent('cl-input-text', {
                 <input
                     type="text"
                     id="${inputId}"
-                    class="${hasError ? 'error' : ''}"
+                    class="${(this.props.error || this.state.internalError) ? 'error' : ''}"
                     value="${this.state.internalValue}"
                     placeholder="${this.props.placeholder}"
                     disabled="${this.props.disabled}"
                     aria-required="${this.props.required ? 'true' : undefined}"
-                    aria-invalid="${hasError ? 'true' : undefined}"
-                    aria-describedby="${ariaDescribedby}"
+                    aria-invalid="${(this.props.error || this.state.internalError) ? 'true' : undefined}"
+                    aria-describedby="${[
+                        this.props.helptext && !(this.props.error || this.state.internalError) ? helpTextId : null,
+                        (this.props.error || this.state.internalError) ? errorId : null
+                    ].filter(Boolean).join(' ') || undefined}"
                     on-input="handleInput"
                     on-change="handleChange"
                     on-blur="handleBlur">
-                ${when(this.props.helptext && !hasError, html`
+                ${when(this.props.helptext && !(this.props.error || this.state.internalError), html`
                     <small class="help-text" id="${helpTextId}">${this.props.helptext}</small>
                 `)}
-                ${when(hasError, html`
-                    <small class="error-text" id="${errorId}" role="alert">${error}</small>
+                ${when(this.props.error || this.state.internalError, html`
+                    <small class="error-text" id="${errorId}" role="alert">${this.props.error || this.state.internalError}</small>
                 `)}
             </div>
         `;

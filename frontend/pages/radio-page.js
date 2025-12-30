@@ -147,11 +147,10 @@ export default defineComponent('radio-page', {
         const queue = this.stores.player.queue;
         const isPlaying = this.stores.player.isPlaying;
         const error = this.stores.player.error;
-        const isOffline = this.stores.offline.workOfflineMode || !this.stores.offline.isOnline;
 
         return html`
             <div class="radio-page">
-                ${when(isOffline, () => html`
+                ${when(this.stores.offline.workOfflineMode || !this.stores.offline.isOnline, () => html`
                     <div class="offline-warning">
                         <span class="warning-icon">⚠️</span>
                         <span>Radio requires network connection. ${this.stores.offline.workOfflineMode
@@ -160,7 +159,7 @@ export default defineComponent('radio-page', {
                     </div>
                 `)}
 
-                ${when(error && !isOffline, () => html`
+                ${when(error && !(this.stores.offline.workOfflineMode || !this.stores.offline.isOnline), () => html`
                     <div class="error-message">${error}</div>
                 `)}
 

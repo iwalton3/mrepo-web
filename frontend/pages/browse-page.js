@@ -9,7 +9,7 @@
  * - Virtual scrolling for large lists
  */
 
-import { defineComponent, html, when, each, memoEach, untracked } from '../lib/framework.js';
+import { defineComponent, html, when, each, memoEach, untracked, flushSync } from '../lib/framework.js';
 import { getRouter } from '../lib/router.js';
 import { rafThrottle } from '../lib/utils.js';
 import { browse, playlists, songs as songsApi } from '../offline/offline-api.js';
@@ -219,12 +219,18 @@ export default defineComponent('browse-page', {
         },
 
         async loadItems() {
-            if (this.state.isLoading) return;
+            // Capture current hierarchy state - if it changes during async load, discard results
+            const { level, currentCategory, currentGenre, currentArtist, currentAlbum, cursor, sortBy } = this.state;
+            const loadKey = `${level}|${currentCategory}|${currentGenre}|${currentArtist}|${currentAlbum}`;
+
+            // Track which request is latest (allow concurrent requests, discard stale ones)
+            this._hierarchyRequestId = (this._hierarchyRequestId || 0) + 1;
+            const thisRequestId = this._hierarchyRequestId;
+
             this.state.isLoading = true;
 
             try {
                 let result;
-                const { level, currentCategory, currentGenre, currentArtist, currentAlbum, cursor, sortBy } = this.state;
                 const sort = sortBy === 'count' ? 'song_count' : 'name';
 
                 // Convert special [All X] values to null for API calls
@@ -235,16 +241,10 @@ export default defineComponent('browse-page', {
                 switch (level) {
                     case 'category':
                         result = await browse.categories({ sort });
-                        this.state.items = cursor ? [...this.state.items, ...result.items] : result.items;
-                        this.state.totalCount = result.totalCount;
-                        this.state.hasMore = result.hasMore || false;
                         break;
 
                     case 'genre':
                         result = await browse.genres({ category: currentCategory, sort });
-                        this.state.items = cursor ? [...this.state.items, ...result.items] : result.items;
-                        this.state.totalCount = result.totalCount;
-                        this.state.hasMore = result.hasMore || false;
                         break;
 
                     case 'artist':
@@ -255,10 +255,6 @@ export default defineComponent('browse-page', {
                             limit: 1000,
                             sort
                         });
-                        this.state.items = cursor ? [...this.state.items, ...result.items] : result.items;
-                        this.state.cursor = result.nextCursor;
-                        this.state.hasMore = result.hasMore;
-                        if (result.totalCount !== undefined) this.state.totalCount = result.totalCount;
                         break;
 
                     case 'album':
@@ -270,10 +266,6 @@ export default defineComponent('browse-page', {
                             limit: 1000,
                             sort
                         });
-                        this.state.items = cursor ? [...this.state.items, ...result.items] : result.items;
-                        this.state.cursor = result.nextCursor;
-                        this.state.hasMore = result.hasMore;
-                        if (result.totalCount !== undefined) this.state.totalCount = result.totalCount;
                         break;
 
                     case 'songs':
@@ -284,12 +276,20 @@ export default defineComponent('browse-page', {
                             cursor,
                             limit: 1000
                         });
-                        this.state.items = cursor ? [...this.state.items, ...result.items] : result.items;
-                        this.state.cursor = result.nextCursor;
-                        this.state.hasMore = result.hasMore;
-                        if (result.totalCount !== undefined) this.state.totalCount = result.totalCount;
                         break;
                 }
+
+                // Discard if hierarchy changed or a newer request started
+                const currentKey = `${this.state.level}|${this.state.currentCategory}|${this.state.currentGenre}|${this.state.currentArtist}|${this.state.currentAlbum}`;
+                if (currentKey !== loadKey || this._hierarchyRequestId !== thisRequestId) {
+                    return;
+                }
+
+                // Apply results
+                this.state.items = cursor ? [...this.state.items, ...result.items] : result.items;
+                if (result.nextCursor !== undefined) this.state.cursor = result.nextCursor;
+                this.state.hasMore = result.hasMore || false;
+                if (result.totalCount !== undefined) this.state.totalCount = result.totalCount;
 
                 this._updateBreadcrumbs();
                 // Re-setup infinite scroll after items load
@@ -297,9 +297,13 @@ export default defineComponent('browse-page', {
                 // Setup scroll listener for windowed rendering
                 this._setupScrollListener();
             } catch (e) {
-                console.error('Failed to load items:', e);
+                if (this._hierarchyRequestId === thisRequestId) {
+                    console.error('Failed to load items:', e);
+                }
             } finally {
-                this.state.isLoading = false;
+                if (this._hierarchyRequestId === thisRequestId) {
+                    this.state.isLoading = false;
+                }
             }
         },
 
@@ -372,14 +376,27 @@ export default defineComponent('browse-page', {
         },
 
         async loadFilePath(append = false) {
-            if (this.state.isLoading) return;
+            // Capture path at start - if it changes during async load, discard results
+            const loadingPath = this.state.currentPath;
+
+            // Don't block on isLoading - allow new requests to proceed
+            // Just increment a counter to track which request is latest
+            this._loadRequestId = (this._loadRequestId || 0) + 1;
+            const thisRequestId = this._loadRequestId;
+
             this.state.isLoading = true;
             this.state.visibleStart = 0;
             this.state.visibleEnd = 50;
 
             try {
                 const sort = this.state.sortBy === 'count' ? 'song_count' : 'name';
-                const result = await browse.path(this.state.currentPath, { limit: 200, sort });
+                const result = await browse.path(loadingPath, { limit: 200, sort });
+
+                // Discard if path changed or a newer request started
+                if (this.state.currentPath !== loadingPath || this._loadRequestId !== thisRequestId) {
+                    return;
+                }
+
                 const totalCount = result.totalCount || result.items.length;
 
                 // Create sparse array
@@ -402,9 +419,15 @@ export default defineComponent('browse-page', {
                     this._loadRemainingInBackground(result.nextCursor, result.items.length, sort);
                 }
             } catch (e) {
-                console.error('Failed to load path:', e);
+                // Only log if this is still the current request
+                if (this._loadRequestId === thisRequestId) {
+                    console.error('Failed to load path:', e);
+                }
             } finally {
-                this.state.isLoading = false;
+                // Only clear loading if this is still the current request
+                if (this._loadRequestId === thisRequestId) {
+                    this.state.isLoading = false;
+                }
             }
         },
 
@@ -501,18 +524,32 @@ export default defineComponent('browse-page', {
                 Math.ceil(viewportBottom / itemHeight) + bufferBelow
             );
 
-            // Ensure valid range: startIndex must not exceed itemCount or endIndex
-            startIndex = Math.min(startIndex, Math.max(0, itemCount - 1));
+            // Ensure valid range - only constrain based on actual loaded items
+            // Using totalCount here can cause jumps if it's stale during loadMore()
+            const loadedCount = this.state.items.length;
+            if (loadedCount > 0) {
+                startIndex = Math.min(startIndex, loadedCount - 1);
+                endIndex = Math.min(endIndex, loadedCount);
+            }
             endIndex = Math.max(endIndex, startIndex + 1);
 
+            // Bottom locking: ensure visibleStart doesn't cause content to extend past container
+            // This prevents scroll position from jumping when reaching the end
+            const renderCount = endIndex - startIndex;
+            const maxVisibleStart = Math.max(0, loadedCount - renderCount);
+            startIndex = Math.min(startIndex, maxVisibleStart);
+
             if (startIndex !== this.state.visibleStart || endIndex !== this.state.visibleEnd) {
-                this.state.visibleStart = startIndex;
-                this.state.visibleEnd = endIndex;
+                // Use flushSync to ensure translateY and item slice update atomically
+                // Prevents visual desync between position and content in RAF-throttled handler
+                flushSync(() => {
+                    this.state.visibleStart = startIndex;
+                    this.state.visibleEnd = endIndex;
+                });
             }
 
             // Trigger loading more items when approaching end of loaded items
             // This replaces the sentinel-based approach for virtual scroll mode
-            const loadedCount = this.state.items.length;
             const loadThreshold = 50; // Load more when within 50 items of end
             if (this.state.hasMore && !this.state.isLoading && endIndex >= loadedCount - loadThreshold) {
                 this.loadMore();
@@ -1568,11 +1605,10 @@ export default defineComponent('browse-page', {
 
     template() {
         const { viewMode, items, isLoading, breadcrumbs, level } = this.state;
-        const isOffline = this.stores.offline.workOfflineMode || !this.stores.offline.isOnline;
 
         return html`
             <div class="browse-page">
-                ${when(isOffline, html`
+                ${when(this.stores.offline.workOfflineMode || !this.stores.offline.isOnline, () => html`
                     <div class="offline-mode-banner">
                         📴 Offline Mode - Showing ${this.stores.offline.offlineSongUuids.size} downloaded songs
                     </div>
@@ -1713,14 +1749,15 @@ export default defineComponent('browse-page', {
                             // For windowed mode
                             if (useWindowed) {
                                 const itemHeight = 52;
-                                const { visibleStart, visibleEnd } = this.state;
-                                const visibleItems = items.slice(visibleStart, visibleEnd);
+                                // NOTE: We inline the slice directly in memoEach to allow
+                                // the optimizer to correctly track dependencies.
+                                // Using a local variable would break reactivity after optimization.
 
                                 return html`
                                     <div class="items-container" ref="itemsContainer"
                                          style="height: ${itemCount * itemHeight}px; position: relative;">
-                                        <div class="items-list" style="transform: translateY(${visibleStart * itemHeight}px);">
-                                            ${memoEach(visibleItems, (item, idx) => {
+                                        <div class="items-list" style="transform: translateY(${this.state.visibleStart * itemHeight}px);">
+                                            ${memoEach(this.state.items.slice(this.state.visibleStart, this.state.visibleEnd), (item, idx) => {
                                                 if (!item) {
                                                     return html`
                                                         <div class="item loading-placeholder">
