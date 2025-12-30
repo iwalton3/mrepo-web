@@ -176,7 +176,7 @@ export default defineComponent('radio-page', {
                         <div class="quick-start">
                             <cl-button severity="primary" icon="🎲" on-click="startRandomRadio"
                                        loading="${isLoading}"
-                                       disabled="${isOffline}">
+                                       disabled="${this.stores.offline.workOfflineMode || !this.stores.offline.isOnline}">
                                 Random Radio
                             </cl-button>
                         </div>
@@ -227,7 +227,7 @@ export default defineComponent('radio-page', {
 
                             <cl-button severity="primary" icon="📻" on-click="startRadio"
                                        loading="${isLoading}"
-                                       disabled="${isOffline}">
+                                       disabled="${this.stores.offline.workOfflineMode || !this.stores.offline.isOnline}">
                                 Start Filtered Radio
                             </cl-button>
                         </div>
