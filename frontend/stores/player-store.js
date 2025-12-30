@@ -1605,13 +1605,19 @@ class AudioController {
         this._isParametricMode = false;
         this._graphicPreamp = preamp;
 
-        if (!this._audioContext || !this._eqSourceNode) {
+        if (!this._audioContext) {
             return; // Not initialized
         }
 
-        // Disconnect existing chain
+        // Get the chain input node (mixer in dual mode, source in simple mode)
+        const chainInputNode = this._getChainInputNode();
+        if (!chainInputNode) {
+            return; // Not initialized
+        }
+
+        // Disconnect existing chain from the input node
         try {
-            this._eqSourceNode.disconnect();
+            chainInputNode.disconnect();
         } catch (e) {}
 
         // Disconnect existing filters
@@ -1648,8 +1654,8 @@ class AudioController {
             return filter;
         });
 
-        // Chain: source -> filters -> preamp -> crossfeed -> noise -> output
-        let lastNode = this._eqSourceNode;
+        // Chain: chainInput -> loudness -> filters -> preamp -> crossfeed -> noise -> output
+        let lastNode = this._connectLoudness(chainInputNode);
         for (const filter of this._eqFilters) {
             lastNode.connect(filter);
             lastNode = filter;
@@ -2359,6 +2365,7 @@ class AudioController {
      * Force-recreate a gain node at the specified index.
      * This bypasses all AudioParam manipulation and creates a fresh node.
      * Use when an active setValueCurveAtTime has locked the AudioParam.
+     * Chain: source → replayGainNode → fadeGain → mixer
      */
     _forceRecreateGainAtIndex(index, targetValue) {
         if (!this._audioContext || !this._dualPipelineActive) return;
@@ -2371,15 +2378,26 @@ class AudioController {
             const newGain = this._audioContext.createGain();
             newGain.gain.value = targetValue;
 
-            // Disconnect old gain node (don't let errors stop us)
+            // Disconnect old gain node from mixer (don't let errors stop us)
             try {
                 oldGainNode.disconnect();
             } catch (e) {
                 // Ignore disconnect errors
             }
 
-            // Reconnect audio source to new gain
-            if (this._audioSources[index]) {
+            // Reconnect replay gain node to new fade gain
+            // Chain: source → replayGainNode → fadeGain → mixer
+            // The source→replayGainNode connection is already in place,
+            // we just need to reconnect replayGainNode→fadeGain
+            if (this._replayGainNodes[index]) {
+                try {
+                    this._replayGainNodes[index].disconnect();
+                } catch (e) {
+                    // Ignore disconnect errors
+                }
+                this._replayGainNodes[index].connect(newGain);
+            } else if (this._audioSources[index]) {
+                // Fallback: if no replay gain node, connect source directly
                 try {
                     this._audioSources[index].disconnect();
                 } catch (e) {
