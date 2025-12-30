@@ -52,12 +52,23 @@ def create_app(config_path=None):
         config.load()
 
     # Determine frontend path
-    # In development: ../frontend relative to backend/
-    # In production: configured or default /app/frontend
+    # Priority: frontend-dist (optimized) > frontend (source) > /app/frontend (docker)
     backend_dir = Path(__file__).parent
-    frontend_dir = backend_dir.parent / 'frontend'
-    if not frontend_dir.exists():
+    project_dir = backend_dir.parent
+
+    # Check for optimized build first
+    frontend_dist = project_dir / 'frontend-dist'
+    frontend_src = project_dir / 'frontend'
+
+    if frontend_dist.exists() and (frontend_dist / 'index.html').exists():
+        frontend_dir = frontend_dist
+        print(f'[mrepo] Using optimized frontend: {frontend_dir}')
+    elif frontend_src.exists():
+        frontend_dir = frontend_src
+        print(f'[mrepo] Using source frontend: {frontend_dir}')
+    else:
         frontend_dir = Path('/app/frontend')
+        print(f'[mrepo] Using production frontend: {frontend_dir}')
 
     app = Flask(__name__,
                 static_folder=str(frontend_dir),

@@ -1,3 +1,25 @@
+# Stage 1: Build optimized frontend with Node.js
+FROM node:20-alpine AS frontend-builder
+
+WORKDIR /build
+
+# Copy optimizer tools
+COPY tools/optimize.js tools/bundler-esm.js ./tools/
+
+# Copy frontend source
+COPY frontend/ ./frontend/
+
+# Run optimizer: minify + sourcemap
+# Output goes to frontend-dist/
+RUN mkdir -p ./frontend-dist && \
+    node tools/optimize.js \
+    --input ./frontend \
+    --output ./frontend-dist \
+    --minify \
+    --sourcemap && \
+    cd ./frontend-dist && node spider-deps.js
+
+# Stage 2: Final Python runtime (no Node.js)
 FROM python:3.11-slim
 
 # Install FFmpeg for audio transcoding
@@ -16,7 +38,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY backend/ ./backend/
-COPY frontend/ ./frontend/
+
+# Copy optimized frontend from builder stage
+COPY --from=frontend-builder /build/frontend-dist/ ./frontend/
 
 # Create data directories
 RUN mkdir -p /data /config && chown -R mrepo:mrepo /data /config

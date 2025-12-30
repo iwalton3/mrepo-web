@@ -6,6 +6,9 @@ data/*
 *.db-shm
 .secret_key
 
+# Optimized frontend build (run: node tools/optimize.js -i frontend -o frontend-dist -m -s)
+frontend-dist/
+
 # Python
 venv
 __pycache__/

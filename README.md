@@ -136,6 +136,27 @@ A secure session key is automatically generated and stored in `/data/.secret_key
 
 6. Open http://localhost:8080 and complete the setup wizard.
 
+### Optimized Frontend (Optional)
+
+For better performance, especially on phones or with large libraries, you can build an optimized version of the frontend:
+
+```bash
+# Requires Node.js
+node tools/optimize.js -i frontend -o frontend-dist -m -s
+cd frontend-dist && node spider-deps.js
+```
+
+This creates a minified build with source maps in `frontend-dist/`. The server automatically detects and uses it when present. Benefits include:
+
+- ~11% smaller file sizes (faster initial load)
+- Minified JavaScript (faster parsing)
+- Fine-grained reactivity optimizations (smoother scrolling in large lists)
+- Source maps for debugging
+
+The `spider-deps.js` step regenerates the cache manifest so the PWA caches the optimized files.
+
+To revert to the development version, simply delete `frontend-dist/`.
+
 ## Configuration
 
 Configuration can be set via `config.yaml` or environment variables. Environment variables take precedence.
