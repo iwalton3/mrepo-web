@@ -831,9 +831,9 @@ export default defineComponent('browse-page', {
                 } else {
                     await player.addByFilter({
                         category: currentCategory,
-                        genre: currentGenre,
-                        artist: currentArtist,
-                        album: currentAlbum
+                        genre: this._apiValue(currentGenre, '[All Genres]'),
+                        artist: this._apiValue(currentArtist, '[All Artists]'),
+                        album: this._apiValue(currentAlbum, '[All Albums]')
                     });
                 }
             } catch (e) {
@@ -858,9 +858,9 @@ export default defineComponent('browse-page', {
                 } else {
                     await player.addByFilter({
                         category: currentCategory,
-                        genre: currentGenre,
-                        artist: currentArtist,
-                        album: currentAlbum
+                        genre: this._apiValue(currentGenre, '[All Genres]'),
+                        artist: this._apiValue(currentArtist, '[All Artists]'),
+                        album: this._apiValue(currentAlbum, '[All Albums]')
                     });
                 }
             } catch (e) {
@@ -880,9 +880,9 @@ export default defineComponent('browse-page', {
                 } else {
                     await player.addByFilter({
                         category: currentCategory,
-                        genre: currentGenre,
-                        artist: currentArtist,
-                        album: currentAlbum
+                        genre: this._apiValue(currentGenre, '[All Genres]'),
+                        artist: this._apiValue(currentArtist, '[All Artists]'),
+                        album: this._apiValue(currentAlbum, '[All Albums]')
                     });
                 }
             } catch (e) {
@@ -901,9 +901,12 @@ export default defineComponent('browse-page', {
             } else {
                 const parts = [];
                 if (currentCategory) parts.push(`c:eq:${currentCategory}`);
-                if (currentGenre) parts.push(`g:eq:${currentGenre}`);
-                if (currentArtist) parts.push(`a:eq:${currentArtist}`);
-                if (currentAlbum) parts.push(`l:eq:${currentAlbum}`);
+                const apiGenre = this._apiValue(currentGenre, '[All Genres]');
+                const apiArtist = this._apiValue(currentArtist, '[All Artists]');
+                const apiAlbum = this._apiValue(currentAlbum, '[All Albums]');
+                if (apiGenre) parts.push(`g:eq:${apiGenre}`);
+                if (apiArtist) parts.push(`a:eq:${apiArtist}`);
+                if (apiAlbum) parts.push(`l:eq:${apiAlbum}`);
                 if (parts.length > 0) filter = parts.join(' AND ');
             }
 
@@ -935,8 +938,8 @@ export default defineComponent('browse-page', {
                     // Add songs matching this hierarchy item
                     await player.addByFilter({
                         category: level === 'category' ? item.name : currentCategory,
-                        genre: level === 'genre' ? item.name : currentGenre,
-                        artist: level === 'artist' ? item.name : currentArtist,
+                        genre: level === 'genre' ? item.name : this._apiValue(currentGenre, '[All Genres]'),
+                        artist: level === 'artist' ? item.name : this._apiValue(currentArtist, '[All Artists]'),
                         album: level === 'album' ? item.name : null
                     });
                 }
