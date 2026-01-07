@@ -647,7 +647,7 @@ export const radio = {
  */
 export const history = {
     /**
-     * Record a play event.
+     * Record a play event. Returns { success, id } where id is used for updates.
      */
     async record(songUuid, durationSeconds = 0, skipped = false, source = 'browse') {
         return apiCall('history_record', {
@@ -655,6 +655,17 @@ export const history = {
             duration_seconds: durationSeconds,
             skipped,
             source
+        });
+    },
+
+    /**
+     * Update a play history entry with final duration and skip status.
+     */
+    async update(historyId, durationSeconds, skipped = false) {
+        return apiCall('history_update', {
+            history_id: historyId,
+            duration_seconds: durationSeconds,
+            skipped
         });
     },
 

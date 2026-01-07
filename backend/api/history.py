@@ -13,7 +13,7 @@ from ..db import get_db, rows_to_list
 @api_method('history_record', require='user')
 def history_record(song_uuid, duration_seconds=0, skipped=False,
                    source='browse', details=None, _conn=None):
-    """Record a play event."""
+    """Record a play event. Returns the history entry id for later updates."""
     own_conn = _conn is None
     conn = _conn if _conn else get_db()
     cur = conn.cursor()
@@ -28,9 +28,11 @@ def history_record(song_uuid, duration_seconds=0, skipped=False,
             VALUES (?, ?, ?, ?, ?)
         """, (user_id, song_uuid, duration_seconds, 1 if skipped else 0, source))
 
+        history_id = cur.lastrowid
+
         if own_conn:
             cur.execute("COMMIT")
-        return {'success': True}
+        return {'success': True, 'id': history_id}
     except Exception as e:
         if own_conn:
             try:
@@ -38,6 +40,26 @@ def history_record(song_uuid, duration_seconds=0, skipped=False,
             except:
                 pass
         raise
+
+
+@api_method('history_update', require='user')
+def history_update(history_id, duration_seconds, skipped=False, details=None):
+    """Update a play history entry with final duration and skip status."""
+    conn = get_db()
+    cur = conn.cursor()
+    user_id = details['user_id']
+
+    # Only allow updating own history entries
+    cur.execute("""
+        UPDATE play_history
+        SET play_duration_seconds = ?, skipped = ?
+        WHERE id = ? AND user_id = ?
+    """, (duration_seconds, 1 if skipped else 0, history_id, user_id))
+
+    updated = cur.rowcount > 0
+    conn.commit()
+
+    return {'success': updated}
 
 
 @api_method('history_recent', require='user')

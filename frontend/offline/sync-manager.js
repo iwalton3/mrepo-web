@@ -58,7 +58,7 @@ function generateSessionId() {
  * Process a single pending write
  */
 async function processWrite(write) {
-    const { type, operation, payload } = write;
+    const { id, type, operation, payload } = write;
 
     try {
         switch (type) {
@@ -83,7 +83,7 @@ async function processWrite(write) {
                 break;
 
             case 'history':
-                await processHistoryWrite(operation, payload);
+                await processHistoryWrite(operation, payload, id);
                 break;
 
             default:
@@ -272,15 +272,31 @@ async function processPlaybackWrite(operation, payload) {
 /**
  * Process history writes
  */
-async function processHistoryWrite(operation, payload) {
+async function processHistoryWrite(operation, payload, pendingWriteId) {
     if (operation === 'record') {
         // Fire and forget - history is not critical
         try {
-            await api.history.record(
+            const result = await api.history.record(
                 payload.songUuid,
                 payload.durationSeconds,
                 payload.skipped,
                 payload.source || 'browse'
+            );
+            // Store mapping from local ID to server ID for potential later updates
+            // This handles the case where sync happens before song ends/is skipped
+            if (result?.id && pendingWriteId) {
+                await offlineDb.saveHistoryIdMapping(`local:${pendingWriteId}`, result.id);
+            }
+        } catch (e) {
+            // Ignore history sync failures
+        }
+    } else if (operation === 'update') {
+        // Update an existing history entry (e.g., song started online, skipped offline)
+        try {
+            await api.history.update(
+                payload.historyId,
+                payload.durationSeconds,
+                payload.skipped
             );
         } catch (e) {
             // Ignore history sync failures
@@ -356,12 +372,27 @@ async function _doSyncPendingWrites() {
         return { success: true, synced: 0 };
     }
 
+    // Separate history writes - they need special handling for ID mapping
+    const historyWrites = writes.filter(w => w.type === 'history');
+    const batchWrites = writes.filter(w => w.type !== 'history');
+
+    // Process history writes first (fire-and-forget, stores ID mappings)
+    for (const write of historyWrites) {
+        await processHistoryWrite(write.operation, write.payload, write.id);
+        await offlineDb.deletePendingWrite(write.id);
+    }
+
+    if (batchWrites.length === 0) {
+        await refreshPendingWriteCount();
+        return { success: true, synced: historyWrites.length };
+    }
+
     const sessionId = generateSessionId();
     let seq = 0;
     let pushed = 0;
 
-    // Phase 1: Push all operations to server
-    for (const write of writes) {
+    // Phase 1: Push all non-history operations to server
+    for (const write of batchWrites) {
         const { type, operation, payload } = write;
         const opType = toOpType(type, operation);
         let transformedPayload = transformPayload(type, operation, payload);
@@ -442,8 +473,8 @@ async function _doSyncPendingWrites() {
         return { success: false, error: commitResult.error };
     }
 
-    // Phase 3: Success - clear local pending writes
-    for (const write of writes) {
+    // Phase 3: Success - clear local pending writes (history already deleted above)
+    for (const write of batchWrites) {
         await offlineDb.deletePendingWrite(write.id);
     }
 
@@ -458,7 +489,7 @@ async function _doSyncPendingWrites() {
 
     return {
         success: true,
-        synced: commitResult.executed,
+        synced: (commitResult.executed || 0) + historyWrites.length,
         skipped: commitResult.skipped
     };
 }

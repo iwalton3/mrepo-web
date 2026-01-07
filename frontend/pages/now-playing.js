@@ -1519,7 +1519,7 @@ export default defineComponent('now-playing-page', {
                                         <button class="queue-remove" on-click="${(e) => this.handleRemoveFromQueue(index, e)}" title="Remove">✕</button>
                                     </div>
                                 </div>
-                            `}, ({ item, index }) => `${item.uuid}-${this.state.selectionVersion}-${index === queueIndex}`, { trustKey: true })}
+                            `}, ({ item, index }) => `${item.uuid}-${index}-${this.state.selectionVersion}-${index === queueIndex}`, { trustKey: true })}
                         </div>
                     </div>
 

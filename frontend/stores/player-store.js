@@ -368,6 +368,7 @@ class AudioController {
 
         this.preloadedSong = null;
         this.playStartTime = null;
+        this._currentHistoryId = null;  // ID of current history entry (for updating on end/skip)
         this._saveInterval = null;
         this._audioSourceVersion = 0;  // Incremented when primary audio source changes
         this._audioSourceCallbacks = [];  // Callbacks notified when source changes
@@ -1025,16 +1026,21 @@ class AudioController {
         }
 
         // Record play in history (fire-and-forget, don't block playback)
-        if (this.store.state.currentSong) {
+        const currentSong = this.store.state.currentSong;
+        if (currentSong) {
             const duration = this.playStartTime
                 ? Math.floor((Date.now() - this.playStartTime) / 1000)
                 : 0;
-            history.record(
-                this.store.state.currentSong.uuid,
-                duration,
-                false,
-                this.store.state.scaEnabled ? 'radio' : 'browse'
-            ).catch(e => console.error('Failed to record history:', e));
+            // Update history entry with final duration (not skipped - song completed)
+            if (this._currentHistoryId) {
+                history.update(this._currentHistoryId, duration, false)
+                    .catch(e => console.error('Failed to update history:', e));
+                this._currentHistoryId = null;
+            } else {
+                // Fallback: record directly if no ID (record failed or race condition)
+                history.record(currentSong.uuid, duration, false, this.store.state.scaEnabled ? 'radio' : 'browse')
+                    .catch(e => console.error('Failed to record history:', e));
+            }
         }
 
         // Handle repeat mode
@@ -1170,6 +1176,20 @@ class AudioController {
             this.playStartTime = Date.now();
             // Reset consecutive error counter on successful playback
             this._consecutiveErrors = 0;
+
+            // Record history entry on play start (fire-and-forget, don't block playback)
+            // Will be updated with duration/skipped status when song ends
+            this._currentHistoryId = null;
+            history.record(
+                song.uuid,
+                0,  // Initial duration, updated when song ends
+                false,  // Not skipped initially
+                this.store.state.scaEnabled ? 'radio' : 'browse'
+            ).then(result => {
+                if (result?.id) {
+                    this._currentHistoryId = result.id;
+                }
+            }).catch(e => console.error('Failed to record history:', e));
         } catch (error) {
             console.error('Playback failed:', error);
             this.store.state.error = 'Playback failed';
@@ -3653,18 +3673,21 @@ class AudioController {
             }
         }
 
-        // Record current song to play history (fire-and-forget)
+        // Update history entry with final duration (not skipped - song completed)
         const currentSong = queue[queueIndex];
         if (currentSong?.uuid) {
             const duration = this.playStartTime
                 ? Math.floor((Date.now() - this.playStartTime) / 1000)
                 : 0;
-            history.record(
-                currentSong.uuid,
-                duration,
-                false,
-                this.store.state.scaEnabled ? 'radio' : 'browse'
-            ).catch(e => console.error('Failed to record history:', e));
+            if (this._currentHistoryId) {
+                history.update(this._currentHistoryId, duration, false)
+                    .catch(e => console.error('Failed to update history:', e));
+                this._currentHistoryId = null;
+            } else {
+                // Fallback: record directly if no ID (record failed or race condition)
+                history.record(currentSong.uuid, duration, false, this.store.state.scaEnabled ? 'radio' : 'browse')
+                    .catch(e => console.error('Failed to record history:', e));
+            }
         }
 
         // In shuffle mode, save current song to history for back button
@@ -3775,6 +3798,19 @@ class AudioController {
             this.store.state.isPlaying = true;
             this.store.state.isPaused = false;
             this.playStartTime = Date.now();
+
+            // Record history entry for new song (fire-and-forget)
+            this._currentHistoryId = null;
+            history.record(
+                nextSong.uuid,
+                0,
+                false,
+                this.store.state.scaEnabled ? 'radio' : 'browse'
+            ).then(result => {
+                if (result?.id) {
+                    this._currentHistoryId = result.id;
+                }
+            }).catch(e => console.error('Failed to record history:', e));
 
             // Update media session immediately so lock screen shows correct song
             this._updateMediaSessionMetadata(nextSong);
@@ -4191,8 +4227,9 @@ class AudioController {
      * Play next song in queue.
      * @param {Object} [options] - Options
      * @param {boolean} [options.userInitiated=true] - Whether this is a user-initiated skip
+     * @param {boolean} [options.skipRecorded=false] - Whether skip was already recorded (to avoid double-recording)
      */
-    async next({ userInitiated = true } = {}) {
+    async next({ userInitiated = true, skipRecorded = false } = {}) {
         // Only cancel crossfade for user-initiated skips, not automatic track transitions
         if (userInitiated) {
             this._cancelCrossfade();
@@ -4200,9 +4237,23 @@ class AudioController {
 
         const { queue, queueIndex, repeatMode, scaEnabled, shuffle } = this.store.state;
 
+        // Update history entry as skipped for user-initiated skips (unless already recorded by skip())
+        const currentSong = queue[queueIndex];
+        if (userInitiated && !skipRecorded && currentSong) {
+            const duration = Math.floor(this.audio.currentTime);
+            if (this._currentHistoryId) {
+                history.update(this._currentHistoryId, duration, true)
+                    .catch(e => console.error('Failed to update history:', e));
+                this._currentHistoryId = null;
+            } else {
+                // Fallback: record directly if no ID (record failed or race condition)
+                history.record(currentSong.uuid, duration, true, scaEnabled ? 'radio' : 'browse')
+                    .catch(e => console.error('Failed to record history:', e));
+            }
+        }
+
         // In shuffle mode, save current song to history for back button
         // Store both UUID and index to handle duplicate songs correctly
-        const currentSong = queue[queueIndex];
         if (shuffle && currentSong?.uuid) {
             this._shuffleHistory.push({ uuid: currentSong.uuid, index: queueIndex });
             // Trim history if it exceeds max size
@@ -4306,13 +4357,28 @@ class AudioController {
         // Cancel any in-progress crossfade
         this._cancelCrossfade();
 
-        const { queue, queueIndex, repeatMode, shuffle } = this.store.state;
+        const { queue, queueIndex, repeatMode, shuffle, scaEnabled } = this.store.state;
 
         // If in the last 90% of the song, restart instead of going to previous
         const duration = this.audio.duration || 0;
         if (duration > 0 && this.audio.currentTime / duration > 0.9) {
             this.audio.currentTime = 0;
             return;
+        }
+
+        // Update history entry as skipped (fire-and-forget, don't block playback)
+        const currentSong = queue[queueIndex];
+        if (currentSong) {
+            const playedDuration = Math.floor(this.audio.currentTime);
+            if (this._currentHistoryId) {
+                history.update(this._currentHistoryId, playedDuration, true)
+                    .catch(e => console.error('Failed to update history:', e));
+                this._currentHistoryId = null;
+            } else {
+                // Fallback: record directly if no ID (record failed or race condition)
+                history.record(currentSong.uuid, playedDuration, true, scaEnabled ? 'radio' : 'browse')
+                    .catch(e => console.error('Failed to record history:', e));
+            }
         }
 
         let prevIndex = -1;
@@ -4379,22 +4445,26 @@ class AudioController {
     }
 
     /**
-     * Skip current song (records skip event).
+     * Skip current song (updates history entry as skipped).
      */
     async skip() {
         const { currentSong, scaEnabled } = this.store.state;
 
-        // Record skip in history (fire-and-forget, don't block playback)
-        if (scaEnabled && currentSong) {
-            history.record(
-                currentSong.uuid,
-                Math.floor(this.audio.currentTime),
-                true,
-                'radio'
-            ).catch(e => console.error('Failed to record skip:', e));
+        // Update history entry as skipped (fire-and-forget, don't block playback)
+        if (currentSong) {
+            const duration = Math.floor(this.audio.currentTime);
+            if (this._currentHistoryId) {
+                history.update(this._currentHistoryId, duration, true)
+                    .catch(e => console.error('Failed to update history:', e));
+                this._currentHistoryId = null;
+            } else {
+                // Fallback: record directly if no ID (record failed or race condition)
+                history.record(currentSong.uuid, duration, true, scaEnabled ? 'radio' : 'browse')
+                    .catch(e => console.error('Failed to record history:', e));
+            }
         }
 
-        await this.next();
+        await this.next({ userInitiated: true, skipRecorded: true });
     }
 
     /**

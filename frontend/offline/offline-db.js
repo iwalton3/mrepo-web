@@ -1006,6 +1006,41 @@ export async function getSettingWithMeta(key) {
 }
 
 // =============================================================================
+// History ID Mapping (for offline sync)
+// =============================================================================
+
+/**
+ * Store a mapping from local pending write ID to server history ID.
+ * Used when a history record is synced before the song ends/is skipped.
+ */
+export async function saveHistoryIdMapping(localId, serverId) {
+    return saveSetting(`history-id-map:${localId}`, serverId);
+}
+
+/**
+ * Get the server history ID for a local pending write ID.
+ */
+export async function getHistoryIdMapping(localId) {
+    return getSetting(`history-id-map:${localId}`);
+}
+
+/**
+ * Delete a history ID mapping (after successful update).
+ */
+export async function deleteHistoryIdMapping(localId) {
+    const db = await getDb();
+
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORES.SETTINGS_CACHE, 'readwrite');
+        const store = tx.objectStore(STORES.SETTINGS_CACHE);
+        const request = store.delete(`history-id-map:${localId}`);
+
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+    });
+}
+
+// =============================================================================
 // Favorites Cache
 // =============================================================================
 
@@ -1191,6 +1226,39 @@ export async function updatePendingWriteRetry(id) {
             resolve();
         };
         request.onerror = () => reject(request.error);
+    });
+}
+
+/**
+ * Update pending write payload (for history updates before sync)
+ */
+export async function updatePendingWritePayload(id, payloadUpdates) {
+    const db = await getDb();
+
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORES.PENDING_WRITES, 'readwrite');
+        const store = tx.objectStore(STORES.PENDING_WRITES);
+        const request = store.get(id);
+
+        request.onsuccess = () => {
+            const record = request.result;
+            if (record) {
+                record.payload = { ...record.payload, ...payloadUpdates };
+                const putRequest = store.put(record);
+                putRequest.onsuccess = () => resolve(true);
+                putRequest.onerror = () => {
+                    console.error('Failed to put updated pending write:', putRequest.error);
+                    reject(putRequest.error);
+                };
+            } else {
+                console.warn('Pending write not found for update:', id);
+                resolve(false);
+            }
+        };
+        request.onerror = () => {
+            console.error('Failed to get pending write:', request.error);
+            reject(request.error);
+        };
     });
 }
 

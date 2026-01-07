@@ -1739,7 +1739,8 @@ export const playback = {
 
 export const history = {
     /**
-     * Record play history
+     * Record play history. Returns { success, id } where id can be used for updates.
+     * When offline, id is a local pending write ID (prefixed with 'local:').
      * @param {string} songUuid
      * @param {number} durationSeconds
      * @param {boolean} skipped
@@ -1747,17 +1748,73 @@ export const history = {
      */
     async record(songUuid, durationSeconds, skipped = false, source = 'browse') {
         if (shouldUseOffline()) {
-            await queueWrite('history', 'record', {
-                songUuid,
-                durationSeconds,
-                skipped,
-                source,
-                playedAt: Date.now()
+            const pendingId = await offlineDb.addPendingWrite({
+                type: 'history',
+                operation: 'record',
+                payload: {
+                    songUuid,
+                    durationSeconds,
+                    skipped,
+                    source,
+                    playedAt: Date.now()
+                }
             });
-            return { success: true, queued: true };
+            await refreshPendingWriteCount();
+            return { success: true, id: `local:${pendingId}` };
         }
 
         return api.history.record(songUuid, durationSeconds, skipped, source);
+    },
+
+    /**
+     * Update a play history entry with final duration and skip status.
+     * @param {string|number} historyId - Server ID or local ID (prefixed with 'local:')
+     * @param {number} durationSeconds
+     * @param {boolean} skipped
+     */
+    async update(historyId, durationSeconds, skipped = false) {
+        // Handle local pending write updates
+        if (typeof historyId === 'string' && historyId.startsWith('local:')) {
+            const pendingId = parseInt(historyId.slice(6), 10);
+
+            try {
+                const updated = await offlineDb.updatePendingWritePayload(pendingId, {
+                    durationSeconds,
+                    skipped
+                });
+
+                if (updated) {
+                    return { success: true };
+                }
+            } catch (e) {
+                // Fall through to check ID mapping
+            }
+
+            // Pending write was already synced - check for ID mapping
+            const serverId = await offlineDb.getHistoryIdMapping(historyId);
+            if (serverId) {
+                // Clean up the mapping
+                await offlineDb.deleteHistoryIdMapping(historyId);
+                // Call server with the mapped ID (or queue if offline)
+                if (shouldUseOffline()) {
+                    await queueWrite('history', 'update', { historyId: serverId, durationSeconds, skipped });
+                    return { success: true, queued: true };
+                }
+                return api.history.update(serverId, durationSeconds, skipped);
+            }
+
+            // No mapping found - record may have synced with current values already
+            return { success: false };
+        }
+
+        // If offline with a server ID, queue the update for sync
+        if (shouldUseOffline()) {
+            await queueWrite('history', 'update', { historyId, durationSeconds, skipped });
+            return { success: true, queued: true };
+        }
+
+        // Online - call server API
+        return api.history.update(historyId, durationSeconds, skipped);
     },
 
     // Recent history not available offline
