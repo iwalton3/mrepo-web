@@ -1,0 +1,13 @@
+{
+  "name": "mrepo-tests",
+  "version": "1.0.0",
+  "description": "Puppeteer E2E tests for mrepo music streaming application",
+  "scripts": {
+    "test": "node test-runner.js",
+    "test:only-errors": "node test-runner.js --only-errors",
+    "test:file": "node"
+  },
+  "dependencies": {
+    "puppeteer": "^21.0.0"
+  }
+}

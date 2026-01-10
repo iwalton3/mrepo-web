@@ -37,3 +37,6 @@ Thumbs.db
 config.yaml
 docker/config.yaml
 docker/docker-compose.yml
+
+#tests
+tests/node_modules
