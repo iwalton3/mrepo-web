@@ -36,14 +36,14 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY backend/ ./backend/
+# Copy application code (with correct ownership for non-root user)
+COPY --chown=mrepo:mrepo backend/ ./backend/
 
 # Copy optimized frontend from builder stage
-COPY --from=frontend-builder /build/frontend-dist/ ./frontend/
+COPY --chown=mrepo:mrepo --from=frontend-builder /build/frontend-dist/ ./frontend/
 
 # Create data directories
-RUN mkdir -p /data /config && chown -R mrepo:mrepo /data /config
+RUN mkdir -p /data /config && chown -R mrepo:mrepo /data /config /app
 
 USER mrepo
 

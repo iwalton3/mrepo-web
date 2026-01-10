@@ -20,7 +20,8 @@ def preferences_get(details=None):
 
     cur.execute("""
         SELECT volume, shuffle, repeat_mode, radio_eopp, dark_mode,
-               replay_gain_mode, replay_gain_preamp, replay_gain_fallback
+               replay_gain_mode, replay_gain_preamp, replay_gain_fallback,
+               radio_algorithm, ai_search_max, ai_search_diversity, ai_radio_queue_diversity
         FROM user_preferences WHERE user_id = ?
     """, (user_id,))
 
@@ -38,19 +39,29 @@ def preferences_get(details=None):
         'dark_mode': False,
         'replay_gain_mode': 'off',
         'replay_gain_preamp': 0.0,
-        'replay_gain_fallback': -6.0
+        'replay_gain_fallback': -6.0,
+        'radio_algorithm': 'sca',
+        'ai_search_max': 2000,
+        'ai_search_diversity': 0.3,
+        'ai_radio_queue_diversity': 0.3
     }
 
 
 @api_method('preferences_set', require='user')
 def preferences_set(volume=None, shuffle=None, repeat_mode=None, radio_eopp=None,
                     dark_mode=None, replay_gain_mode=None, replay_gain_preamp=None,
-                    replay_gain_fallback=None, details=None, _conn=None):
+                    replay_gain_fallback=None, radio_algorithm=None,
+                    ai_search_max=None, ai_search_diversity=None, ai_radio_queue_diversity=None,
+                    details=None, _conn=None):
     """Update user preferences."""
     own_conn = _conn is None
     conn = _conn if _conn else get_db()
     cur = conn.cursor()
     user_id = details['user_id']
+
+    # Validate radio_algorithm
+    if radio_algorithm is not None and radio_algorithm not in ('sca', 'clap'):
+        raise ValueError("radio_algorithm must be 'sca' or 'clap'")
 
     try:
         if own_conn:
@@ -88,6 +99,18 @@ def preferences_set(volume=None, shuffle=None, repeat_mode=None, radio_eopp=None
             if replay_gain_fallback is not None:
                 updates.append("replay_gain_fallback = ?")
                 params.append(replay_gain_fallback)
+            if radio_algorithm is not None:
+                updates.append("radio_algorithm = ?")
+                params.append(radio_algorithm)
+            if ai_search_max is not None:
+                updates.append("ai_search_max = ?")
+                params.append(int(ai_search_max))
+            if ai_search_diversity is not None:
+                updates.append("ai_search_diversity = ?")
+                params.append(float(ai_search_diversity))
+            if ai_radio_queue_diversity is not None:
+                updates.append("ai_radio_queue_diversity = ?")
+                params.append(float(ai_radio_queue_diversity))
 
             if updates:
                 params.append(user_id)
@@ -95,8 +118,9 @@ def preferences_set(volume=None, shuffle=None, repeat_mode=None, radio_eopp=None
         else:
             cur.execute("""
                 INSERT INTO user_preferences (user_id, volume, shuffle, repeat_mode, radio_eopp,
-                                             dark_mode, replay_gain_mode, replay_gain_preamp, replay_gain_fallback)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                             dark_mode, replay_gain_mode, replay_gain_preamp, replay_gain_fallback,
+                                             radio_algorithm, ai_search_max, ai_search_diversity, ai_radio_queue_diversity)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 user_id,
                 volume if volume is not None else 1.0,
@@ -106,7 +130,11 @@ def preferences_set(volume=None, shuffle=None, repeat_mode=None, radio_eopp=None
                 1 if dark_mode else 0,
                 replay_gain_mode or 'off',
                 replay_gain_preamp if replay_gain_preamp is not None else 0.0,
-                replay_gain_fallback if replay_gain_fallback is not None else -6.0
+                replay_gain_fallback if replay_gain_fallback is not None else -6.0,
+                radio_algorithm or 'sca',
+                ai_search_max if ai_search_max is not None else 2000,
+                ai_search_diversity if ai_search_diversity is not None else 0.3,
+                ai_radio_queue_diversity if ai_radio_queue_diversity is not None else 0.3
             ))
 
         if own_conn:

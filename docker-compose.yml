@@ -1,31 +1,27 @@
-# MRepo Docker Compose - Development Build
+# MRepo Docker Compose
 #
-# This builds from source instead of using pre-built images.
-# For production, use the docker-compose.yml in the parent directory.
-#
-# Setup:
-#   1. Copy this file to docker-compose.yml (gitignored)
-#   2. Edit paths to match your environment
-#   3. Run: docker compose up -d
+# Quick start:
+#   1. Edit this file to set your music path (replace /path/to/Music)
+#   2. Run: docker compose up -d
+#   3. Open http://localhost:8080
 #
 # With AI features (CPU):
 #   docker compose --profile ai up -d
 #
 # With AI features (GPU):
 #   docker compose --profile ai-gpu up -d
+#
+# AI auto-enables when the AI service is reachable. To disable AI,
+# simply don't start the AI profile - no environment variable needed.
 
 services:
   mrepo:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
+    image: ghcr.io/iwalton3/mrepo-web:main
     ports:
       - "8080:8080"
     volumes:
       # Database (persistent)
-      - ../data:/data
-      # Configuration (optional - can use env vars instead)
-      - ./config.yaml:/config/config.yaml:ro
+      - mrepo-data:/data
       # Music files (read-only, adjust path to your music library)
       - /path/to/Music:/media:ro
     environment:
@@ -42,18 +38,16 @@ services:
 
   # AI Service (CPU) - Enable with: docker compose --profile ai up
   mrepo-ai:
+    image: ghcr.io/iwalton3/mrepo-web-ai:main
     profiles:
       - ai
-    build:
-      context: ../backend/ai_service
-      dockerfile: Dockerfile
     ports:
       - "5002:5002"
     volumes:
       # Music files (same as main service, read-only)
       - /path/to/Music:/media:ro
-      # Database and embeddings storage
-      - ../data:/data
+      # Database and embeddings storage (shared with main container)
+      - mrepo-data:/data
       # Model cache (persistent, prevents re-downloading)
       - ai-models:/root/.cache
     environment:
@@ -76,16 +70,14 @@ services:
   # AI Service (GPU/CUDA) - Enable with: docker compose --profile ai-gpu up
   # Requires NVIDIA Container Toolkit
   mrepo-ai-gpu:
+    image: ghcr.io/iwalton3/mrepo-web-ai-gpu:main
     profiles:
       - ai-gpu
-    build:
-      context: ../backend/ai_service
-      dockerfile: Dockerfile.gpu
     ports:
       - "5002:5002"
     volumes:
       - /path/to/Music:/media:ro
-      - ../data:/data
+      - mrepo-data:/data
       - ai-models:/root/.cache
     environment:
       - MEDIA_PATH=/media
@@ -112,4 +104,5 @@ services:
       retries: 3
 
 volumes:
+  mrepo-data:
   ai-models:

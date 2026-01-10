@@ -8,10 +8,24 @@
 
 import { defineComponent, html, when, each } from '../lib/framework.js';
 import { playlists as playlistsApi, songs as songsApi, isFavorite, getFavoritesPlaylistId } from '../offline/offline-api.js';
+import { ai } from '../api/music-api.js';
 import { player } from '../stores/player-store.js';
 import offlineStore, { computeOfflineFilterSets } from '../offline/offline-store.js';
 import { downloadSong, deleteSong, canCacheOffline } from '../offline/offline-audio.js';
 import { showSongInfoModal } from './song-info-modal.js';
+
+// AI status cache - checked once per session
+let aiAvailable = null;
+async function checkAiAvailable() {
+    if (aiAvailable !== null) return aiAvailable;
+    try {
+        const status = await ai.status();
+        aiAvailable = status.enabled && status.status === 'ok';
+    } catch {
+        aiAvailable = false;
+    }
+    return aiAvailable;
+}
 
 // Singleton instance for the context menu
 let menuInstance = null;
@@ -80,7 +94,10 @@ export default defineComponent('song-context-menu', {
             isFolder: false,
             folderPath: null,
             folderFilters: null,
-            isAddingToQueue: false
+            isAddingToQueue: false,
+            // AI features
+            aiAvailable: false,
+            isFindingSimilar: false
         };
     },
 
@@ -139,6 +156,11 @@ export default defineComponent('song-context-menu', {
             if (!this.state.playlistsLoaded) {
                 this.loadPlaylists();
             }
+
+            // Check AI availability (async, updates state when ready)
+            checkAiAvailable().then(available => {
+                this.state.aiAvailable = available;
+            });
 
             // Adjust position after render to stay within viewport
             requestAnimationFrame(() => {
@@ -516,6 +538,14 @@ export default defineComponent('song-context-menu', {
                 this.hide();
                 showSongInfoModal(song);
             }
+        },
+
+        handleFindSimilar() {
+            const song = this.state.song;
+            if (song?.uuid) {
+                window.location.hash = `/search/?similar=${encodeURIComponent(song.uuid)}`;
+            }
+            this.hide();
         }
     },
 
@@ -596,6 +626,13 @@ export default defineComponent('song-context-menu', {
                             <span class="label">Add to Favorites</span>
                         </button>`
                     )}
+
+                    ${when(this.state.aiAvailable, html`
+                        <button class="menu-item" on-click="handleFindSimilar">
+                            <span class="icon">🎵</span>
+                            <span class="label">Find Similar</span>
+                        </button>
+                    `)}
 
                     ${when(this.isSongOffline(),
                         html`<button class="menu-item" on-click="handleRemoveDownload">

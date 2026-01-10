@@ -2227,6 +2227,7 @@ export const songs = {
 export const radio = api.radio;
 export const sca = api.sca;
 export const tags = api.tags;
+export const ai = api.ai;
 export const getStreamUrl = api.getStreamUrl;
 
 // =============================================================================

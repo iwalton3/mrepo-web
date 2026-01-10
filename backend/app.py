@@ -211,6 +211,7 @@ def _register_api_modules():
         from .api import sync
         from .api import admin
         from .api import tags
+        from .api import ai
     except ImportError as e:
         # Some modules may not exist yet during development
         pass

@@ -350,6 +350,26 @@ def _run_migrations(db):
             )
         ''')
 
+    # SCA original seeds table - stores original seed songs for rolling seed mode
+    # Using IF NOT EXISTS to handle race conditions with multiple workers
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS sca_original_seeds (
+            user_id TEXT NOT NULL,
+            song_uuid TEXT NOT NULL,
+            PRIMARY KEY (user_id, song_uuid),
+            FOREIGN KEY (song_uuid) REFERENCES songs(uuid) ON DELETE CASCADE
+        )
+    ''')
+
+    # SCA rolling seed mode tracking
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS sca_rolling_seed_state (
+            user_id TEXT PRIMARY KEY,
+            rolling_seed_enabled INTEGER DEFAULT 0,
+            original_pool_size INTEGER DEFAULT 0
+        )
+    ''')
+
     # Radio sessions table
     if 'radio_sessions' not in existing_tables:
         cur.execute('''
@@ -448,6 +468,74 @@ def _run_migrations(db):
     _create_index_if_not_exists(cur, 'idx_playlists_public', 'playlists', 'is_public')
     _create_index_if_not_exists(cur, 'idx_play_history_song', 'play_history', 'song_uuid')
     _create_index_if_not_exists(cur, 'idx_user_queue_user', 'user_queue', 'user_id')
+
+    # AI embeddings table - tracks which songs have CLAP embeddings
+    if 'ai_embeddings' not in existing_tables:
+        cur.execute('''
+            CREATE TABLE ai_embeddings (
+                song_uuid TEXT PRIMARY KEY,
+                embedding_version TEXT,
+                analyzed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (song_uuid) REFERENCES songs(uuid) ON DELETE CASCADE
+            )
+        ''')
+
+    # AI analysis jobs table - for admin dashboard progress tracking
+    if 'ai_analysis_jobs' not in existing_tables:
+        cur.execute('''
+            CREATE TABLE ai_analysis_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                status TEXT DEFAULT 'pending',
+                total_songs INTEGER DEFAULT 0,
+                processed_songs INTEGER DEFAULT 0,
+                categories TEXT,
+                rebuild INTEGER DEFAULT 0,
+                error_message TEXT,
+                started_at TIMESTAMP,
+                completed_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+    # User AI preferences table
+    if 'user_ai_preferences' not in existing_tables:
+        cur.execute('''
+            CREATE TABLE user_ai_preferences (
+                user_id TEXT PRIMARY KEY,
+                ai_enabled INTEGER DEFAULT 1,
+                diversity_preference REAL DEFAULT 0.2,
+                ai_radio_enabled INTEGER DEFAULT 1,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        ''')
+
+    # Migration: add radio_algorithm column to user_preferences
+    cur.execute("PRAGMA table_info(user_preferences)")
+    columns = {col[1] for col in cur.fetchall()}
+    if 'radio_algorithm' not in columns:
+        try:
+            cur.execute("ALTER TABLE user_preferences ADD COLUMN radio_algorithm TEXT DEFAULT 'sca'")
+        except Exception:
+            pass
+
+    # Migration: add AI settings columns to user_preferences
+    cur.execute("PRAGMA table_info(user_preferences)")
+    columns = {col[1] for col in cur.fetchall()}
+    if 'ai_search_max' not in columns:
+        try:
+            cur.execute("ALTER TABLE user_preferences ADD COLUMN ai_search_max INTEGER DEFAULT 2000")
+        except Exception:
+            pass
+    if 'ai_search_diversity' not in columns:
+        try:
+            cur.execute("ALTER TABLE user_preferences ADD COLUMN ai_search_diversity REAL DEFAULT 0.3")
+        except Exception:
+            pass
+    if 'ai_radio_queue_diversity' not in columns:
+        try:
+            cur.execute("ALTER TABLE user_preferences ADD COLUMN ai_radio_queue_diversity REAL DEFAULT 0.3")
+        except Exception:
+            pass
 
 
 def _create_index_if_not_exists(cur, index_name, table_name, columns):

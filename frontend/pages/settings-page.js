@@ -8,7 +8,7 @@
  */
 
 import { defineComponent, html, when } from '../lib/framework.js';
-import { preferences, auth } from '../offline/offline-api.js';
+import { preferences, auth, ai } from '../offline/offline-api.js';
 import player from '../stores/player-store.js';
 import offlineStore, { forceReloadWithUpdate, requestCacheStatus } from '../offline/offline-store.js';
 import '../componentlib/button/button.js';
@@ -53,9 +53,14 @@ export default defineComponent('settings-page', {
                 shuffle: false,
                 repeatMode: 'none',
                 radioEopp: true,
+                radioAlgorithm: 'sca',  // 'sca' or 'clap'
                 replayGainMode: 'off',
                 replayGainPreamp: 0,
-                replayGainFallback: -6
+                replayGainFallback: -6,
+                // AI Settings
+                aiSearchMax: 2000,
+                aiSearchDiversity: 0.3,
+                aiRadioQueueDiversity: 0.3
             },
             // EQ enabled state (for display only)
             eqEnabled: player.state.eqEnabled,
@@ -78,6 +83,9 @@ export default defineComponent('settings-page', {
             // Platform detection
             isAndroid: isAndroid(),
 
+            // AI status
+            aiEnabled: false,
+
             isLoading: false,
             saveStatus: ''
         };
@@ -96,6 +104,15 @@ export default defineComponent('settings-page', {
             console.error('Auth check failed:', e);
         }
 
+        // Check AI status
+        try {
+            const aiStatus = await ai.status();
+            this.state.aiEnabled = aiStatus.enabled && aiStatus.status === 'ok';
+        } catch (e) {
+            console.error('AI status check failed:', e);
+            this.state.aiEnabled = false;
+        }
+
         // Load preferences
         await this.loadPreferences();
     },
@@ -108,13 +125,21 @@ export default defineComponent('settings-page', {
             try {
                 const result = await preferences.get();
                 if (!result.error) {
+                    // Default radio algorithm to 'clap' if AI is available and user hasn't set one
+                    const defaultAlgo = this.state.aiEnabled ? 'clap' : 'sca';
+
                     this.state.prefs = {
                         shuffle: result.shuffle || false,
                         repeatMode: result.repeat_mode || 'none',
                         radioEopp: result.radio_eopp !== false,
+                        radioAlgorithm: result.radio_algorithm || defaultAlgo,
                         replayGainMode: result.replay_gain_mode || 'off',
                         replayGainPreamp: result.replay_gain_preamp ?? 0,
-                        replayGainFallback: result.replay_gain_fallback ?? -6
+                        replayGainFallback: result.replay_gain_fallback ?? -6,
+                        // AI Settings
+                        aiSearchMax: result.ai_search_max ?? 2000,
+                        aiSearchDiversity: result.ai_search_diversity ?? 0.3,
+                        aiRadioQueueDiversity: result.ai_radio_queue_diversity ?? 0.3
                     };
                 }
             } catch (e) {
@@ -135,9 +160,14 @@ export default defineComponent('settings-page', {
                     shuffle: this.state.prefs.shuffle,
                     repeatMode: this.state.prefs.repeatMode,
                     radioEopp: this.state.prefs.radioEopp,
+                    radioAlgorithm: this.state.prefs.radioAlgorithm,
                     replayGainMode: this.state.prefs.replayGainMode,
                     replayGainPreamp: this.state.prefs.replayGainPreamp,
-                    replayGainFallback: this.state.prefs.replayGainFallback
+                    replayGainFallback: this.state.prefs.replayGainFallback,
+                    // AI Settings
+                    aiSearchMax: this.state.prefs.aiSearchMax,
+                    aiSearchDiversity: this.state.prefs.aiSearchDiversity,
+                    aiRadioQueueDiversity: this.state.prefs.aiRadioQueueDiversity
                 });
                 this.state.saveStatus = 'Saved!';
                 setTimeout(() => this.state.saveStatus = '', 2000);
@@ -159,6 +189,23 @@ export default defineComponent('settings-page', {
 
         handleEoppChange(e) {
             this.state.prefs.radioEopp = e.target.checked;
+        },
+
+        handleRadioAlgorithmChange(e) {
+            this.state.prefs.radioAlgorithm = e.target.value;
+        },
+
+        // AI Settings handlers
+        handleAiSearchMaxChange(e) {
+            this.state.prefs.aiSearchMax = parseInt(e.target.value, 10);
+        },
+
+        handleAiSearchDiversityChange(e) {
+            this.state.prefs.aiSearchDiversity = parseFloat(e.target.value);
+        },
+
+        handleAiRadioQueueDiversityChange(e) {
+            this.state.prefs.aiRadioQueueDiversity = parseFloat(e.target.value);
         },
 
         handleReplayGainModeChange(e) {
@@ -563,6 +610,20 @@ export default defineComponent('settings-page', {
                         <h2>Radio</h2>
 
                         <div class="setting-row">
+                            <label>Algorithm</label>
+                            <div class="setting-control">
+                                <select value="${prefs.radioAlgorithm}" on-change="handleRadioAlgorithmChange">
+                                    <option value="sca">SCA (Genre/Artist based)</option>
+                                    <option value="clap">AI Similarity (CLAP)</option>
+                                </select>
+                            </div>
+                            <p class="setting-help">
+                                SCA uses genre and artist matching for song selection.
+                                AI Similarity uses machine learning to find sonically similar songs.
+                            </p>
+                        </div>
+
+                        <div class="setting-row">
                             <label>EOPP Mode</label>
                             <div class="setting-control">
                                 <label class="toggle">
@@ -577,6 +638,53 @@ export default defineComponent('settings-page', {
                             </p>
                         </div>
                     </div>
+
+                    ${when(this.state.aiEnabled, () => html`
+                    <div class="settings-section">
+                        <h2>AI Settings</h2>
+                        <p class="section-help">
+                            Configure AI-powered search and radio features.
+                        </p>
+
+                        <div class="setting-row">
+                            <label>Max AI Search Results</label>
+                            <div class="setting-control">
+                                <input type="number" value="${prefs.aiSearchMax}"
+                                       on-change="handleAiSearchMaxChange"
+                                       min="100" max="10000" step="100" class="number-input">
+                            </div>
+                            <p class="setting-help">
+                                Maximum number of songs returned by AI search queries (ai:).
+                            </p>
+                        </div>
+
+                        <div class="setting-row">
+                            <label>Search Diversity</label>
+                            <div class="setting-control slider-control">
+                                <input type="range" value="${prefs.aiSearchDiversity}"
+                                       on-input="handleAiSearchDiversityChange"
+                                       min="0" max="1" step="0.1" class="slider">
+                                <span class="slider-value">${prefs.aiSearchDiversity.toFixed(1)}</span>
+                            </div>
+                            <p class="setting-help">
+                                Diversity for AI search and "Find Similar" (0 = most similar, 1 = most diverse).
+                            </p>
+                        </div>
+
+                        <div class="setting-row">
+                            <label>Queue Diversity</label>
+                            <div class="setting-control slider-control">
+                                <input type="range" value="${prefs.aiRadioQueueDiversity}"
+                                       on-input="handleAiRadioQueueDiversityChange"
+                                       min="0" max="1" step="0.1" class="slider">
+                                <span class="slider-value">${prefs.aiRadioQueueDiversity.toFixed(1)}</span>
+                            </div>
+                            <p class="setting-help">
+                                Diversity when selecting songs to add to the queue during radio playback.
+                            </p>
+                        </div>
+                    </div>
+                    `)}
 
                     <div class="settings-section">
                         <h2>Gapless Playback</h2>
@@ -809,6 +917,36 @@ export default defineComponent('settings-page', {
 
         .db-value {
             min-width: 4rem;
+            font-size: 0.875rem;
+            color: var(--text-secondary, #a0a0a0);
+            font-family: monospace;
+        }
+
+        /* Number input */
+        .number-input {
+            width: 100px;
+            padding: 0.5rem;
+            border: 1px solid var(--surface-300, #404040);
+            border-radius: 4px;
+            background: var(--surface-100, #242424);
+            color: var(--text-primary, #e0e0e0);
+            font-size: 0.875rem;
+        }
+
+        /* Slider with value display */
+        .slider-control {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .slider-control .slider {
+            flex: 1;
+            max-width: 200px;
+        }
+
+        .slider-value {
+            min-width: 2.5rem;
             font-size: 0.875rem;
             color: var(--text-secondary, #a0a0a0);
             font-family: monospace;

@@ -6,7 +6,7 @@ It builds on a decade of me managing a music collection and being really frustra
 
 ## Features
 
-- **No pages or loading spinners!** - Scroll through your entire music library seamlessly on your phone or desktop without your browser crashing.
+- **Infinite scroll without spinners/pages!** - Scroll through your entire music library seamlessly on your phone or desktop without your browser crashing or being interrupted by spinners!
 - **Synced Queue** - Play music on your desktop, then pick up where you left off on your phone! (Optional temporary queue also available for ad-hoc playback.)
 - **Offline Sync** - Download arbitrary folders, playlists, genres, artists, etc to your phone and play them on the go, even with airplane mode. Downloads automatically take priority, saving your cellular bandwidth and reducing glitches.
 - **Audio Pipeline** - Replaygain, Crossfade, Parametric EQ (incl AutoEQ import), Crossfeed, Tempo Control, Fletcher Munson Loudness Compensation, Customizable White Noise - it's all supported even on mobile!
@@ -14,6 +14,7 @@ It builds on a decade of me managing a music collection and being really frustra
 - **Multi User** - Create playlists and share them with other users
 - **Browse & Search** - Browse and search your library by filesystem, category, genre, artist, and albums
 - **Radio Mode** - Automatically generate a queue of music that evolves and explores your library, avoiding adjacent duplicate/similar songs and supporting very large pools of music to play.
+- **AI Music Similarity** (optional) - Use CLAP-based audio embeddings for semantic search, finding similar songs, and AI-powered playlist extension. Supports CPU-only or GPU-accelerated deployment.
 - **Auto Sleep Timer** - Intelligently stop background music playback after your bedtime on mobile, just set how long to play and it does the rest.
 - **History** - Keep a history of what you play and make arbitrary "recap" playlists whenever you want with your most played songs.
 - **Infinite Jukebox** - Create a permalink for a specific song that loops forever, seamlessly where possible.
@@ -34,32 +35,42 @@ These features are not included currently, and some may never be.
 
 ## Quick Start with Docker
 
-### Using the Pre-built Image (Recommended)
+### Using Pre-built Images (Recommended)
 
-Create a `docker-compose.yml` file:
+1. Clone the repository (or just download `docker-compose.yml`):
+   ```bash
+   git clone https://github.com/iwalton3/mrepo-web.git
+   cd mrepo-web
+   ```
 
-```yaml
-services:
-  mrepo:
-    image: ghcr.io/iwalton3/mrepo-web:main
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./data:/data
-      - /path/to/your/music:/media:ro
-    environment:
-      - DATABASE_PATH=/data/music.db
-      - MEDIA_PATH=/media
-    restart: unless-stopped
-```
+2. Edit `docker-compose.yml` to set your music path:
+   ```yaml
+   volumes:
+     - /path/to/Music:/media:ro  # Change this to your music folder
+   ```
 
-Start the container:
+3. Start the container:
+   ```bash
+   docker compose up -d
+   ```
+
+4. Open http://localhost:8080 - the setup wizard will guide you through creating an admin account.
+
+#### With AI Features
+
+The `docker-compose.yml` includes optional AI services for semantic search and music similarity:
 
 ```bash
-docker-compose up -d
+# With AI (CPU) - works on any system, slower analysis
+docker compose --profile ai up -d
+
+# With AI (GPU) - requires NVIDIA GPU and Container Toolkit
+docker compose --profile ai-gpu up -d
 ```
 
-Open http://localhost:8080 - the setup wizard will guide you through creating an admin account.
+Note! Make sure your music volume is configured for BOTH the main service and the AI service, or analysis will fail.
+
+AI features auto-enable when the AI service is reachable. To disable AI, simply run without a profile.
 
 #### Available Tags
 
@@ -68,7 +79,17 @@ Open http://localhost:8080 - the setup wizard will guide you through creating an
 - `X.Y` - Latest patch for a minor version
 - `<sha>` - Specific commit
 
+#### Pre-built Images
+
+| Image | Description |
+|-------|-------------|
+| `ghcr.io/iwalton3/mrepo-web` | Main application |
+| `ghcr.io/iwalton3/mrepo-web-ai` | AI service (CPU, amd64/arm64) |
+| `ghcr.io/iwalton3/mrepo-web-ai-gpu` | AI service (CUDA GPU, amd64 only) |
+
 ### Building from Source
+
+For development or customization, use the build-from-source compose file:
 
 1. Clone the repository:
    ```bash
@@ -76,29 +97,25 @@ Open http://localhost:8080 - the setup wizard will guide you through creating an
    cd mrepo-web
    ```
 
-2. Create a configuration file:
+2. Copy and edit the development compose file:
    ```bash
-   cp config.example.yaml docker/config.yaml
+   cp docker/docker-compose.example.yml docker/docker-compose.yml
+   # Edit docker/docker-compose.yml to set your music path
    ```
 
-3. Edit `docker/config.yaml` to set your music path.
+3. Optionally create a configuration file:
+   ```bash
+   cp config.example.yaml docker/config.yaml
+   # Edit docker/config.yaml
+   ```
 
 4. Start the container:
    ```bash
    cd docker
-   docker-compose up -d
+   docker compose up -d
    ```
 
 5. Open http://localhost:8080 - the setup wizard will guide you through creating an admin account.
-
-### Docker Compose Configuration
-
-Edit volumes to set your music directory:
-
-```yaml
-volumes:
-  - /path/to/your/music:/media:ro  # Change this to your music folder
-```
 
 A secure session key is automatically generated and stored in `/data/.secret_key` on first run.
 
@@ -249,6 +266,104 @@ To assign music to different categories, create a `.category` file in any direct
     └── show/
         └── episode.mp3    # Category: Podcasts
 ```
+
+## AI Features (Optional)
+
+MRepo includes optional AI-powered music similarity features using the LAION CLAP model. When enabled, you get:
+
+- **Semantic Search** - Search using natural language (e.g., `ai:upbeat electronic with synths`)
+- **Find Similar Songs** - Right-click any song to find acoustically similar tracks
+- **Extend Playlist/Queue** - Add similar songs to playlists or your queue with one click
+- **AI Radio Mode** - Radio that uses audio similarity instead of random selection
+
+### AI System Requirements
+
+The AI service analyzes audio files to create embeddings. Requirements vary by deployment mode:
+
+| Mode | RAM | VRAM | Speed (per song) |
+|------|-----|------|------------------|
+| CPU | 4GB+ | - | 2-5 seconds |
+| GPU (CUDA) | 4GB+ | 4GB+ | ~100ms |
+
+**Model size**: ~500MB download on first run (cached in Docker volume)
+
+### Enabling AI with Docker
+
+The `docker-compose.yml` in the repository root includes AI service profiles.
+
+#### Option 1: CPU Mode (Recommended for Small Libraries)
+
+```bash
+docker compose --profile ai up -d
+```
+
+#### Option 2: GPU Mode (NVIDIA CUDA)
+
+Requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
+
+```bash
+docker compose --profile ai-gpu up -d
+```
+
+#### Option 3: Remote AI Service
+
+Run the AI service on a separate machine (e.g., a GPU server):
+
+```bash
+# On the AI server - use pre-built image
+docker run -d -p 5002:5002 \
+  -v /path/to/music:/media:ro \
+  -v ai-models:/root/.cache \
+  ghcr.io/iwalton3/mrepo-web-ai:main
+
+# On the main server - point to your AI server hostname
+AI_SERVICE_URL=http://ai-server:5002 docker compose up -d
+```
+
+### Enabling AI Without Docker
+
+See [Bare Metal Installation Guide](docs/bare-metal-install.md) for instructions on running the AI service without Docker using conda and systemd.
+
+### Analyzing Your Library
+
+Once AI is enabled:
+
+1. Go to **Admin** in the sidebar
+2. Look for the **AI Music Analysis** section
+3. Click **Start Analysis** to begin embedding your library
+
+Analysis progress is shown in real-time. You can continue using the app while analysis runs in the background.
+
+**Performance tips:**
+- CPU mode: ~2-5 seconds per song. A 10,000 song library takes 6-14 hours.
+- GPU mode: ~100ms per song. A 10,000 song library takes ~20 minutes.
+- Analysis only needs to run once per song (stored in database).
+- New songs added via scan are automatically queued for analysis.
+
+### AI Search Syntax
+
+Once your library is analyzed, use these search operators:
+
+| Syntax | Description | Example |
+|--------|-------------|---------|
+| `ai:prompt` | Semantic text search | `ai:upbeat electronic music` |
+| `ai(query)` | Find similar to query results | `ai(a:Beatles)` |
+| `in:playlist` | Songs in playlist (contains) | `in:Favorites` |
+| `in:eq:name` | Songs in exact playlist name | `in:eq:Rock Anthems` |
+
+**Context-aware AI search**: Combine with filters to search within a subset:
+```
+c:youtube-music AND ai:happy anime song
+```
+This finds "happy anime songs" specifically within the youtube-music category.
+
+### Disabling AI
+
+AI features auto-enable when the AI service is reachable. To disable AI:
+
+1. Stop the AI service container (or don't start it)
+2. Or set `AI_SERVICE_URL` to empty
+3. AI-related UI elements will automatically hide
 
 ## API
 

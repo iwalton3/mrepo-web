@@ -2,7 +2,7 @@
  * Admin page for user and system management.
  */
 import { defineComponent, html, when, each } from '../lib/framework.js';
-import { admin } from '../api/music-api.js';
+import { admin, aiAdmin } from '../api/music-api.js';
 
 export default defineComponent('admin-page', {
     props: {
@@ -38,27 +38,44 @@ export default defineComponent('admin-page', {
             // Missing files
             missingFiles: null,
             findingMissing: false,
-            removingMissing: false
+            removingMissing: false,
+
+            // AI Features
+            aiStatus: null,
+            aiAnalyzing: false,
+            aiClearing: false
         };
     },
 
     async mounted() {
         this._pollTimer = null;
+        this._aiPollTimer = null;
         await this.loadUsers();
         await this.loadScanStatus();
+        await this.loadAiStatus();
 
         // Resume polling if a scan is running
         if (this.state.scanStatus?.status === 'running') {
             this.state.scanning = true;
             this.pollScanStatus();
         }
+
+        // Resume AI polling if analysis is running
+        if (this.state.aiStatus?.currentJob?.status === 'running') {
+            this.state.aiAnalyzing = true;
+            this.pollAiStatus();
+        }
     },
 
     unmounted() {
-        // Clean up polling timer
+        // Clean up polling timers
         if (this._pollTimer) {
             clearTimeout(this._pollTimer);
             this._pollTimer = null;
+        }
+        if (this._aiPollTimer) {
+            clearTimeout(this._aiPollTimer);
+            this._aiPollTimer = null;
         }
     },
 
@@ -294,6 +311,92 @@ export default defineComponent('admin-page', {
             } finally {
                 this.state.removingMissing = false;
             }
+        },
+
+        // AI Methods
+        async loadAiStatus() {
+            try {
+                this.state.aiStatus = await aiAdmin.status();
+            } catch (err) {
+                // AI status not critical - may not be enabled
+                console.warn('Failed to load AI status:', err);
+                this.state.aiStatus = null;
+            }
+        },
+
+        async startAiAnalysis(force = false) {
+            this.state.aiAnalyzing = true;
+            try {
+                await aiAdmin.startAnalysis(force);
+                this.pollAiStatus();
+            } catch (err) {
+                if (err.message && err.message.includes('already running') && !force) {
+                    if (confirm('An AI analysis job is already running. Cancel it and start a new one?')) {
+                        this.startAiAnalysis(true);
+                        return;
+                    }
+                } else {
+                    alert('Failed to start AI analysis: ' + err.message);
+                }
+                this.state.aiAnalyzing = false;
+            }
+        },
+
+        async cancelAiAnalysis() {
+            try {
+                await aiAdmin.cancelAnalysis();
+                this.state.aiAnalyzing = false;
+                await this.loadAiStatus();
+            } catch (err) {
+                alert('Failed to cancel AI analysis: ' + err.message);
+            }
+        },
+
+        async pollAiStatus() {
+            if (this._aiPollTimer) {
+                clearTimeout(this._aiPollTimer);
+                this._aiPollTimer = null;
+            }
+
+            const poll = async () => {
+                try {
+                    const status = await aiAdmin.status();
+                    this.state.aiStatus = status;
+
+                    if (status?.currentJob?.status === 'running') {
+                        this._aiPollTimer = setTimeout(poll, 3000);
+                    } else {
+                        this._aiPollTimer = null;
+                        this.state.aiAnalyzing = false;
+                    }
+                } catch (err) {
+                    this._aiPollTimer = null;
+                    this.state.aiAnalyzing = false;
+                }
+            };
+            poll();
+        },
+
+        async clearAiEmbeddings() {
+            if (!confirm('Clear all AI embeddings? This will require re-analyzing all songs.')) {
+                return;
+            }
+            this.state.aiClearing = true;
+            try {
+                const result = await aiAdmin.clearEmbeddings();
+                alert(`Cleared ${result.cleared} embeddings`);
+                await this.loadAiStatus();
+            } catch (err) {
+                alert('Failed to clear embeddings: ' + err.message);
+            } finally {
+                this.state.aiClearing = false;
+            }
+        },
+
+        getAiProgressPercent() {
+            const job = this.state.aiStatus?.currentJob;
+            if (!job || !job.total_songs) return 0;
+            return Math.round((job.processed_songs / job.total_songs) * 100);
         }
     },
 
@@ -491,6 +594,102 @@ export default defineComponent('admin-page', {
                         </div>
                     `)}
                 </section>
+
+                <!-- AI Features Section -->
+                ${when(this.state.aiStatus, () => html`
+                    <section class="admin-section ai-section">
+                        <div class="section-header">
+                            <h2>AI Features</h2>
+                            <div class="ai-status-badge ${this.state.aiStatus.serviceOnline ? 'online' : 'offline'}">
+                                ${this.state.aiStatus.serviceOnline ? 'Service Online' : 'Service Offline'}
+                            </div>
+                        </div>
+
+                        ${when(!this.state.aiStatus.enabled, html`
+                            <p class="section-desc">AI features are not enabled. Enable them in config.yaml.</p>
+                        `)}
+
+                        ${when(this.state.aiStatus.enabled, () => html`
+                            <div class="ai-stats">
+                                <div class="stat-card">
+                                    <div class="stat-value">${this.state.aiStatus.indexedSongs}</div>
+                                    <div class="stat-label">Analyzed Songs</div>
+                                </div>
+                                <div class="stat-card">
+                                    <div class="stat-value">${this.state.aiStatus.totalSongs}</div>
+                                    <div class="stat-label">Total Songs</div>
+                                </div>
+                                <div class="stat-card">
+                                    <div class="stat-value">${this.state.aiStatus.pendingAnalysis}</div>
+                                    <div class="stat-label">Pending</div>
+                                </div>
+                            </div>
+
+                            ${when(this.state.aiStatus.currentJob?.status === 'running', () => html`
+                                <div class="ai-job-status">
+                                    <div class="status-row">
+                                        <span class="label">Analysis Status:</span>
+                                        <span class="value running">Running</span>
+                                    </div>
+                                    <div class="status-row">
+                                        <span class="label">Progress:</span>
+                                        <span class="value">
+                                            ${this.state.aiStatus.currentJob.processed_songs} / ${this.state.aiStatus.currentJob.total_songs}
+                                            (${this.getAiProgressPercent()}%)
+                                        </span>
+                                    </div>
+                                    <div class="progress-bar">
+                                        <div class="progress-fill ai-progress" style="width: ${this.getAiProgressPercent()}%"></div>
+                                    </div>
+                                </div>
+                            `)}
+
+                            ${when(this.state.aiStatus.currentJob && this.state.aiStatus.currentJob.status !== 'running', () => html`
+                                <div class="ai-job-status">
+                                    <div class="status-row">
+                                        <span class="label">Last Job:</span>
+                                        <span class="value ${this.state.aiStatus.currentJob.status}">
+                                            ${this.state.aiStatus.currentJob.status}
+                                        </span>
+                                    </div>
+                                    ${when(this.state.aiStatus.currentJob.processed_songs, () => html`
+                                        <div class="status-row">
+                                            <span class="label">Processed:</span>
+                                            <span class="value">${this.state.aiStatus.currentJob.processed_songs} songs</span>
+                                        </div>
+                                    `)}
+                                </div>
+                            `)}
+
+                            <div class="button-row ai-actions">
+                                ${when(this.state.aiStatus.currentJob?.status === 'running', html`
+                                    <button class="btn-danger" on-click="cancelAiAnalysis">
+                                        Cancel Analysis
+                                    </button>
+                                `)}
+                                <button
+                                    class="btn-primary"
+                                    on-click="startAiAnalysis"
+                                    disabled="${this.state.aiAnalyzing || !this.state.aiStatus.serviceOnline}">
+                                    ${this.state.aiAnalyzing ? 'Analyzing...' : 'Start Analysis'}
+                                </button>
+                                <button
+                                    class="btn-secondary"
+                                    on-click="clearAiEmbeddings"
+                                    disabled="${this.state.aiClearing || this.state.aiAnalyzing}">
+                                    Clear Embeddings
+                                </button>
+                            </div>
+
+                            ${when(!this.state.aiStatus.serviceOnline && this.state.aiStatus.serviceUrl, html`
+                                <p class="warning-msg">
+                                    Cannot connect to AI service at ${this.state.aiStatus.serviceUrl}.
+                                    Make sure the AI service container is running.
+                                </p>
+                            `)}
+                        `)}
+                    </section>
+                `)}
 
                 <!-- User Form Dialog -->
                 ${when(this.state.showUserForm, html`
@@ -936,10 +1135,79 @@ export default defineComponent('admin-page', {
             font-style: italic;
         }
 
+        /* AI Section */
+        .ai-section .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .ai-status-badge {
+            padding: 0.25rem 0.75rem;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .ai-status-badge.online {
+            background: var(--success-900, #14532d);
+            color: var(--success-400, #4ade80);
+        }
+
+        .ai-status-badge.offline {
+            background: var(--danger-900, #450a0a);
+            color: var(--danger-400, #f87171);
+        }
+
+        .ai-stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .stat-card {
+            background: var(--surface-200, #2d2d2d);
+            border-radius: 8px;
+            padding: 1rem;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--primary-400, #60a5fa);
+        }
+
+        .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-secondary, #a0a0a0);
+            margin-top: 0.25rem;
+        }
+
+        .ai-job-status {
+            background: var(--surface-200, #2d2d2d);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .ai-actions {
+            margin-top: 1rem;
+        }
+
+        .progress-fill.ai-progress {
+            background: linear-gradient(90deg, var(--primary-600, #2563eb), var(--primary-400, #60a5fa));
+        }
+
         /* Responsive */
         @media (max-width: 600px) {
             .form-row {
                 flex-direction: column;
+            }
+
+            .ai-stats {
+                grid-template-columns: repeat(2, 1fr);
             }
         }
     `

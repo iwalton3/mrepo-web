@@ -1,0 +1,45 @@
+# AI Music Similarity Service (GPU Version)
+# Runs CLAP model for music embedding and similarity search with CUDA support
+
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3-pip \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Make python3.11 the default
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 && \
+    update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
+
+WORKDIR /app
+
+# Install PyTorch with CUDA support (torchvision required by laion_clap)
+RUN pip install --no-cache-dir torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu118
+
+# Install Python dependencies
+# Note: faiss-cpu is used even on GPU builds - FAISS lookups are fast on CPU,
+# and the GPU benefit comes from CLAP model inference (PyTorch with CUDA)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Create directories for data
+RUN mkdir -p /data/ai
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1
+ENV CLAP_PRELOAD=1
+ENV MUSIC_DB=/data/mrepo.db
+ENV MEDIA_PATH=/music
+ENV EMBEDDINGS_PATH=/data/ai
+
+# Expose service port
+EXPOSE 5002
+
+# Run with single worker (GPU memory constraint)
+CMD ["uvicorn", "service:app", "--host", "0.0.0.0", "--port", "5002", "--workers", "1"]

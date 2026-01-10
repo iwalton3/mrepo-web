@@ -392,38 +392,189 @@ def radio_queue(session_id, limit=10, details=None):
 
 # SCA (Song Continuity Algorithm) Methods - these use the user's queue
 
+ROLLING_SEED_THRESHOLD = 200  # Playlists/queues below this use rolling seed mode
+
+
+def _setup_rolling_seed_mode(cur, user_id, song_uuids, pool_size):
+    """Set up rolling seed mode for small pools."""
+    # Clear and set up original seeds
+    cur.execute("DELETE FROM sca_original_seeds WHERE user_id = ?", (user_id,))
+    for uuid in song_uuids:
+        cur.execute("""
+            INSERT OR IGNORE INTO sca_original_seeds (user_id, song_uuid)
+            VALUES (?, ?)
+        """, (user_id, uuid))
+
+    # Enable rolling seed mode
+    cur.execute("""
+        INSERT INTO sca_rolling_seed_state (user_id, rolling_seed_enabled, original_pool_size)
+        VALUES (?, 1, ?)
+        ON CONFLICT(user_id) DO UPDATE SET rolling_seed_enabled = 1, original_pool_size = ?
+    """, (user_id, pool_size, pool_size))
+
+
+def _clear_rolling_seed_mode(cur, user_id):
+    """Clear rolling seed mode."""
+    cur.execute("DELETE FROM sca_original_seeds WHERE user_id = ?", (user_id,))
+    cur.execute("""
+        INSERT INTO sca_rolling_seed_state (user_id, rolling_seed_enabled, original_pool_size)
+        VALUES (?, 0, 0)
+        ON CONFLICT(user_id) DO UPDATE SET rolling_seed_enabled = 0, original_pool_size = 0
+    """, (user_id,))
+
+
+def _regenerate_rolling_seed_pool(cur, user_id):
+    """
+    Regenerate the pool using rolling seed logic.
+
+    Takes half from recent queue history and half from original seeds.
+    This allows continuous playback even with small playlists.
+    """
+    # Get original seeds
+    cur.execute("""
+        SELECT song_uuid FROM sca_original_seeds WHERE user_id = ?
+    """, (user_id,))
+    original_seeds = [row['song_uuid'] for row in cur.fetchall()]
+
+    if not original_seeds:
+        return 0
+
+    # Get recent songs from queue (last N songs played)
+    cur.execute("""
+        SELECT song_uuid FROM user_queue
+        WHERE user_id = ?
+        ORDER BY position DESC
+        LIMIT ?
+    """, (user_id, len(original_seeds)))
+    recent_songs = [row['song_uuid'] for row in cur.fetchall()]
+
+    # Calculate how many from each source
+    # Half from recent songs, half from original seeds
+    half_size = max(len(original_seeds) // 2, 10)
+
+    # Sample from recent songs (if we have any)
+    import random
+    recent_sample = random.sample(recent_songs, min(half_size, len(recent_songs))) if recent_songs else []
+
+    # Sample from original seeds
+    original_sample = random.sample(original_seeds, min(half_size, len(original_seeds)))
+
+    # Combine and deduplicate
+    new_pool = list(set(recent_sample + original_sample))
+
+    # Clear current pool and repopulate
+    cur.execute("DELETE FROM sca_song_pool WHERE user_id = ?", (user_id,))
+    for uuid in new_pool:
+        cur.execute("""
+            INSERT OR IGNORE INTO sca_song_pool (user_id, song_uuid)
+            VALUES (?, ?)
+        """, (user_id, uuid))
+
+    return len(new_pool)
+
+
 @api_method('sca_start_from_queue', require='user')
 def sca_start_from_queue(details=None):
-    """Initialize SCA with songs from the current queue."""
+    """Initialize SCA with songs from the current queue.
+
+    Copies queue songs into SCA pool, clears queue, enables SCA mode,
+    and populates initial queue from similar songs.
+
+    For small queues (< ROLLING_SEED_THRESHOLD), uses rolling seed mode
+    which searches the entire library for similar songs.
+    """
     conn = get_db()
     cur = conn.cursor()
     user_id = details['user_id']
 
-    # Clear existing pool
+    # Get queue songs first (before clearing)
+    cur.execute("SELECT song_uuid FROM user_queue WHERE user_id = ? ORDER BY position", (user_id,))
+    queue_uuids = [row['song_uuid'] for row in cur.fetchall()]
+    queue_size = len(queue_uuids)
+
+    if not queue_uuids:
+        return {'error': 'Queue is empty'}
+
+    # Clear existing pool and original seeds
     cur.execute("DELETE FROM sca_song_pool WHERE user_id = ?", (user_id,))
+    cur.execute("DELETE FROM sca_original_seeds WHERE user_id = ?", (user_id,))
 
     # Copy queue to pool
-    cur.execute("""
-        INSERT INTO sca_song_pool (user_id, song_uuid)
-        SELECT user_id, song_uuid FROM user_queue WHERE user_id = ?
-    """, (user_id,))
+    for uuid in queue_uuids:
+        cur.execute("INSERT INTO sca_song_pool (user_id, song_uuid) VALUES (?, ?)", (user_id, uuid))
+
+    # For rolling seed mode: also store as original seeds
+    if queue_size < ROLLING_SEED_THRESHOLD:
+        for uuid in queue_uuids:
+            cur.execute("INSERT INTO sca_original_seeds (user_id, song_uuid) VALUES (?, ?)", (user_id, uuid))
+        # Enable rolling seed mode
+        cur.execute("""
+            INSERT INTO sca_rolling_seed_state (user_id, rolling_seed_enabled, original_pool_size)
+            VALUES (?, 1, ?)
+            ON CONFLICT(user_id) DO UPDATE SET rolling_seed_enabled = 1, original_pool_size = ?
+        """, (user_id, queue_size, queue_size))
+    else:
+        _clear_rolling_seed_mode(cur, user_id)
+
+    # Clear the queue (will be repopulated with similar songs)
+    cur.execute("DELETE FROM user_queue WHERE user_id = ?", (user_id,))
 
     # Enable SCA mode
     cur.execute("""
-        INSERT INTO user_playback_state (user_id, sca_enabled, updated_at)
-        VALUES (?, 1, ?)
-        ON CONFLICT(user_id) DO UPDATE SET sca_enabled = 1, updated_at = ?
+        INSERT INTO user_playback_state (user_id, sca_enabled, queue_index, updated_at)
+        VALUES (?, 1, 0, ?)
+        ON CONFLICT(user_id) DO UPDATE SET sca_enabled = 1, queue_index = 0, updated_at = ?
     """, (user_id, datetime.utcnow(), datetime.utcnow()))
 
-    cur.execute("SELECT COUNT(*) FROM sca_song_pool WHERE user_id = ?", (user_id,))
-    count = cur.fetchone()[0]
+    # Commit before populating (so sca_populate_queue sees the changes)
+    conn.commit()
 
-    return {'success': True, 'poolSize': count}
+    # Check if CLAP mode is enabled and warn if seeds aren't analyzed
+    from ..config import get_config
+    ai_warning = None
+    ai_service_url = get_config('ai', 'service_url')
+    if ai_service_url and queue_size < ROLLING_SEED_THRESHOLD:
+        try:
+            import requests
+            result = requests.post(
+                f"{ai_service_url}/check/analyzed",
+                json={'uuids': queue_uuids},
+                timeout=5.0
+            )
+            if result.status_code == 200:
+                data = result.json()
+                analyzed_count = data.get('analyzed_count', 0)
+                if analyzed_count == 0:
+                    ai_warning = f"None of your {len(queue_uuids)} seed song(s) have been analyzed. AI radio will fall back to random selection. Run AI analysis from Admin page."
+                elif analyzed_count < len(queue_uuids):
+                    ai_warning = f"Only {analyzed_count}/{len(queue_uuids)} seed songs are analyzed. AI may have limited effectiveness."
+        except:
+            pass  # Non-critical check
+
+    # Populate initial queue with similar songs
+    populate_result = sca_populate_queue(count=20, details=details)
+
+    return {
+        'success': True,
+        'poolSize': queue_size,
+        'rollingSeedException': queue_size < ROLLING_SEED_THRESHOLD,
+        'aiWarning': ai_warning,
+        'added': populate_result.get('added', 0),
+        'ai_used': populate_result.get('ai_used', False),
+        'queue': populate_result.get('songs', [])
+    }
 
 
 @api_method('sca_start_from_playlist', require='user')
 def sca_start_from_playlist(playlist_id, details=None):
-    """Initialize SCA with songs from a playlist."""
+    """Initialize SCA with songs from a playlist.
+
+    Copies playlist songs into SCA pool, clears queue, enables SCA mode,
+    and populates initial queue from similar songs.
+
+    For small playlists (< ROLLING_SEED_THRESHOLD), uses rolling seed mode
+    which searches the entire library for similar songs.
+    """
     conn = get_db()
     cur = conn.cursor()
     user_id = details['user_id']
@@ -440,57 +591,304 @@ def sca_start_from_playlist(playlist_id, details=None):
     if str(playlist['user_id']) != str(user_id) and not playlist['is_public']:
         raise ValueError('Access denied')
 
-    # Clear existing pool
+    # Get playlist songs
+    cur.execute("SELECT song_uuid FROM playlist_songs WHERE playlist_id = ? ORDER BY position", (playlist_id,))
+    playlist_uuids = [row['song_uuid'] for row in cur.fetchall()]
+    playlist_size = len(playlist_uuids)
+
+    if not playlist_uuids:
+        return {'error': 'Playlist is empty'}
+
+    # Clear existing pool and original seeds
     cur.execute("DELETE FROM sca_song_pool WHERE user_id = ?", (user_id,))
+    cur.execute("DELETE FROM sca_original_seeds WHERE user_id = ?", (user_id,))
 
     # Copy playlist to pool
-    cur.execute("""
-        INSERT INTO sca_song_pool (user_id, song_uuid)
-        SELECT ?, song_uuid FROM playlist_songs WHERE playlist_id = ?
-    """, (user_id, playlist_id))
+    for uuid in playlist_uuids:
+        cur.execute("INSERT INTO sca_song_pool (user_id, song_uuid) VALUES (?, ?)", (user_id, uuid))
+
+    # For rolling seed mode: also store as original seeds
+    if playlist_size < ROLLING_SEED_THRESHOLD:
+        for uuid in playlist_uuids:
+            cur.execute("INSERT INTO sca_original_seeds (user_id, song_uuid) VALUES (?, ?)", (user_id, uuid))
+        # Enable rolling seed mode
+        cur.execute("""
+            INSERT INTO sca_rolling_seed_state (user_id, rolling_seed_enabled, original_pool_size)
+            VALUES (?, 1, ?)
+            ON CONFLICT(user_id) DO UPDATE SET rolling_seed_enabled = 1, original_pool_size = ?
+        """, (user_id, playlist_size, playlist_size))
+    else:
+        _clear_rolling_seed_mode(cur, user_id)
+
+    # Clear the queue (will be repopulated with similar songs)
+    cur.execute("DELETE FROM user_queue WHERE user_id = ?", (user_id,))
 
     # Enable SCA mode
     cur.execute("""
-        INSERT INTO user_playback_state (user_id, sca_enabled, updated_at)
-        VALUES (?, 1, ?)
-        ON CONFLICT(user_id) DO UPDATE SET sca_enabled = 1, updated_at = ?
+        INSERT INTO user_playback_state (user_id, sca_enabled, queue_index, updated_at)
+        VALUES (?, 1, 0, ?)
+        ON CONFLICT(user_id) DO UPDATE SET sca_enabled = 1, queue_index = 0, updated_at = ?
     """, (user_id, datetime.utcnow(), datetime.utcnow()))
 
-    cur.execute("SELECT COUNT(*) FROM sca_song_pool WHERE user_id = ?", (user_id,))
-    count = cur.fetchone()[0]
+    # Commit before populating (so sca_populate_queue sees the changes)
+    conn.commit()
 
-    return {'success': True, 'poolSize': count}
+    # Check if CLAP mode is enabled and warn if seeds aren't analyzed
+    from ..config import get_config
+    ai_warning = None
+    ai_service_url = get_config('ai', 'service_url')
+    if ai_service_url and playlist_size < ROLLING_SEED_THRESHOLD:
+        try:
+            import requests
+            result = requests.post(
+                f"{ai_service_url}/check/analyzed",
+                json={'uuids': playlist_uuids},
+                timeout=5.0
+            )
+            if result.status_code == 200:
+                data = result.json()
+                analyzed_count = data.get('analyzed_count', 0)
+                if analyzed_count == 0:
+                    ai_warning = f"None of your {len(playlist_uuids)} seed song(s) have been analyzed. AI radio will fall back to random selection. Run AI analysis from Admin page."
+                elif analyzed_count < len(playlist_uuids):
+                    ai_warning = f"Only {analyzed_count}/{len(playlist_uuids)} seed songs are analyzed. AI may have limited effectiveness."
+        except:
+            pass  # Non-critical check
+
+    # Populate initial queue with similar songs
+    populate_result = sca_populate_queue(count=20, details=details)
+
+    return {
+        'success': True,
+        'poolSize': playlist_size,
+        'rollingSeedException': playlist_size < ROLLING_SEED_THRESHOLD,
+        'aiWarning': ai_warning,
+        'added': populate_result.get('added', 0),
+        'ai_used': populate_result.get('ai_used', False),
+        'queue': populate_result.get('songs', [])
+    }
+
+
+def _clap_find_similar(seed_uuids, exclude_uuids, count, diversity=0.3):
+    """
+    Find similar songs from entire library using CLAP.
+    Used for playlist/queue-based radio (searches whole library, not just pool).
+    """
+    import requests
+    from ..config import get_config
+
+    ai_service_url = get_config('ai', 'service_url')
+    if not ai_service_url:
+        return None
+
+    # Use last 5 seeds plus some random earlier ones if available
+    if len(seed_uuids) > 10:
+        import random
+        seeds = seed_uuids[-5:] + random.sample(seed_uuids[:-5], min(5, len(seed_uuids) - 5))
+    else:
+        seeds = seed_uuids
+
+    try:
+        result = requests.post(
+            f"{ai_service_url}/playlist/generate",
+            json={
+                'seed_uuids': seeds,
+                'size': count,
+                'diversity': diversity,
+                'min_duration': 30,
+                'exclude_uuids': list(exclude_uuids)
+            },
+            timeout=10.0
+        )
+
+        if result.status_code == 200:
+            data = result.json()
+            return [s['uuid'] for s in data.get('songs', [])]
+        else:
+            # Log error from AI service
+            try:
+                error_data = result.json()
+                print(f"CLAP find_similar failed ({result.status_code}): {error_data.get('detail', 'Unknown error')}")
+            except:
+                print(f"CLAP find_similar failed ({result.status_code}): {result.text[:200]}")
+    except requests.RequestException as e:
+        print(f"CLAP find_similar request failed: {e}")
+
+    return None
 
 
 @api_method('sca_populate_queue', require='user')
 def sca_populate_queue(count=5, details=None):
-    """Add songs from the SCA pool to the queue."""
+    """Add songs from the SCA pool to the queue.
+
+    Uses the user's radio_algorithm preference:
+    - 'clap': Use AI similarity to search entire library (default if AI available)
+    - 'sca': Use random selection from pool
+    """
+    import requests
+    from ..config import get_config
+
     conn = get_db()
     cur = conn.cursor()
     user_id = details['user_id']
 
     count = min(int(count), 20)
 
-    # Get random songs from pool that aren't already in queue, with full metadata
+    # Get user's radio preferences
     cur.execute("""
-        SELECT s.uuid, s.type, s.category, s.genre, s.artist, s.album, s.title,
-               s.file, s.album_artist, s.track_number, s.disc_number, s.year,
-               s.duration_seconds, s.seekable, s.replay_gain_track, s.replay_gain_album,
-               s.key, s.bpm
-        FROM songs s
-        JOIN sca_song_pool p ON s.uuid = p.song_uuid
-        WHERE p.user_id = ?
-          AND s.uuid NOT IN (SELECT song_uuid FROM user_queue WHERE user_id = ?)
-        ORDER BY RANDOM()
-        LIMIT ?
-    """, (user_id, user_id, count))
+        SELECT radio_algorithm, ai_radio_queue_diversity FROM user_preferences WHERE user_id = ?
+    """, (user_id,))
+    pref = cur.fetchone()
 
-    songs = rows_to_list(cur.fetchall())
+    # Determine algorithm: use preference, or default to clap if AI available
+    ai_service_url = get_config('ai', 'service_url')
+    if pref and pref['radio_algorithm']:
+        radio_algo = pref['radio_algorithm']
+    elif ai_service_url:
+        radio_algo = 'clap'  # Default to CLAP if AI is available
+    else:
+        radio_algo = 'sca'
 
+    # Get user's queue diversity preference (default 0.3)
+    queue_diversity = (pref['ai_radio_queue_diversity'] if pref and pref['ai_radio_queue_diversity'] is not None else 0.3)
+
+    # Get current queue UUIDs (for exclusion and seeds)
+    cur.execute("SELECT song_uuid FROM user_queue WHERE user_id = ? ORDER BY position", (user_id,))
+    queue_uuids = [row['song_uuid'] for row in cur.fetchall()]
+    exclude_uuids = set(queue_uuids)
+
+    songs = []
+    ai_used = False
+    ai_attempted = False
+
+    if radio_algo == 'clap' and ai_service_url:
+        ai_attempted = True
+        # Check for original seeds - presence indicates rolling seed mode (small playlist/queue)
+        cur.execute("SELECT song_uuid FROM sca_original_seeds WHERE user_id = ?", (user_id,))
+        original_seeds = [row['song_uuid'] for row in cur.fetchall()]
+
+        if original_seeds:
+            # Rolling seed mode: search entire library using mix of original + recent seeds
+            import random
+            recent_seeds = queue_uuids[-10:] if queue_uuids else []
+
+            # Mix: half recent, half original (for variety)
+            half = max(5, len(original_seeds) // 2)
+            seed_sample = recent_seeds[-half:] + random.sample(original_seeds, min(half, len(original_seeds)))
+
+            # Exclude the original seeds (pool songs) to get new discoveries
+            cur.execute("SELECT song_uuid FROM sca_song_pool WHERE user_id = ?", (user_id,))
+            pool_uuids = [row['song_uuid'] for row in cur.fetchall()]
+            full_exclude = exclude_uuids | set(pool_uuids)
+
+            selected_uuids = _clap_find_similar(
+                seed_uuids=seed_sample,
+                exclude_uuids=full_exclude,
+                count=count,
+                diversity=queue_diversity  # Use user preference
+            )
+
+            if selected_uuids:
+                ai_used = True
+                # Get full song metadata
+                placeholders = ','.join('?' * len(selected_uuids))
+                cur.execute(f"""
+                    SELECT uuid, type, category, genre, artist, album, title,
+                           file, album_artist, track_number, disc_number, year,
+                           duration_seconds, seekable, replay_gain_track, replay_gain_album,
+                           key, bpm
+                    FROM songs WHERE uuid IN ({placeholders})
+                """, selected_uuids)
+
+                uuid_to_song = {row['uuid']: row_to_dict(row) for row in cur.fetchall()}
+                songs = [uuid_to_song[u] for u in selected_uuids if u in uuid_to_song]
+
+        elif queue_uuids:
+            # Large pool mode (filter-based): search within pool using CLAP
+            cur.execute("""
+                SELECT song_uuid FROM sca_song_pool
+                WHERE user_id = ? AND song_uuid NOT IN (SELECT song_uuid FROM user_queue WHERE user_id = ?)
+            """, (user_id, user_id))
+            pool_uuids = [row['song_uuid'] for row in cur.fetchall()]
+
+            if pool_uuids:
+                selected_uuids = _clap_find_similar(
+                    seed_uuids=queue_uuids[-5:],
+                    exclude_uuids=exclude_uuids,
+                    count=count,
+                    diversity=queue_diversity  # Use user preference
+                )
+
+                # Filter to pool only
+                if selected_uuids:
+                    pool_set = set(pool_uuids)
+                    selected_uuids = [u for u in selected_uuids if u in pool_set][:count]
+
+                    if selected_uuids:
+                        ai_used = True
+                        placeholders = ','.join('?' * len(selected_uuids))
+                        cur.execute(f"""
+                            SELECT uuid, type, category, genre, artist, album, title,
+                                   file, album_artist, track_number, disc_number, year,
+                                   duration_seconds, seekable, replay_gain_track, replay_gain_album,
+                                   key, bpm
+                            FROM songs WHERE uuid IN ({placeholders})
+                        """, selected_uuids)
+
+                        uuid_to_song = {row['uuid']: row_to_dict(row) for row in cur.fetchall()}
+                        songs = [uuid_to_song[u] for u in selected_uuids if u in uuid_to_song]
+
+    # Fallback to random SCA if CLAP didn't work or not enabled
     if not songs:
-        return {'added': 0, 'songs': [], 'message': 'Pool exhausted'}
+        # Get random songs from pool that aren't already in queue
+        cur.execute("""
+            SELECT s.uuid, s.type, s.category, s.genre, s.artist, s.album, s.title,
+                   s.file, s.album_artist, s.track_number, s.disc_number, s.year,
+                   s.duration_seconds, s.seekable, s.replay_gain_track, s.replay_gain_album,
+                   s.key, s.bpm
+            FROM songs s
+            JOIN sca_song_pool p ON s.uuid = p.song_uuid
+            WHERE p.user_id = ?
+              AND s.uuid NOT IN (SELECT song_uuid FROM user_queue WHERE user_id = ?)
+            ORDER BY RANDOM()
+            LIMIT ?
+        """, (user_id, user_id, count))
 
-    # Get max position
+        songs = rows_to_list(cur.fetchall())
+
+        if not songs:
+            # Pool exhausted - check if rolling seed mode is enabled
+            cur.execute("""
+                SELECT rolling_seed_enabled FROM sca_rolling_seed_state WHERE user_id = ?
+            """, (user_id,))
+            state = cur.fetchone()
+
+            if state and state['rolling_seed_enabled']:
+                # Regenerate pool from rolling seeds
+                new_pool_size = _regenerate_rolling_seed_pool(cur, user_id)
+                if new_pool_size > 0:
+                    # Retry getting songs from the regenerated pool
+                    cur.execute("""
+                        SELECT s.uuid, s.type, s.category, s.genre, s.artist, s.album, s.title,
+                               s.file, s.album_artist, s.track_number, s.disc_number, s.year,
+                               s.duration_seconds, s.seekable, s.replay_gain_track, s.replay_gain_album,
+                               s.key, s.bpm
+                        FROM songs s
+                        JOIN sca_song_pool p ON s.uuid = p.song_uuid
+                        WHERE p.user_id = ?
+                          AND s.uuid NOT IN (SELECT song_uuid FROM user_queue WHERE user_id = ?)
+                        ORDER BY RANDOM()
+                        LIMIT ?
+                    """, (user_id, user_id, count))
+                    songs = rows_to_list(cur.fetchall())
+
+            if not songs:
+                message = 'Pool exhausted'
+                if ai_attempted:
+                    message = 'Pool exhausted. AI search failed - ensure songs are analyzed from Admin page.'
+                return {'added': 0, 'songs': [], 'message': message, 'ai_used': False, 'ai_attempted': ai_attempted}
+
+    # Add songs to queue
     cur.execute("SELECT MAX(position) FROM user_queue WHERE user_id = ?", (user_id,))
     result = cur.fetchone()
     next_pos = (result[0] or -1) + 1
@@ -502,7 +900,7 @@ def sca_populate_queue(count=5, details=None):
         """, (user_id, song['uuid'], next_pos))
         next_pos += 1
 
-    return {'added': len(songs), 'songs': songs}
+    return {'added': len(songs), 'songs': songs, 'ai_used': ai_used}
 
 
 @api_method('sca_stop', require='user')
@@ -542,3 +940,185 @@ def sca_get_pool(details=None):
 
     rows = cur.fetchall()
     return {'items': rows_to_list(rows)}
+
+
+@api_method('sca_populate_queue_ai', require='user')
+def sca_populate_queue_ai(count=5, seed_uuid=None, diversity=0.3, details=None):
+    """
+    Add songs to the queue using AI similarity search.
+
+    Uses the current song (or seed_uuid) to find similar songs from the pool.
+    Falls back to random selection if AI is unavailable.
+
+    Args:
+        count: Number of songs to add
+        seed_uuid: Optional seed song UUID (uses current queue position if not provided)
+        diversity: MMR diversity factor (0-1, higher = more diverse)
+    """
+    import requests
+    from ..config import get_config
+
+    conn = get_db()
+    cur = conn.cursor()
+    user_id = details['user_id']
+
+    count = min(int(count), 20)
+
+    # Check if AI is available (auto-enable if service URL is configured)
+    ai_service_url = get_config('ai', 'service_url')
+    ai_timeout = get_config('ai', 'search_timeout') or 5.0
+
+    if not ai_service_url:
+        # Fall back to regular SCA
+        return sca_populate_queue(count=count, details=details)
+
+    # Get seed song (from parameter or current queue position)
+    if not seed_uuid:
+        cur.execute("""
+            SELECT queue_index FROM user_playback_state WHERE user_id = ?
+        """, (user_id,))
+        state = cur.fetchone()
+        queue_index = state['queue_index'] if state else 0
+
+        cur.execute("""
+            SELECT song_uuid FROM user_queue
+            WHERE user_id = ?
+            ORDER BY position
+            LIMIT 1 OFFSET ?
+        """, (user_id, queue_index))
+        current = cur.fetchone()
+        seed_uuid = current['song_uuid'] if current else None
+
+    if not seed_uuid:
+        # No seed available, fall back to random
+        return sca_populate_queue(count=count, details=details)
+
+    # Get pool UUIDs that aren't already in queue
+    cur.execute("""
+        SELECT p.song_uuid
+        FROM sca_song_pool p
+        WHERE p.user_id = ?
+          AND p.song_uuid NOT IN (SELECT song_uuid FROM user_queue WHERE user_id = ?)
+    """, (user_id, user_id))
+    pool_uuids = [row['song_uuid'] for row in cur.fetchall()]
+
+    if not pool_uuids:
+        return {'added': 0, 'songs': [], 'message': 'Pool exhausted', 'ai_used': False}
+
+    # Call AI service to find similar songs
+    try:
+        response = requests.post(
+            f"{ai_service_url}/search/similar",
+            json={
+                'uuid': seed_uuid,
+                'limit': count * 2,  # Get extra for filtering
+                'filter_uuids': pool_uuids
+            },
+            timeout=ai_timeout
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            similar_uuids = [r['uuid'] for r in result.get('results', [])][:count]
+
+            if similar_uuids:
+                # Get full song metadata
+                placeholders = ','.join('?' * len(similar_uuids))
+                cur.execute(f"""
+                    SELECT uuid, type, category, genre, artist, album, title,
+                           file, album_artist, track_number, disc_number, year,
+                           duration_seconds, seekable, replay_gain_track, replay_gain_album,
+                           key, bpm
+                    FROM songs WHERE uuid IN ({placeholders})
+                """, similar_uuids)
+
+                # Preserve order from AI results
+                uuid_to_song = {row['uuid']: row_to_dict(row) for row in cur.fetchall()}
+                songs = [uuid_to_song[u] for u in similar_uuids if u in uuid_to_song]
+
+                if songs:
+                    # Add to queue
+                    cur.execute("SELECT MAX(position) FROM user_queue WHERE user_id = ?", (user_id,))
+                    result = cur.fetchone()
+                    next_pos = (result[0] or -1) + 1
+
+                    for song in songs:
+                        cur.execute("""
+                            INSERT INTO user_queue (user_id, song_uuid, position)
+                            VALUES (?, ?, ?)
+                        """, (user_id, song['uuid'], next_pos))
+                        next_pos += 1
+
+                    return {'added': len(songs), 'songs': songs, 'ai_used': True}
+
+    except requests.RequestException as e:
+        # Log error but don't fail - fall back to random
+        print(f"AI radio error: {e}")
+
+    # Fall back to regular SCA if AI fails
+    result = sca_populate_queue(count=count, details=details)
+    result['ai_used'] = False
+    return result
+
+
+@api_method('sca_status', require='user')
+def sca_status(details=None):
+    """Get SCA/radio status including AI availability."""
+    from ..config import get_config
+    import requests
+
+    conn = get_db()
+    cur = conn.cursor()
+    user_id = details['user_id']
+
+    # Get SCA state
+    cur.execute("""
+        SELECT sca_enabled FROM user_playback_state WHERE user_id = ?
+    """, (user_id,))
+    state = cur.fetchone()
+    sca_enabled = state['sca_enabled'] if state else False
+
+    # Get pool size
+    cur.execute("SELECT COUNT(*) FROM sca_song_pool WHERE user_id = ?", (user_id,))
+    pool_size = cur.fetchone()[0]
+
+    # Check AI availability (auto-enable if service URL is configured)
+    ai_service_url = get_config('ai', 'service_url')
+    ai_available = False
+
+    if ai_service_url:
+        try:
+            response = requests.get(f"{ai_service_url}/health", timeout=2.0)
+            ai_available = response.status_code == 200
+        except requests.RequestException:
+            pass
+
+    # Get user AI preference
+    cur.execute("""
+        SELECT ai_radio_enabled FROM user_ai_preferences WHERE user_id = ?
+    """, (user_id,))
+    pref = cur.fetchone()
+    ai_radio_preferred = pref['ai_radio_enabled'] if pref else True
+
+    return {
+        'scaEnabled': sca_enabled,
+        'poolSize': pool_size,
+        'aiAvailable': ai_available,
+        'aiRadioPreferred': ai_radio_preferred
+    }
+
+
+@api_method('sca_set_ai_preference', require='user')
+def sca_set_ai_preference(enabled=True, details=None):
+    """Set user preference for AI-powered radio."""
+    conn = get_db()
+    cur = conn.cursor()
+    user_id = details['user_id']
+
+    cur.execute("""
+        INSERT INTO user_ai_preferences (user_id, ai_radio_enabled)
+        VALUES (?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET ai_radio_enabled = ?
+    """, (user_id, 1 if enabled else 0, 1 if enabled else 0))
+
+    return {'success': True, 'aiRadioEnabled': enabled}

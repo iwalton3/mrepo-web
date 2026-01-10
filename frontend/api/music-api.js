@@ -589,6 +589,20 @@ export const sca = {
     },
 
     /**
+     * Populate queue using AI similarity (falls back to random if unavailable).
+     * @param {number} [count=10] - Number of songs to add
+     * @param {string} [seedUuid] - Optional seed song UUID
+     * @param {number} [diversity=0.3] - Diversity factor (0-1)
+     */
+    async populateQueueAi(count = 10, seedUuid = null, diversity = 0.3) {
+        return apiCall('sca_populate_queue_ai', {
+            count,
+            seed_uuid: seedUuid,
+            diversity
+        });
+    },
+
+    /**
      * Stop SCA mode.
      */
     async stop() {
@@ -600,6 +614,21 @@ export const sca = {
      */
     async getPool() {
         return apiCall('sca_get_pool');
+    },
+
+    /**
+     * Get SCA/radio status including AI availability.
+     */
+    async status() {
+        return apiCall('sca_status');
+    },
+
+    /**
+     * Set user preference for AI-powered radio.
+     * @param {boolean} enabled - Whether to use AI for radio
+     */
+    async setAiPreference(enabled) {
+        return apiCall('sca_set_ai_preference', { enabled });
     }
 };
 
@@ -731,7 +760,8 @@ export const preferences = {
      * Update user preferences.
      */
     async set({ volume, shuffle, repeatMode, radioEopp, darkMode,
-                replayGainMode, replayGainPreamp, replayGainFallback } = {}) {
+                replayGainMode, replayGainPreamp, replayGainFallback,
+                radioAlgorithm, aiSearchMax, aiSearchDiversity, aiRadioQueueDiversity } = {}) {
         return apiCall('preferences_set', {
             volume,
             shuffle,
@@ -740,7 +770,11 @@ export const preferences = {
             dark_mode: darkMode,
             replay_gain_mode: replayGainMode,
             replay_gain_preamp: replayGainPreamp,
-            replay_gain_fallback: replayGainFallback
+            replay_gain_fallback: replayGainFallback,
+            radio_algorithm: radioAlgorithm,
+            ai_search_max: aiSearchMax,
+            ai_search_diversity: aiSearchDiversity,
+            ai_radio_queue_diversity: aiRadioQueueDiversity
         });
     }
 };
@@ -954,6 +988,134 @@ export const sync = {
 };
 
 /**
+ * AI Features API - Semantic search and similarity
+ * These methods require AI features to be enabled on the server.
+ */
+export const ai = {
+    /**
+     * Get AI service status.
+     * Returns whether AI is enabled and service health.
+     */
+    async status() {
+        return apiCall('ai_status');
+    },
+
+    /**
+     * Search songs using semantic text search.
+     * @param {string} query - Natural language search query
+     * @param {Object} options - Search options
+     * @param {number} [options.limit=50] - Maximum results
+     * @param {string[]} [options.filterUuids] - Limit to these song UUIDs
+     */
+    async searchText(query, { limit = 50, filterUuids } = {}) {
+        return apiCall('ai_search_text', {
+            query,
+            limit,
+            filter_uuids: filterUuids
+        });
+    },
+
+    /**
+     * Find songs similar to a given song.
+     * @param {string} uuid - Song UUID to find similar songs for
+     * @param {Object} options - Search options
+     * @param {number} [options.limit=20] - Maximum results
+     * @param {string[]} [options.filterUuids] - Limit to these song UUIDs
+     */
+    async findSimilar(uuid, { limit = 20, filterUuids } = {}) {
+        return apiCall('ai_search_similar', {
+            uuid,
+            k: limit,
+            filter_uuids: filterUuids
+        });
+    },
+
+    /**
+     * Generate a playlist of similar songs using MMR for diversity.
+     * @param {string[]} seedUuids - Seed song UUIDs
+     * @param {Object} options - Generation options
+     * @param {number} [options.count=20] - Number of songs to generate
+     * @param {number} [options.diversity=0.2] - Diversity factor (0-1)
+     * @param {string[]} [options.filterUuids] - Limit to these song UUIDs
+     */
+    async generatePlaylist(seedUuids, { size = 20, diversity = 0.2, filterUuids } = {}) {
+        return apiCall('ai_generate_playlist', {
+            seed_uuids: seedUuids,
+            size,
+            diversity,
+            filter_uuids: filterUuids
+        });
+    },
+
+    /**
+     * Extend the queue with similar songs.
+     * @param {number} count - Number of songs to add
+     * @param {number} [diversity=0.2] - Diversity factor (0-1)
+     */
+    async extendQueue(count = 10, diversity = 0.2) {
+        return apiCall('ai_extend_queue', { count, diversity });
+    },
+
+    /**
+     * Extend a playlist with similar songs.
+     * @param {number|string} playlistId - Playlist ID
+     * @param {number} count - Number of songs to add
+     * @param {number} [diversity=0.2] - Diversity factor (0-1)
+     */
+    async extendPlaylist(playlistId, count = 10, diversity = 0.2) {
+        return apiCall('ai_extend_playlist', {
+            playlist_id: playlistId,
+            count,
+            diversity
+        });
+    },
+
+    /**
+     * Check for potential duplicate songs based on audio similarity.
+     * @param {number} [threshold=0.95] - Similarity threshold (0-1)
+     * @param {number} [limit=100] - Maximum pairs to return
+     */
+    async checkDuplicates(threshold = 0.95, limit = 100) {
+        return apiCall('ai_check_duplicates', { threshold, limit });
+    }
+};
+
+/**
+ * AI Admin API - AI service management (admin only)
+ */
+export const aiAdmin = {
+    /**
+     * Get AI service status and analysis statistics.
+     */
+    async status() {
+        return apiCall('admin_ai_status');
+    },
+
+    /**
+     * Start AI analysis of unanalyzed songs.
+     * @param {boolean} [force=false] - Force restart if already running
+     */
+    async startAnalysis(force = false) {
+        return apiCall('admin_ai_start_analysis', { force });
+    },
+
+    /**
+     * Cancel a running AI analysis job.
+     * @param {number} [jobId] - Specific job ID, or null for any running job
+     */
+    async cancelAnalysis(jobId = null) {
+        return apiCall('admin_ai_cancel_analysis', { job_id: jobId });
+    },
+
+    /**
+     * Clear all AI embeddings to force re-analysis.
+     */
+    async clearEmbeddings() {
+        return apiCall('admin_ai_clear_embeddings');
+    }
+};
+
+/**
  * Formats that require transcoding via stream.cgi (tracker formats)
  */
 const TRANSCODE_FORMATS = new Set([
@@ -991,6 +1153,9 @@ export default {
     preferences,
     eqPresets,
     auth,
+    admin,
     sync,
+    ai,
+    aiAdmin,
     getStreamUrl
 };

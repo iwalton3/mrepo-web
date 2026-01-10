@@ -57,7 +57,13 @@ export default defineComponent('now-playing-page', {
             selectedIndices: new Set(),
             selectionVersion: 0,  // Incremented on selection changes to invalidate memoEach cache
             // Confirm dialog
-            confirmDialog: { show: false, title: '', message: '', action: null }
+            confirmDialog: { show: false, title: '', message: '', action: null },
+            // Extend queue with AI
+            showExtendDialog: false,
+            extendCount: 10,
+            extendDiversity: 0.3,
+            isExtending: false,
+            extendError: null
         };
     },
 
@@ -577,14 +583,122 @@ export default defineComponent('now-playing-page', {
 
         async handleStartRadio() {
             await player.startScaFromQueue();
+            // Queue may grow - recalculate visible range
+            requestAnimationFrame(() => this._updateVisibleRange());
         },
 
         async handleStopRadio() {
             await player.stopSca();
         },
 
+        async handleToggleAiRadio() {
+            await player.toggleAiRadio();
+        },
+
+        // Extend queue with AI - Dialog methods
+        showExtendQueueDialog() {
+            this.state.showExtendDialog = true;
+            this.state.extendError = null;
+        },
+
+        closeExtendDialog() {
+            this.state.showExtendDialog = false;
+        },
+
+        async handleExtendQueue() {
+            this.state.isExtending = true;
+            this.state.extendError = null;
+
+            try {
+                const isTempQueue = player.tempQueueMode;
+                let addedCount = 0;
+
+                if (isTempQueue) {
+                    // Temp queue mode: generate locally using seeds from local queue
+                    const queue = player.queue;
+                    if (queue.length === 0) {
+                        this.state.extendError = 'Queue is empty';
+                        return;
+                    }
+
+                    // Use last 5 songs as seeds
+                    const seedCount = Math.min(5, queue.length);
+                    const seedUuids = queue.slice(-seedCount).map(s => s.uuid);
+                    const existingUuids = new Set(queue.map(s => s.uuid));
+
+                    // Generate similar songs
+                    const result = await offlineApi.ai.generatePlaylist(seedUuids, {
+                        size: this.state.extendCount + existingUuids.size,
+                        diversity: this.state.extendDiversity
+                    });
+
+                    if (result.error) {
+                        this.state.extendError = result.error;
+                        return;
+                    }
+
+                    // Filter out songs already in queue
+                    const newUuids = (result.songs || [])
+                        .filter(item => !existingUuids.has(item.uuid))
+                        .slice(0, this.state.extendCount)
+                        .map(item => item.uuid);
+
+                    if (newUuids.length === 0) {
+                        this.state.extendError = 'No new similar songs found';
+                        return;
+                    }
+
+                    // Fetch full song data
+                    const songsResult = await offlineApi.songs.getBulk(newUuids);
+                    const songs = songsResult.items || songsResult || [];
+
+                    if (songs.length > 0) {
+                        await player.addToQueue(songs);
+                        addedCount = songs.length;
+                    }
+                } else {
+                    // Normal mode: use server-side extend
+                    const result = await offlineApi.ai.extendQueue(
+                        this.state.extendCount,
+                        this.state.extendDiversity
+                    );
+
+                    if (result.error) {
+                        this.state.extendError = result.error;
+                        return;
+                    }
+
+                    // Reload queue from server
+                    await player.reloadQueue();
+                    addedCount = result.added?.length || 0;
+                }
+
+                // Force visible range recalculation after queue grows
+                requestAnimationFrame(() => {
+                    this._updateVisibleRange();
+                });
+
+                this.state.showExtendDialog = false;
+                const toast = document.querySelector('cl-toast');
+                if (toast) {
+                    toast.show({
+                        severity: 'success',
+                        summary: 'Queue Extended',
+                        detail: `Added ${addedCount} similar songs`
+                    });
+                }
+            } catch (e) {
+                console.error('Failed to extend queue with AI:', e);
+                this.state.extendError = e.message || 'Failed to extend queue';
+            } finally {
+                this.state.isExtending = false;
+            }
+        },
+
         async handleToggleTempQueue() {
             await player.toggleTempQueueMode();
+            // Queue size changes - recalculate visible range
+            requestAnimationFrame(() => this._updateVisibleRange());
         },
 
         async loadPlaylists() {
@@ -1437,7 +1551,7 @@ export default defineComponent('now-playing-page', {
                     <div class="queue-scroll-wrapper" ref="queueScrollWrapper">
                         <!-- Queue Header -->
                         <div class="queue-header">
-                            <h3>📋 ${this.stores.player.tempQueueMode ? 'Temp Queue' : 'Queue'} (${visibleQueueLength})</h3>
+                            <h3>📋 <span class="queue-title">${this.stores.player.tempQueueMode ? 'Temp Queue' : 'Queue'}</span><span class="queue-title-short">${this.stores.player.tempQueueMode ? 'Temp' : 'Queue'}</span> (${visibleQueueLength})</h3>
                             <div class="queue-actions">
                                 <button class="queue-action-btn temp-queue ${this.stores.player.tempQueueMode ? 'active' : ''}"
                                         on-click="handleToggleTempQueue"
@@ -1445,8 +1559,27 @@ export default defineComponent('now-playing-page', {
                                     ♻️<span class="btn-label">${this.stores.player.tempQueueMode ? 'Exit Temp' : 'Temp'}</span>
                                 </button>
                                 ${when(scaEnabled,
-                                    () => html`<button class="queue-action-btn stop-radio" on-click="handleStopRadio" title="Stop Radio">⏹<span class="btn-label">Stop Radio</span></button>`,
-                                    () => html`<button class="queue-action-btn" on-click="handleStartRadio" title="Start Radio">📻<span class="btn-label">Radio</span></button>`
+                                    () => html`
+                                        <button class="queue-action-btn stop-radio" on-click="handleStopRadio" title="Stop Radio">⏹<span class="btn-label">Stop Radio</span></button>
+                                        ${when(this.stores.player.aiRadioAvailable, () => html`
+                                            <button
+                                                class="queue-action-btn ai-toggle ${this.stores.player.aiRadioEnabled ? 'active' : ''}"
+                                                on-click="handleToggleAiRadio"
+                                                title="${this.stores.player.aiRadioEnabled ? 'AI Radio: ON (uses similarity)' : 'AI Radio: OFF (random selection)'}">
+                                                🤖<span class="btn-label">${this.stores.player.aiRadioEnabled ? 'AI' : 'AI Off'}</span>
+                                            </button>
+                                        `)}
+                                    `,
+                                    () => html`
+                                        <button class="queue-action-btn" on-click="handleStartRadio" title="Start Radio">📻<span class="btn-label">Radio</span></button>
+                                        ${when(this.stores.player.aiRadioAvailable, () => html`
+                                            <button class="queue-action-btn"
+                                                    on-click="showExtendQueueDialog"
+                                                    title="Extend queue with similar songs using AI">
+                                                ✨<span class="btn-label">Extend</span>
+                                            </button>
+                                        `)}
+                                    `
                                 )}
                                 <div class="sort-dropdown">
                                     <button class="queue-action-btn" on-click="toggleSortMenu" title="Sort Queue" disabled="${this.state.isSorting}">
@@ -1711,6 +1844,40 @@ export default defineComponent('now-playing-page', {
                     </div>
                 `)}
 
+                <!-- Extend Queue with AI Dialog -->
+                ${when(this.state.showExtendDialog, () => html`
+                    <div class="dialog-overlay" on-click="closeExtendDialog">
+                        <div class="dialog extend-dialog" on-click="${(e) => e.stopPropagation()}">
+                            <h3>Extend Queue with AI</h3>
+                            <p class="dialog-subtitle">Add similar songs based on the last few songs in your queue.</p>
+
+                            <label class="extend-label">
+                                Number of songs: <strong>${this.state.extendCount}</strong>
+                            </label>
+                            <input type="range" class="extend-slider" min="5" max="50" step="5"
+                                   x-model="extendCount">
+
+                            <label class="extend-label">
+                                Diversity: <strong>${Math.round(this.state.extendDiversity * 100)}%</strong>
+                            </label>
+                            <input type="range" class="extend-slider" min="0" max="100" step="10"
+                                   value="${this.state.extendDiversity * 100}"
+                                   on-input="${(e) => { this.state.extendDiversity = parseInt(e.target.value) / 100; }}">
+                            <p class="extend-hint">Lower = more similar, Higher = more variety</p>
+
+                            ${when(this.state.extendError, () => html`
+                                <div class="dialog-error">${this.state.extendError}</div>
+                            `)}
+
+                            <div class="dialog-actions">
+                                <cl-button severity="secondary" on-click="closeExtendDialog">Cancel</cl-button>
+                                <cl-button severity="primary" on-click="handleExtendQueue"
+                                           loading="${this.state.isExtending}">Extend Queue</cl-button>
+                            </div>
+                        </div>
+                    </div>
+                `)}
+
                 ${when(this.state.confirmDialog.show, () => html`
                     <cl-dialog visible="true" header="${this.state.confirmDialog.title}" on-close="handleConfirmDialogCancel">
                         <p>${this.state.confirmDialog.message}</p>
@@ -1806,6 +1973,19 @@ export default defineComponent('now-playing-page', {
             color: var(--text-secondary, #a0a0a0);
         }
 
+        .queue-header .queue-title-short {
+            display: none;
+        }
+
+        @media (max-width: 849px) {
+            .queue-header .queue-title {
+                display: none;
+            }
+            .queue-header .queue-title-short {
+                display: inline;
+            }
+        }
+
         .queue-actions {
             display: flex;
             gap: 0.5rem;
@@ -1839,6 +2019,21 @@ export default defineComponent('now-playing-page', {
         .queue-action-btn.stop-radio:hover {
             background: var(--danger-500, #dc3545);
             color: white;
+        }
+
+        .queue-action-btn.ai-toggle {
+            background: var(--surface-300, #404040);
+            color: var(--text-secondary, #a0a0a0);
+        }
+
+        .queue-action-btn.ai-toggle.active {
+            background: var(--primary-900, #1e3a5f);
+            color: var(--primary-400, #60a5fa);
+        }
+
+        .queue-action-btn.ai-toggle:hover {
+            background: var(--primary-800, #1e40af);
+            color: var(--primary-300, #93c5fd);
         }
 
         .queue-action-btn.temp-queue.active {
@@ -2637,6 +2832,37 @@ export default defineComponent('now-playing-page', {
             justify-content: flex-end;
             gap: 0.5rem;
             margin-top: 1rem;
+        }
+
+        /* Extend dialog */
+        .extend-dialog .dialog-subtitle {
+            color: var(--text-secondary, #aaa);
+            font-size: 0.875rem;
+            margin-bottom: 1rem;
+        }
+
+        .extend-label {
+            display: block;
+            color: var(--text-secondary, #aaa);
+            font-size: 0.875rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .extend-label strong {
+            color: var(--text-primary, #e0e0e0);
+        }
+
+        .extend-slider {
+            width: 100%;
+            margin-bottom: 0.75rem;
+            accent-color: var(--primary-500, #2196f3);
+        }
+
+        .extend-hint {
+            color: var(--text-tertiary, #888);
+            font-size: 0.75rem;
+            margin-top: -0.5rem;
+            margin-bottom: 0.75rem;
         }
 
         /* Mobile */

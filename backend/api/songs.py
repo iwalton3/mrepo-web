@@ -135,22 +135,35 @@ def songs_get_bulk(uuids, details=None):
 
 
 @api_method('songs_search', require='user')
-def songs_search(query, cursor=None, offset=None, limit=50):
+def songs_search(query, cursor=None, offset=None, limit=50, details=None):
     """
     Search songs using full-text search or advanced query syntax.
 
+    Supports AI search syntax:
+    - ai:prompt - Semantic search using text embeddings
+    - ai(subquery) - Find songs similar to subquery results
+
     Returns:
-        {items: [...], nextCursor: str|null, hasMore: bool, totalCount: int}
+        {items: [...], nextCursor: str|null, hasMore: bool, totalCount: int, aiUsed: bool}
     """
-    from ..music_search import parse_query, build_sql
+    from ..music_search import parse_query, build_sql, extract_ai_info
+    from ..config import get_config
 
     limit = min(int(limit), 200)
     offset = int(offset) if offset is not None else None
     conn = get_db()
     cur = conn.cursor()
 
+    ai_used = False
+
     try:
         ast = parse_query(query)
+        ai_info = extract_ai_info(ast)
+
+        # Check if AI search is requested and service URL is configured
+        if ai_info.has_ai and get_config('ai', 'service_url'):
+            return _handle_ai_search(ast, ai_info, cursor, offset, limit, details, original_query=query)
+
         where_clause, params = build_sql(ast)
     except Exception:
         # Fall back to FTS for simple queries
@@ -205,7 +218,251 @@ def songs_search(query, cursor=None, offset=None, limit=50):
         'nextCursor': next_cursor,
         'hasMore': has_more,
         'totalCount': total_count,
-        'offset': offset if offset is not None else 0
+        'offset': offset if offset is not None else 0,
+        'aiUsed': ai_used
+    }
+
+
+def _handle_ai_search(ast, ai_info, cursor, offset, limit, details, original_query=None):
+    """Handle search queries containing AI components."""
+    import requests
+    from ..music_search import build_sql, get_stable_seed, sample_uuids
+    from ..config import get_config
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    ai_service_url = get_config('ai', 'service_url')
+    ai_timeout = get_config('ai', 'search_timeout') or 5.0
+
+    if not ai_service_url:
+        # AI not configured, fall back to non-AI search
+        where_clause, params = build_sql(ast)
+        return _execute_standard_search(where_clause, params, cursor, offset, limit, False)
+
+    # Get user's AI preferences
+    user_id = details.get('user_id') if details else None
+    ai_search_max = 2000
+    ai_search_diversity = 0.3
+
+    if user_id:
+        cur.execute("""
+            SELECT ai_search_max, ai_search_diversity
+            FROM user_preferences WHERE user_id = ?
+        """, (user_id,))
+        prefs = cur.fetchone()
+        if prefs:
+            ai_search_max = prefs['ai_search_max'] or 2000
+            ai_search_diversity = prefs['ai_search_diversity'] if prefs['ai_search_diversity'] is not None else 0.3
+
+    # Build context query from non-AI portion
+    context_uuids = None
+    if ai_info.context_ast:
+        context_where, context_params = build_sql(ai_info.context_ast)
+        cur.execute(f"SELECT uuid FROM songs WHERE {context_where}", context_params)
+        context_uuids = [row['uuid'] for row in cur.fetchall()]
+
+        # If context filter returns no results, return empty
+        if not context_uuids:
+            return {
+                'items': [],
+                'nextCursor': None,
+                'hasMore': False,
+                'totalCount': 0,
+                'offset': offset if offset is not None else 0,
+                'aiUsed': True
+            }
+
+    # Handle AI text search (ai:prompt) - supports multiple prompts with AND semantics
+    if ai_info.text_prompts:
+        all_ai_uuids = None
+
+        for prompt in ai_info.text_prompts:
+            try:
+                response = requests.post(
+                    f"{ai_service_url}/search/text",
+                    json={
+                        'query': prompt,
+                        'limit': ai_search_max,  # Use user preference
+                        'diversity': ai_search_diversity,  # Use user preference
+                        'filter_uuids': context_uuids
+                    },
+                    timeout=ai_timeout
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    uuids = set(r['uuid'] for r in result.get('results', []))
+                    if all_ai_uuids is None:
+                        all_ai_uuids = uuids
+                    else:
+                        # Intersection for AND semantics
+                        all_ai_uuids &= uuids
+            except requests.RequestException:
+                pass
+
+        if all_ai_uuids:
+            return _fetch_songs_by_uuids(list(all_ai_uuids), cursor, offset, limit, True)
+
+    # Handle AI subquery search (ai(subquery))
+    if ai_info.subqueries:
+        subquery_ast = ai_info.subqueries[0]
+        subquery_where, subquery_params = build_sql(subquery_ast)
+
+        # Get songs matching the subquery (up to 1000 for sampling)
+        cur.execute(f"SELECT uuid FROM songs WHERE {subquery_where} LIMIT 1000", subquery_params)
+        subquery_uuids = [row['uuid'] for row in cur.fetchall()]
+
+        if subquery_uuids:
+            # Use deterministic sampling for stable results
+            # Generate seed from the original query for deterministic behavior
+            seed = get_stable_seed(original_query or str(subquery_ast))
+            # Sample up to 10 seeds (like swapi-apps)
+            seed_uuids = sample_uuids(subquery_uuids, 10, seed)
+
+            try:
+                response = requests.post(
+                    f"{ai_service_url}/search/batch_similar",
+                    json={
+                        'uuids': seed_uuids,
+                        'limit': limit * 2,
+                        'filter_uuids': context_uuids
+                    },
+                    timeout=ai_timeout
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    matched_uuids = [r['uuid'] for r in result.get('results', [])]
+                    # Exclude seed songs from results
+                    seed_set = set(subquery_uuids)  # Exclude all subquery songs
+                    matched_uuids = [u for u in matched_uuids if u not in seed_set]
+                    return _fetch_songs_by_uuids(matched_uuids, cursor, offset, limit, True)
+            except requests.RequestException:
+                pass  # Fall through to standard search
+
+    # Fallback: execute standard search ignoring AI nodes
+    where_clause, params = build_sql(ast)
+    return _execute_standard_search(where_clause, params, cursor, offset, limit, False)
+
+
+def _execute_standard_search(where_clause, params, cursor, offset, limit, ai_used):
+    """Execute a standard SQL-based search."""
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Get total count
+    count_sql = f"SELECT COUNT(*) as cnt FROM songs WHERE {where_clause}"
+    cur.execute(count_sql, params)
+    total_count = cur.fetchone()['cnt']
+
+    # Use offset-based pagination if offset provided
+    if offset is not None:
+        query_sql = f"""
+            SELECT uuid, key, type, category, genre, artist, album, title, file,
+                   album_artist, track_number, disc_number, year, duration_seconds,
+                   bpm, seekable, replay_gain_track, replay_gain_album
+            FROM songs
+            WHERE {where_clause}
+            ORDER BY uuid
+            LIMIT ? OFFSET ?
+        """
+        cur.execute(query_sql, params + [limit + 1, offset])
+    else:
+        cursor_params = list(params)
+        cursor_where = where_clause
+        if cursor:
+            cursor_where = f"({where_clause}) AND uuid > ?"
+            cursor_params.append(cursor)
+
+        query_sql = f"""
+            SELECT uuid, key, type, category, genre, artist, album, title, file,
+                   album_artist, track_number, disc_number, year, duration_seconds,
+                   bpm, seekable, replay_gain_track, replay_gain_album
+            FROM songs
+            WHERE {cursor_where}
+            ORDER BY uuid
+            LIMIT ?
+        """
+        cursor_params.append(limit + 1)
+        cur.execute(query_sql, cursor_params)
+
+    rows = cur.fetchall()
+    items = rows_to_list(rows[:limit])
+    has_more = len(rows) > limit
+    next_cursor = items[-1]['uuid'] if has_more and items else None
+
+    return {
+        'items': items,
+        'nextCursor': next_cursor,
+        'hasMore': has_more,
+        'totalCount': total_count,
+        'offset': offset if offset is not None else 0,
+        'aiUsed': ai_used
+    }
+
+
+def _fetch_songs_by_uuids(uuids, cursor, offset, limit, ai_used):
+    """Fetch songs by a list of UUIDs, preserving order."""
+    if not uuids:
+        return {
+            'items': [],
+            'nextCursor': None,
+            'hasMore': False,
+            'totalCount': 0,
+            'offset': offset if offset is not None else 0,
+            'aiUsed': ai_used
+        }
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Apply pagination
+    start_idx = offset if offset is not None else 0
+    if cursor:
+        try:
+            start_idx = uuids.index(cursor) + 1
+        except ValueError:
+            start_idx = 0
+
+    paginated_uuids = uuids[start_idx:start_idx + limit + 1]
+
+    if not paginated_uuids:
+        return {
+            'items': [],
+            'nextCursor': None,
+            'hasMore': False,
+            'totalCount': len(uuids),
+            'offset': start_idx,
+            'aiUsed': ai_used
+        }
+
+    # Fetch songs
+    placeholders = ','.join('?' * len(paginated_uuids[:limit]))
+    cur.execute(f"""
+        SELECT uuid, key, type, category, genre, artist, album, title, file,
+               album_artist, track_number, disc_number, year, duration_seconds,
+               bpm, seekable, replay_gain_track, replay_gain_album
+        FROM songs
+        WHERE uuid IN ({placeholders})
+    """, paginated_uuids[:limit])
+
+    rows = cur.fetchall()
+
+    # Preserve original order from AI results
+    uuid_to_row = {row['uuid']: row_to_dict(row) for row in rows}
+    items = [uuid_to_row[u] for u in paginated_uuids[:limit] if u in uuid_to_row]
+
+    has_more = len(paginated_uuids) > limit
+    next_cursor = items[-1]['uuid'] if has_more and items else None
+
+    return {
+        'items': items,
+        'nextCursor': next_cursor,
+        'hasMore': has_more,
+        'totalCount': len(uuids),
+        'offset': start_idx,
+        'aiUsed': ai_used
     }
 
 

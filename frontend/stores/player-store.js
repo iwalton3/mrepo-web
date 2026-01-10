@@ -287,6 +287,8 @@ export const playerStore = createStore({
     shuffle: false,
     repeatMode: 'none',  // 'none', 'all', 'one' - maps to server's play_mode
     scaEnabled: false,   // Server-side SCA radio mode
+    aiRadioEnabled: true, // Use AI for radio queue population when available
+    aiRadioAvailable: false, // Whether AI radio is available on server
     tempQueueMode: false,  // Temp queue mode - local-only queue that doesn't sync
 
     // Error state
@@ -519,6 +521,9 @@ class AudioController {
 
             this._applyReplayGain();
             this.store.state.serverLoaded = true;
+
+            // Check AI radio availability (non-blocking)
+            this._checkAiRadioStatus();
         } catch (e) {
             console.error('Failed to load queue from server:', e);
         }
@@ -4284,7 +4289,7 @@ class AudioController {
             // If SCA is enabled, populate more songs
             if (scaEnabled) {
                 try {
-                    const result = await sca.populateQueue(10);
+                    const result = await this._populateScaQueue(10);
                     if (result.songs && result.songs.length > 0) {
                         this.store.state.queue = [...queue, ...result.songs];
                         this.store.state.queueVersion++;
@@ -4338,7 +4343,7 @@ class AudioController {
             const remaining = this.store.state.queue.length - nextIndex - 1;
             if (remaining < 5) {
                 try {
-                    const result = await sca.populateQueue(10);
+                    const result = await this._populateScaQueue(10);
                     if (result.songs && result.songs.length > 0) {
                         this.store.state.queue = [...this.store.state.queue, ...result.songs];
                         this.store.state.queueVersion++;
@@ -5227,6 +5232,53 @@ class AudioController {
     }
 
     /**
+     * Populate the SCA queue, using AI when enabled and available.
+     * @private
+     */
+    async _populateScaQueue(count = 10) {
+        const { aiRadioEnabled, aiRadioAvailable, currentSong } = this.store.state;
+
+        // Use AI if enabled and available
+        if (aiRadioEnabled && aiRadioAvailable) {
+            const seedUuid = currentSong?.uuid || null;
+            return await sca.populateQueueAi(count, seedUuid);
+        }
+
+        // Fall back to standard random selection
+        return await sca.populateQueue(count);
+    }
+
+    /**
+     * Check and update AI radio availability.
+     * @private
+     */
+    async _checkAiRadioStatus() {
+        try {
+            const status = await sca.status();
+            this.store.state.aiRadioAvailable = status.aiAvailable || false;
+            this.store.state.aiRadioEnabled = status.aiRadioPreferred !== false;
+        } catch (e) {
+            // Silently fail - AI status is not critical
+            this.store.state.aiRadioAvailable = false;
+        }
+    }
+
+    /**
+     * Toggle AI radio mode.
+     */
+    async toggleAiRadio() {
+        const newValue = !this.store.state.aiRadioEnabled;
+        this.store.state.aiRadioEnabled = newValue;
+
+        // Save preference to server
+        try {
+            await sca.setAiPreference(newValue);
+        } catch (e) {
+            console.error('Failed to save AI radio preference:', e);
+        }
+    }
+
+    /**
      * Start SCA mode from current queue.
      */
     async startScaFromQueue() {
@@ -5238,10 +5290,22 @@ class AudioController {
 
         try {
             this.store.state.isLoading = true;
+
+            // Check AI availability
+            await this._checkAiRadioStatus();
+
             const result = await sca.startFromQueue();
 
             if (result.error) {
                 throw new Error(result.error);
+            }
+
+            // Show warning if AI can't use the seed songs
+            if (result.aiWarning) {
+                const toast = document.querySelector('cl-toast');
+                if (toast) {
+                    toast.show({ severity: 'warning', summary: 'AI Radio', detail: result.aiWarning, life: 8000 });
+                }
             }
 
             this.store.state.scaEnabled = true;
@@ -5273,10 +5337,22 @@ class AudioController {
 
         try {
             this.store.state.isLoading = true;
+
+            // Check AI availability
+            await this._checkAiRadioStatus();
+
             const result = await sca.startFromPlaylist(playlistId);
 
             if (result.error) {
                 throw new Error(result.error);
+            }
+
+            // Show warning if AI can't use the seed songs
+            if (result.aiWarning) {
+                const toast = document.querySelector('cl-toast');
+                if (toast) {
+                    toast.show({ severity: 'warning', summary: 'AI Radio', detail: result.aiWarning, life: 8000 });
+                }
             }
 
             this.store.state.scaEnabled = true;

@@ -55,6 +55,14 @@ class Config:
             'FFMPEG_PATH': ('streaming', 'ffmpeg_path'),
             'ALLOW_REGISTRATION': ('auth', 'allow_registration'),
             'BASE_PATH': ('app', 'base_path'),
+            # AI service configuration
+            'AI_ENABLED': ('ai', 'enabled'),
+            'AI_SERVICE_URL': ('ai', 'service_url'),
+            'AI_SERVICE_TIMEOUT': ('ai', 'service_timeout'),
+            'AI_SEARCH_TIMEOUT': ('ai', 'search_timeout'),
+            'AI_DEVICE': ('ai', 'device'),
+            'AI_BATCH_SIZE': ('ai', 'batch_size'),
+            'AI_SEGMENTS_PER_SONG': ('ai', 'segments_per_song'),
         }
 
         for env_var, path in env_mapping.items():
@@ -66,6 +74,12 @@ class Config:
                     value = [value]
                 elif env_var == 'ALLOW_REGISTRATION':
                     value = value.lower() in ('true', '1', 'yes')
+                elif env_var == 'AI_ENABLED':
+                    value = value.lower() in ('true', '1', 'yes')
+                elif env_var in ('AI_SERVICE_TIMEOUT', 'AI_SEARCH_TIMEOUT'):
+                    value = float(value)
+                elif env_var in ('AI_BATCH_SIZE', 'AI_SEGMENTS_PER_SONG'):
+                    value = int(value)
 
                 self._set_nested(path, value)
 
@@ -100,6 +114,14 @@ class Config:
             ('auth', 'session_days'): 30,
             ('auth', 'allow_registration'): False,
             ('app', 'base_path'): '',  # e.g., '/music' for hosting at /music/
+            # AI service defaults
+            ('ai', 'enabled'): False,
+            ('ai', 'service_url'): None,  # None = disabled, or 'http://localhost:5002'
+            ('ai', 'service_timeout'): 10.0,
+            ('ai', 'search_timeout'): 5.0,
+            ('ai', 'device'): 'auto',  # auto, cuda, cpu
+            ('ai', 'batch_size'): 4,
+            ('ai', 'segments_per_song'): 3,
         }
 
         for path, default in defaults.items():
@@ -171,8 +193,27 @@ class Config:
             'FFMPEG_PATH': self.get('streaming', 'ffmpeg_path'),
             'ALLOW_REGISTRATION': self.get('auth', 'allow_registration'),
             'BASE_PATH': self.get('app', 'base_path'),
+
+            # AI service config
+            'AI_ENABLED': self.get('ai', 'enabled'),
+            'AI_SERVICE_URL': self.get('ai', 'service_url'),
+            'AI_SERVICE_TIMEOUT': self.get('ai', 'service_timeout'),
+            'AI_SEARCH_TIMEOUT': self.get('ai', 'search_timeout'),
         }
 
 
 # Global configuration instance
 config = Config()
+
+
+def get_config(*path, default=None):
+    """Helper function to get configuration values.
+
+    Args:
+        *path: Path to the configuration value (e.g., 'ai', 'enabled')
+        default: Default value if not found
+
+    Returns:
+        Configuration value or default
+    """
+    return config.get(*path, default=default)

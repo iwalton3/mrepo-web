@@ -33,3 +33,15 @@ auth:
 tasks:
   scan_on_startup: false
   # scan_schedule: "0 3 * * *"  # Cron expression for scheduled scans (null to disable)
+
+# AI Features (optional)
+# Requires a separate AI service deployment - see docker/docker-compose.yml
+ai:
+  enabled: false                    # Enable AI features
+  # service_url: http://mrepo-ai:5002  # URL of AI service
+  service_timeout: 10.0             # Timeout for AI service requests (seconds)
+  search_timeout: 5.0               # Timeout for AI search queries (seconds)
+  # Device configuration (for AI service itself)
+  device: auto                      # "auto", "cpu", or "cuda"
+  batch_size: 4                     # Songs to analyze in parallel
+  segments_per_song: 3              # Audio segments per song for embedding

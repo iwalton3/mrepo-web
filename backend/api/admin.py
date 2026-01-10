@@ -319,6 +319,7 @@ def admin_get_config(details=None):
     """Get current configuration (sanitized)."""
     from flask import current_app
     from ..streaming import ffmpeg_available
+    from ..config import get_config
 
     return {
         'mediaPaths': current_app.config.get('MEDIA_PATHS', []),
@@ -326,4 +327,251 @@ def admin_get_config(details=None):
         'ffmpegAvailable': ffmpeg_available(),
         'transcodeBitrate': current_app.config.get('TRANSCODE_BITRATE'),
         'allowRegistration': current_app.config.get('ALLOW_REGISTRATION', False),
+        'aiEnabled': get_config('ai', 'enabled'),
+        'aiServiceUrl': get_config('ai', 'service_url'),
     }
+
+
+# AI Analysis Admin Methods
+
+@api_method('admin_ai_status', require='admin')
+def admin_ai_status(details=None):
+    """Get AI service status and analysis statistics."""
+    import requests
+    from ..config import get_config
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    service_url = get_config('ai', 'service_url')
+    explicitly_enabled = get_config('ai', 'enabled')
+
+    result = {
+        'enabled': explicitly_enabled,
+        'serviceUrl': service_url,
+        'serviceOnline': False,
+        'indexedSongs': 0,
+        'totalSongs': 0,
+        'pendingAnalysis': 0,
+        'currentJob': None,
+    }
+
+    # Get song counts
+    cur.execute("SELECT COUNT(*) FROM songs")
+    result['totalSongs'] = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM ai_embeddings")
+    result['indexedSongs'] = cur.fetchone()[0]
+
+    result['pendingAnalysis'] = result['totalSongs'] - result['indexedSongs']
+
+    # Get current/most recent job
+    cur.execute("""
+        SELECT * FROM ai_analysis_jobs
+        ORDER BY created_at DESC LIMIT 1
+    """)
+    job = cur.fetchone()
+    if job:
+        result['currentJob'] = row_to_dict(job)
+
+    # Check AI service health - auto-enable if service is reachable
+    if service_url:
+        try:
+            response = requests.get(f"{service_url}/health", timeout=2.0)
+            if response.status_code == 200:
+                health_data = response.json()
+                result['serviceOnline'] = True
+                result['serviceInfo'] = health_data
+                # Auto-enable if service is reachable (even if AI_ENABLED not set)
+                result['enabled'] = True
+        except requests.RequestException:
+            pass
+
+    return result
+
+
+def _run_ai_analysis_in_background(job_id):
+    """Run AI analysis in a background thread."""
+    import requests
+    from ..config import get_config
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    service_url = get_config('ai', 'service_url')
+    batch_size = get_config('ai', 'batch_size') or 4
+    timeout = get_config('ai', 'service_timeout') or 30.0
+
+    try:
+        # Get songs without embeddings
+        cur.execute("""
+            SELECT s.uuid, s.file FROM songs s
+            LEFT JOIN ai_embeddings e ON s.uuid = e.song_uuid
+            WHERE e.song_uuid IS NULL
+        """)
+        songs = cur.fetchall()
+
+        total = len(songs)
+        processed = 0
+
+        # Update job with total count
+        cur.execute("""
+            UPDATE ai_analysis_jobs SET total_songs = ? WHERE id = ?
+        """, (total, job_id))
+        conn.commit()
+
+        # Process in batches
+        for i in range(0, len(songs), batch_size):
+            # Check if job was cancelled
+            cur.execute("SELECT status FROM ai_analysis_jobs WHERE id = ?", (job_id,))
+            status = cur.fetchone()
+            if status and status['status'] == 'cancelled':
+                return
+
+            batch = songs[i:i + batch_size]
+            batch_data = [{'uuid': s['uuid'], 'path': s['file']} for s in batch]
+
+            try:
+                response = requests.post(
+                    f"{service_url}/analyze/batch",
+                    json={'songs': batch_data},
+                    timeout=timeout * len(batch)
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    # Mark successful songs
+                    for uuid in result.get('analyzed', []):
+                        cur.execute("""
+                            INSERT OR REPLACE INTO ai_embeddings
+                            (song_uuid, embedding_version, analyzed_at)
+                            VALUES (?, 'v1', datetime('now'))
+                        """, (uuid,))
+
+                    processed += len(result.get('analyzed', []))
+
+            except requests.RequestException as e:
+                # Log error but continue
+                cur.execute("""
+                    UPDATE ai_analysis_jobs SET errors = COALESCE(errors, '') || ?
+                    WHERE id = ?
+                """, (f"\n{str(e)}", job_id))
+
+            # Update progress
+            cur.execute("""
+                UPDATE ai_analysis_jobs SET processed_songs = ? WHERE id = ?
+            """, (processed, job_id))
+            conn.commit()
+
+        # Mark job complete
+        cur.execute("""
+            UPDATE ai_analysis_jobs
+            SET status = 'completed', completed_at = datetime('now'),
+                processed_songs = ?
+            WHERE id = ?
+        """, (processed, job_id))
+        conn.commit()
+
+    except Exception as e:
+        cur.execute("""
+            UPDATE ai_analysis_jobs
+            SET status = 'failed', completed_at = datetime('now'), errors = ?
+            WHERE id = ?
+        """, (str(e), job_id))
+        conn.commit()
+
+
+@api_method('admin_ai_start_analysis', require='admin')
+def admin_ai_start_analysis(force=False, details=None):
+    """Start AI analysis of songs without embeddings."""
+    import threading
+    from ..config import get_config
+
+    # Auto-enable if service URL is configured (don't require AI_ENABLED=true)
+    if not get_config('ai', 'service_url'):
+        raise ValueError('AI service URL is not configured')
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Check for running job
+    cur.execute("SELECT id FROM ai_analysis_jobs WHERE status = 'running'")
+    running = cur.fetchone()
+    if running:
+        if force:
+            cur.execute("""
+                UPDATE ai_analysis_jobs SET status = 'cancelled', completed_at = datetime('now')
+                WHERE status = 'running'
+            """)
+        else:
+            raise ValueError('An AI analysis job is already running. Use force=true to cancel it.')
+
+    # Create new job
+    cur.execute("""
+        INSERT INTO ai_analysis_jobs (status, created_at)
+        VALUES ('running', datetime('now'))
+    """)
+    job_id = cur.lastrowid
+    conn.commit()
+
+    # Start background analysis
+    thread = threading.Thread(
+        target=_run_ai_analysis_in_background,
+        args=(job_id,),
+        daemon=True
+    )
+    thread.start()
+
+    return {'jobId': job_id, 'status': 'running'}
+
+
+@api_method('admin_ai_cancel_analysis', require='admin')
+def admin_ai_cancel_analysis(job_id=None, details=None):
+    """Cancel a running AI analysis job."""
+    conn = get_db()
+    cur = conn.cursor()
+
+    if job_id:
+        cur.execute("""
+            UPDATE ai_analysis_jobs SET status = 'cancelled', completed_at = datetime('now')
+            WHERE id = ? AND status = 'running'
+        """, (job_id,))
+    else:
+        cur.execute("""
+            UPDATE ai_analysis_jobs SET status = 'cancelled', completed_at = datetime('now')
+            WHERE status = 'running'
+        """)
+    conn.commit()
+
+    return {'success': True, 'cancelled': cur.rowcount}
+
+
+@api_method('admin_ai_clear_embeddings', require='admin')
+def admin_ai_clear_embeddings(details=None):
+    """Clear all AI embeddings to force re-analysis."""
+    import requests
+    from ..config import get_config
+
+    # Clear from main database
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM ai_embeddings")
+    db_count = cur.rowcount
+    conn.commit()
+
+    # Clear from AI service (FAISS index + metadata)
+    ai_cleared = False
+    ai_service_url = get_config('ai', 'service_url')
+    if ai_service_url:
+        try:
+            result = requests.post(
+                f"{ai_service_url}/clear",
+                timeout=30.0
+            )
+            if result.status_code == 200:
+                ai_cleared = result.json().get('cleared', False)
+        except Exception as e:
+            # Log but don't fail - main DB was cleared
+            print(f"Warning: Failed to clear AI service embeddings: {e}")
+
+    return {'cleared': db_count, 'ai_cleared': ai_cleared}

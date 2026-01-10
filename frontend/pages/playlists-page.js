@@ -10,7 +10,7 @@
 
 import { defineComponent, html, when, each, memoEach, untracked, flushSync } from '../lib/framework.js';
 import { rafThrottle } from '../lib/utils.js';
-import { songs as songsApi, playlists as playlistsApi, auth } from '../offline/offline-api.js';
+import { songs as songsApi, playlists as playlistsApi, auth, ai } from '../offline/offline-api.js';
 import offlineStore, { shouldShowOfflineWarnings, setDownloadProgress, computeOfflineFilterSets } from '../offline/offline-store.js';
 import { downloadSong, canCacheOffline } from '../offline/offline-audio.js';
 import { player } from '../stores/player-store.js';
@@ -63,7 +63,25 @@ export default defineComponent('playlists-page', {
             isDownloadingSelection: false,
             // Confirm dialog
             confirmDialog: { show: false, title: '', message: '', action: null },
-            pendingDeletePlaylist: null
+            pendingDeletePlaylist: null,
+            // AI state
+            aiEnabled: false,
+            // Rename dialog
+            showRenameDialog: false,
+            renameNewName: '',
+            isRenaming: false,
+            renameError: null,
+            // Clone dialog
+            showCloneDialog: false,
+            cloneNewName: '',
+            isCloning: false,
+            cloneError: null,
+            // Extend AI dialog
+            showExtendDialog: false,
+            extendCount: 10,
+            extendDiversity: 0.3,
+            isExtending: false,
+            extendError: null
         };
     },
 
@@ -74,6 +92,15 @@ export default defineComponent('playlists-page', {
             this.state.isAuthenticated = result.authenticated;
         } catch (e) {
             console.error('Auth check failed:', e);
+        }
+
+        // Check AI status
+        try {
+            const aiStatus = await ai.status();
+            this.state.aiEnabled = aiStatus.enabled && aiStatus.status === 'ok';
+        } catch (e) {
+            console.error('AI status check failed:', e);
+            this.state.aiEnabled = false;
         }
 
         // Listen for playlist changes from other components
@@ -726,6 +753,140 @@ export default defineComponent('playlists-page', {
             await player.startScaFromPlaylist(this.state.currentPlaylist.id);
         },
 
+        // Rename playlist
+        showRenamePlaylistDialog() {
+            if (!this.state.currentPlaylist) return;
+            this.state.renameNewName = this.state.currentPlaylist.name;
+            this.state.renameError = null;
+            this.state.showRenameDialog = true;
+        },
+
+        closeRenameDialog() {
+            this.state.showRenameDialog = false;
+            this.state.renameError = null;
+        },
+
+        async handleRenamePlaylist() {
+            const name = this.state.renameNewName.trim();
+            if (!name) {
+                this.state.renameError = 'Please enter a name';
+                return;
+            }
+            if (name === this.state.currentPlaylist.name) {
+                this.state.showRenameDialog = false;
+                return;
+            }
+
+            this.state.isRenaming = true;
+            this.state.renameError = null;
+
+            try {
+                await playlistsApi.update(this.state.currentPlaylist.id, { name });
+                this.state.currentPlaylist.name = name;
+                this.state.showRenameDialog = false;
+                await this.loadPlaylists(true);
+                const toast = document.querySelector('cl-toast');
+                if (toast) {
+                    toast.show({ severity: 'success', summary: 'Renamed', detail: `Playlist renamed to "${name}"` });
+                }
+            } catch (e) {
+                this.state.renameError = e.message || 'Failed to rename playlist';
+            } finally {
+                this.state.isRenaming = false;
+            }
+        },
+
+        // Clone playlist
+        showClonePlaylistDialog() {
+            if (!this.state.currentPlaylist) return;
+            this.state.cloneNewName = `${this.state.currentPlaylist.name} (Copy)`;
+            this.state.cloneError = null;
+            this.state.showCloneDialog = true;
+        },
+
+        closeCloneDialog() {
+            this.state.showCloneDialog = false;
+            this.state.cloneError = null;
+        },
+
+        async handleClonePlaylist() {
+            const name = this.state.cloneNewName.trim();
+            if (!name) {
+                this.state.cloneError = 'Please enter a name';
+                return;
+            }
+
+            this.state.isCloning = true;
+            this.state.cloneError = null;
+
+            try {
+                const result = await playlistsApi.clone(this.state.currentPlaylist.id, name);
+                this.state.showCloneDialog = false;
+                await this.loadPlaylists(true);
+                const toast = document.querySelector('cl-toast');
+                if (toast) {
+                    toast.show({ severity: 'success', summary: 'Cloned', detail: `Created "${result.name}"` });
+                }
+                // Navigate to the new playlist
+                window.location.hash = `#/playlists/${result.id}/`;
+            } catch (e) {
+                this.state.cloneError = e.message || 'Failed to clone playlist';
+            } finally {
+                this.state.isCloning = false;
+            }
+        },
+
+        // Extend playlist with AI
+        showExtendDialog() {
+            this.state.showExtendDialog = true;
+            this.state.extendError = null;
+        },
+
+        closeExtendDialog() {
+            this.state.showExtendDialog = false;
+            this.state.extendError = null;
+        },
+
+        async handleExtendPlaylist() {
+            if (!this.state.currentPlaylist || this.state.isExtending) return;
+
+            this.state.isExtending = true;
+            this.state.extendError = null;
+
+            try {
+                const result = await ai.extendPlaylist(
+                    this.state.currentPlaylist.id,
+                    this.state.extendCount,
+                    this.state.extendDiversity
+                );
+
+                if (result.error) {
+                    this.state.extendError = result.error;
+                    return;
+                }
+
+                // Success - close dialog and reload playlist
+                this.state.showExtendDialog = false;
+                const addedCount = result.added?.length || result.added_count || 0;
+                const toast = document.querySelector('cl-toast');
+                if (toast) {
+                    toast.show({
+                        severity: 'success',
+                        summary: 'Extended',
+                        detail: `Added ${addedCount} similar songs`
+                    });
+                }
+
+                // Reload playlist
+                await this.loadPlaylistDetail(this.state.currentPlaylist.id);
+            } catch (e) {
+                console.error('Failed to extend playlist:', e);
+                this.state.extendError = e.message || 'Failed to extend playlist';
+            } finally {
+                this.state.isExtending = false;
+            }
+        },
+
         async handleRemoveSong(song, e) {
             e.stopPropagation();
             if (!this.state.currentPlaylist) return;
@@ -1331,7 +1492,7 @@ export default defineComponent('playlists-page', {
                 newPlaylistName, newPlaylistDesc, newPlaylistPublic, hasMore, totalCount,
                 visibleStart, visibleEnd,
                 showAddSongs, searchQuery, searchResults, searchLoading,
-                isSorting, showSortMenu } = this.state;
+                isSorting, showSortMenu, aiEnabled } = this.state;
 
         // List View
         if (view === 'list') {
@@ -1532,6 +1693,12 @@ export default defineComponent('playlists-page', {
                                 `)}
                             </div>
                             <cl-button severity="secondary" icon="🔗" on-click="handleShare">Share</cl-button>
+                            <cl-button severity="secondary" icon="✏️" on-click="showRenamePlaylistDialog" title="Rename playlist">Rename</cl-button>
+                            <cl-button severity="secondary" icon="📥" on-click="showClonePlaylistDialog" title="Clone playlist">Clone</cl-button>
+                            ${when(aiEnabled, () => html`
+                                <cl-button severity="secondary" icon="✨" on-click="showExtendDialog"
+                                           title="Add similar songs using AI">Extend AI</cl-button>
+                            `)}
                             <cl-button severity="${this.state.selectionMode ? 'primary' : 'secondary'}"
                                        on-click="toggleSelectionMode">
                                 ${this.state.selectionMode ? '☑ Done' : '☑ Select'}
@@ -1645,6 +1812,95 @@ export default defineComponent('playlists-page', {
                             <input type="text" readonly
                                    value="${window.location.origin}${window.location.pathname.replace(/\/$/, '')}/#/share/${shareToken}/">
                             <cl-button severity="primary" on-click="copyShareLink">Copy</cl-button>
+                        </div>
+                    </cl-dialog>
+                `)}
+
+                <!-- Rename Dialog -->
+                ${when(this.state.showRenameDialog, () => html`
+                    <cl-dialog visible="true" header="Rename Playlist"
+                        on-change="${(e, val) => { if (!val) this.closeRenameDialog(); }}">
+                        <div class="dialog-form">
+                            <div class="form-row">
+                                <label>Name</label>
+                                <input type="text" x-model="renameNewName">
+                            </div>
+                            ${when(this.state.renameError, () => html`
+                                <div class="error-message">${this.state.renameError}</div>
+                            `)}
+                        </div>
+                        <div slot="footer">
+                            <cl-button severity="secondary" on-click="closeRenameDialog">Cancel</cl-button>
+                            <cl-button severity="primary" on-click="handleRenamePlaylist"
+                                       loading="${this.state.isRenaming}" disabled="${this.state.isRenaming}">
+                                Rename
+                            </cl-button>
+                        </div>
+                    </cl-dialog>
+                `)}
+
+                <!-- Clone Dialog -->
+                ${when(this.state.showCloneDialog, () => html`
+                    <cl-dialog visible="true" header="Clone Playlist"
+                        on-change="${(e, val) => { if (!val) this.closeCloneDialog(); }}">
+                        <div class="dialog-form">
+                            <p style="margin-top: 0; color: var(--text-secondary);">Create a copy of this playlist with a new name.</p>
+                            <div class="form-row">
+                                <label>New Playlist Name</label>
+                                <input type="text" x-model="cloneNewName" autofocus>
+                            </div>
+                            ${when(this.state.cloneError, () => html`
+                                <div class="error-message">${this.state.cloneError}</div>
+                            `)}
+                        </div>
+                        <div slot="footer">
+                            <cl-button severity="secondary" on-click="closeCloneDialog"
+                                       disabled="${this.state.isCloning}">Cancel</cl-button>
+                            <cl-button severity="primary" on-click="handleClonePlaylist"
+                                       loading="${this.state.isCloning}" disabled="${this.state.isCloning}">
+                                Clone
+                            </cl-button>
+                        </div>
+                    </cl-dialog>
+                `)}
+
+                <!-- AI Extend Dialog -->
+                ${when(this.state.showExtendDialog, () => html`
+                    <cl-dialog visible="true" header="Extend with AI"
+                        on-change="${(e, val) => { if (!val) this.closeExtendDialog(); }}">
+                        <div class="extend-dialog-content">
+                            <p>Add similar songs to your playlist using AI analysis.</p>
+
+                            <div class="extend-option">
+                                <label for="extend-count">Number of songs to add:</label>
+                                <input type="number" id="extend-count"
+                                       min="1" max="50"
+                                       x-model="extendCount">
+                            </div>
+
+                            <div class="extend-option">
+                                <label for="extend-diversity">Diversity:</label>
+                                <div class="diversity-slider">
+                                    <span class="diversity-label">Similar</span>
+                                    <input type="range" id="extend-diversity"
+                                           min="0" max="1" step="0.1"
+                                           x-model="extendDiversity">
+                                    <span class="diversity-label">Diverse</span>
+                                </div>
+                                <span class="diversity-value">${Math.round(this.state.extendDiversity * 100)}%</span>
+                            </div>
+
+                            ${when(this.state.extendError, () => html`
+                                <div class="error-message">${this.state.extendError}</div>
+                            `)}
+                        </div>
+                        <div slot="footer">
+                            <cl-button severity="secondary" on-click="closeExtendDialog"
+                                       disabled="${this.state.isExtending}">Cancel</cl-button>
+                            <cl-button severity="primary" on-click="handleExtendPlaylist"
+                                       loading="${this.state.isExtending}" disabled="${this.state.isExtending}">
+                                Add Songs
+                            </cl-button>
                         </div>
                     </cl-dialog>
                 `)}
@@ -1827,6 +2083,64 @@ export default defineComponent('playlists-page', {
             align-items: center;
             gap: 0.5rem;
             cursor: pointer;
+        }
+
+        .error-message {
+            color: var(--danger-500, #ef4444);
+            font-size: 0.875rem;
+            margin-top: 0.5rem;
+        }
+
+        /* Extend AI Dialog */
+        .extend-dialog-content {
+            padding: 0.5rem 0;
+        }
+
+        .extend-dialog-content p {
+            margin: 0 0 1rem;
+            color: var(--text-secondary, #a0a0a0);
+        }
+
+        .extend-option {
+            margin-bottom: 1rem;
+        }
+
+        .extend-option label {
+            display: block;
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+        }
+
+        .extend-option input[type="number"] {
+            width: 100px;
+            padding: 0.5rem;
+            border: 1px solid var(--surface-300, #404040);
+            border-radius: 4px;
+            background: var(--surface-100, #242424);
+            color: var(--text-primary, #e0e0e0);
+        }
+
+        .diversity-slider {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .diversity-label {
+            font-size: 0.75rem;
+            color: var(--text-muted, #707070);
+            min-width: 4rem;
+        }
+
+        .diversity-slider input[type="range"] {
+            flex: 1;
+        }
+
+        .diversity-value {
+            font-size: 0.875rem;
+            color: var(--text-secondary, #a0a0a0);
+            font-family: monospace;
         }
 
         /* Detail View */

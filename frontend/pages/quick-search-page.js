@@ -13,7 +13,7 @@
 
 import { defineComponent, html, when, each, memoEach, untracked, flushSync } from '../lib/framework.js';
 import { rafThrottle } from '../lib/utils.js';
-import { songs } from '../offline/offline-api.js';
+import { songs, ai } from '../offline/offline-api.js';
 import { player } from '../stores/player-store.js';
 import offlineStore from '../offline/offline-store.js';
 import { searchOfflineSongs } from '../offline/offline-db.js';
@@ -38,6 +38,10 @@ export default defineComponent('quick-search-page', {
             searchPerformed: false,
             showHelp: false,
             advancedMode: false,  // true when showing full song results
+            // Similar mode for CLAP similarity search
+            similarMode: false,
+            similarSongUuid: null,
+            similarSong: null,  // The source song for "similar to" header
             // Windowed rendering for advanced results
             visibleStart: 0,
             visibleEnd: 50,
@@ -59,6 +63,13 @@ export default defineComponent('quick-search-page', {
     },
 
     mounted() {
+        // Check for similar mode first
+        const similarUuid = this.props.query?.similar;
+        if (similarUuid) {
+            this.performSimilarSearch(similarUuid);
+            return;  // Don't focus input in similar mode
+        }
+
         // Read query from URL if present
         const urlQuery = this.props.query?.q;
         if (urlQuery) {
@@ -76,16 +87,34 @@ export default defineComponent('quick-search-page', {
 
     propsChanged(prop, newValue, oldValue) {
         // Handle URL query changes (e.g., browser back/forward)
-        if (prop === 'query' && newValue?.q !== oldValue?.q) {
-            const urlQuery = newValue?.q || '';
-            if (urlQuery !== this.state.searchQuery) {
-                this.state.searchQuery = urlQuery;
-                if (urlQuery) {
-                    this.performAdvancedSearch();
+        if (prop === 'query') {
+            // Check for similar mode
+            const newSimilar = newValue?.similar;
+            const oldSimilar = oldValue?.similar;
+            if (newSimilar !== oldSimilar) {
+                if (newSimilar) {
+                    this.performSimilarSearch(newSimilar);
+                    return;
                 } else {
-                    this.state.results = null;
-                    this.state.advancedMode = false;
-                    this.state.searchPerformed = false;
+                    // Exiting similar mode
+                    this.state.similarMode = false;
+                    this.state.similarSong = null;
+                    this.state.similarSongUuid = null;
+                }
+            }
+
+            // Handle regular query changes
+            if (newValue?.q !== oldValue?.q) {
+                const urlQuery = newValue?.q || '';
+                if (urlQuery !== this.state.searchQuery) {
+                    this.state.searchQuery = urlQuery;
+                    if (urlQuery) {
+                        this.performAdvancedSearch();
+                    } else {
+                        this.state.results = null;
+                        this.state.advancedMode = false;
+                        this.state.searchPerformed = false;
+                    }
                 }
             }
         }
@@ -312,6 +341,58 @@ export default defineComponent('quick-search-page', {
             }
         },
 
+        async performSimilarSearch(uuid) {
+            // Similar search mode - uses CLAP similarity API
+            this.state.similarMode = true;
+            this.state.similarSongUuid = uuid;
+            this.state.advancedMode = true;
+            this.state.isLoading = true;
+            this.state.searchPerformed = true;
+            this.state.visibleStart = 0;
+            this.state.visibleEnd = 50;
+
+            try {
+                // Fetch the source song info for the header
+                const sourceSong = await songs.get(uuid);
+                this.state.similarSong = sourceSong;
+
+                // Search for similar songs using CLAP
+                const result = await ai.findSimilar(uuid, { limit: 200 });
+
+                if (result.error) {
+                    console.error('Similar search failed:', result.error);
+                    this.state.advancedResults = [];
+                    this.state.advancedTotalCount = 0;
+                    return;
+                }
+
+                // Result contains {results: [...songs with scores...]}
+                const similarSongs = result.results || [];
+                this.state.advancedResults = similarSongs;
+                this.state.advancedTotalCount = similarSongs.length;
+
+                // Setup scroll listener for virtual scroll
+                this._setupAdvancedScrollListener();
+            } catch (e) {
+                console.error('Similar search failed:', e);
+                this.state.advancedResults = [];
+                this.state.advancedTotalCount = 0;
+            } finally {
+                this.state.isLoading = false;
+            }
+        },
+
+        exitSimilarMode() {
+            this.state.similarMode = false;
+            this.state.similarSong = null;
+            this.state.similarSongUuid = null;
+            this.state.advancedMode = false;
+            this.state.advancedResults = [];
+            this.state.advancedTotalCount = 0;
+            this.state.searchPerformed = false;
+            window.history.replaceState(null, '', '#/search/');
+        },
+
         _setupAdvancedScrollListener() {
             requestAnimationFrame(() => {
                 const mainContent = document.querySelector('div.router-wrapper');
@@ -337,7 +418,7 @@ export default defineComponent('quick-search-page', {
             const spacer = this.querySelector('.songs-spacer');
             if (!spacer) return;
 
-            const itemHeight = 52;
+            const itemHeight = 54; // 52px item + 2px gap
             const baseBuffer = 40; // Increased from 10 for smoother scrolling
             const velocityBuffer = 30; // Extra items in scroll direction
 
@@ -377,8 +458,11 @@ export default defineComponent('quick-search-page', {
             );
 
             if (startIndex !== this.state.visibleStart || endIndex !== this.state.visibleEnd) {
-                this.state.visibleStart = startIndex;
-                this.state.visibleEnd = endIndex;
+                // Use flushSync to ensure translateY and item slice update atomically
+                flushSync(() => {
+                    this.state.visibleStart = startIndex;
+                    this.state.visibleEnd = endIndex;
+                });
             }
         },
 
@@ -578,7 +662,8 @@ export default defineComponent('quick-search-page', {
     },
 
     template() {
-        const { searchQuery, results, advancedResults, isLoading, searchPerformed, showHelp, advancedMode } = this.state;
+        const { searchQuery, results, advancedResults, isLoading, searchPerformed, showHelp, advancedMode,
+                similarMode, similarSong } = this.state;
 
         return html`
             <div class="quick-search-page">
@@ -588,7 +673,22 @@ export default defineComponent('quick-search-page', {
                     </div>
                 `)}
 
+                <!-- Similar Mode Header -->
+                ${when(similarMode && similarSong, () => html`
+                    <div class="similar-header">
+                        <div class="similar-info">
+                            <span class="similar-label">Songs similar to:</span>
+                            <span class="similar-song-title">${similarSong.title || 'Unknown'}</span>
+                            <span class="similar-song-artist">${similarSong.artist || 'Unknown Artist'}</span>
+                        </div>
+                        <cl-button severity="secondary" size="small" on-click="exitSimilarMode">
+                            ✕ Exit
+                        </cl-button>
+                    </div>
+                `)}
+
                 <!-- Search Input -->
+                ${when(!similarMode, () => html`
                 <div class="search-header">
                     <div class="search-box">
                         <span class="search-icon">🔍</span>
@@ -624,7 +724,7 @@ export default defineComponent('quick-search-page', {
                             <strong>Fields:</strong>
                             <code>c</code> (category), <code>g</code> (genre), <code>a</code> (artist),
                             <code>aa</code> (album artist), <code>l</code> (album), <code>n</code> (title),
-                            <code>t</code> (tag), <code>p</code> (path), <code>f</code> (filename),
+                            <code>t</code> (tag), <code>in</code> (playlist), <code>p</code> (path), <code>f</code> (filename),
                             <code>u</code> (uuid), <code>year</code>, <code>bpm</code>, <code>dur</code>,
                             <code>track</code>, <code>disc</code>
                         </div>
@@ -656,11 +756,27 @@ export default defineComponent('quick-search-page', {
                         <div class="examples">
                             <button class="example-btn" on-click="${() => this.insertExample('(g:eq:Rock OR g:eq:Metal) a:Iron')}">(g:eq:Rock OR g:eq:Metal) a:Iron</button>
                         </div>
+
+                        <h4>Playlist Search</h4>
+                        <p>Use <code>in:name</code> to find songs in a playlist:</p>
+                        <div class="examples">
+                            <button class="example-btn" on-click="${() => this.insertExample('in:eq:Favorites')}">in:eq:Favorites</button>
+                            <button class="example-btn" on-click="${() => this.insertExample('in:Rock')}">in:Rock</button>
+                        </div>
+
+                        <h4>AI Search</h4>
+                        <p>Use <code>ai:"prompt"</code> for semantic search, or <code>ai(query)</code> for similarity search:</p>
+                        <div class="examples">
+                            <button class="example-btn" on-click="${() => this.insertExample('ai:\"upbeat electronic music\"')}">ai:"upbeat electronic music"</button>
+                            <button class="example-btn" on-click="${() => this.insertExample('c:j-pop AND ai:\"happy anime song\"')}">c:j-pop AND ai:"happy anime song"</button>
+                            <button class="example-btn" on-click="${() => this.insertExample('ai(a:Beatles)')}">ai(a:Beatles)</button>
+                        </div>
                     </div>
+                `)}
                 `)}
 
                 <!-- Results -->
-                ${when(!searchPerformed && !showHelp, html`
+                ${when(!searchPerformed && !showHelp && !similarMode, html`
                     <div class="search-prompt">
                         <div class="prompt-icon">🎵</div>
                         <h3>Search</h3>
@@ -687,7 +803,7 @@ export default defineComponent('quick-search-page', {
 
                 <!-- Advanced Mode Results (full song list with windowed rendering) -->
                 ${when(advancedMode && this.state.advancedTotalCount > 0, () => {
-                    const itemHeight = 52;
+                    const itemHeight = 54; // 52px item + 2px gap
                     const { visibleStart, visibleEnd, advancedTotalCount } = this.state;
                     const visibleItems = advancedResults.slice(visibleStart, visibleEnd);
 
@@ -902,6 +1018,45 @@ export default defineComponent('quick-search-page', {
             text-align: center;
             font-size: 0.875rem;
             border-radius: 8px;
+        }
+
+        /* Similar Mode Header */
+        .similar-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem;
+            background: var(--surface-100, #242424);
+            border-radius: 12px;
+            margin-bottom: 1.5rem;
+            gap: 1rem;
+        }
+
+        .similar-info {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+            gap: 0.5rem;
+        }
+
+        .similar-label {
+            color: var(--text-secondary, #a0a0a0);
+            font-size: 0.875rem;
+        }
+
+        .similar-song-title {
+            font-weight: 600;
+            color: var(--text-primary, #e0e0e0);
+        }
+
+        .similar-song-artist {
+            color: var(--text-secondary, #a0a0a0);
+            font-size: 0.875rem;
+        }
+
+        .similar-song-artist::before {
+            content: '—';
+            margin-right: 0.5rem;
         }
 
         /* Search Header */
