@@ -90,14 +90,21 @@ export default defineComponent('now-playing-page', {
         this._lastQueueIndex = this.stores.player.queueIndex;
         // Non-reactive tracking for visibility (used in subscription to avoid recursion)
         this._isCurrentInView = true;
+        // Track initial queue version to detect when queue loads
+        this._initialQueueVersion = this.stores.player.queueVersion;
+        // Flag to track if we've done the initial scroll
+        this._initialScrollDone = false;
 
-        // Initial scroll to current song (delay to ensure DOM is ready after conditional render)
-        setTimeout(() => {
-            this._scrollToCurrentSong(false);
-        }, 50);
+        // Initial scroll to current song - either now if queue is loaded, or when it loads
+        this._tryInitialScroll();
 
-        // Watch for queue index changes to auto-scroll
+        // Watch for queue index/version changes to auto-scroll
         this._unsubscribeQueueIndex = playerStore.subscribe((state) => {
+            // Check if queue just loaded (version changed from initial) and we haven't scrolled yet
+            if (!this._initialScrollDone && state.queueVersion !== this._initialQueueVersion && state.queue.length > 0) {
+                this._tryInitialScroll();
+            }
+
             const newIndex = state.queueIndex;
             if (newIndex !== this._lastQueueIndex) {
                 const wasInView = this._isCurrentInView;
@@ -1297,6 +1304,41 @@ export default defineComponent('now-playing-page', {
             if (!isInView) {
                 this.state.jumpDirection = itemTop < scrollTop ? 'up' : 'down';
             }
+        },
+
+        /**
+         * Try to perform initial scroll to current song.
+         * If queue is loaded and DOM is ready, scroll immediately.
+         * Otherwise this will be called again when queue loads.
+         */
+        _tryInitialScroll(retryCount = 0) {
+            if (this._initialScrollDone) return;
+
+            const queue = this.stores.player.queue;
+            const queueIndex = this.stores.player.queueIndex;
+
+            // Queue not loaded yet - wait for subscription to call us again
+            if (queue.length === 0 || queueIndex < 0) return;
+
+            // Wait for DOM to update after queue loads
+            requestAnimationFrame(() => {
+                const scrollWrapper = this.refs.queueScrollWrapper;
+
+                // Check if scroll wrapper is ready (visible with height)
+                if (!scrollWrapper || scrollWrapper.clientHeight === 0) {
+                    // DOM not ready yet, retry a few times
+                    if (retryCount < 10) {
+                        setTimeout(() => this._tryInitialScroll(retryCount + 1), 50);
+                    }
+                    return;
+                }
+
+                this._initialScrollDone = true;
+                // Scroll to the current song, then update visible range for the new position
+                this._scrollToCurrentSong(false);
+                // Force immediate update of visible range after instant scroll
+                this._updateVisibleRange();
+            });
         },
 
         /**
