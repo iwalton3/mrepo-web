@@ -128,6 +128,12 @@ export default defineComponent('song-context-menu', {
             }
         };
         window.addEventListener('scroll', this._handleScroll, true);
+
+        // Reload playlists when they change (new playlist created, deleted, etc.)
+        this._handlePlaylistsChanged = () => {
+            this.state.playlistsLoaded = false;
+        };
+        window.addEventListener('playlists-changed', this._handlePlaylistsChanged);
     },
 
     unmounted() {
@@ -135,6 +141,7 @@ export default defineComponent('song-context-menu', {
         document.removeEventListener('contextmenu', this._handleOutsideClick, true);
         document.removeEventListener('keydown', this._handleEscape);
         window.removeEventListener('scroll', this._handleScroll, true);
+        window.removeEventListener('playlists-changed', this._handlePlaylistsChanged);
     },
 
     methods: {
