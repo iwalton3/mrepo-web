@@ -193,10 +193,12 @@ class Lexer:
         r'([a-zA-Z_]+):(?:([a-zA-Z]+):)?("(?:[^"\\]|\\.)*"|[^\s()]+)'
     )
 
-    # Pattern for ai:prompt - captures multi-word prompts until AND/OR/)/end
+    # Pattern for ai:prompt - captures multi-word prompts until AND/OR/+/ -/)/end
     # Must be checked BEFORE general FIELD_PATTERN
+    # Stops at: AND, OR, NOT keywords, +, " -" (space before dash), ), or end of string
+    # Note: - requires preceding space to avoid matching "j-pop", "lo-fi", etc.
     AI_TEXT_PATTERN = re.compile(
-        r'ai:("(?:[^"\\]|\\.)*"|.+?)(?=\s+(?:AND|OR)\s|\)|$)',
+        r'ai:("(?:[^"\\]|\\.)*"|.+?)(?=\s+(?:AND|OR|NOT)\s|[+)]|\s-|$)',
         re.IGNORECASE
     )
 
@@ -300,6 +302,17 @@ class Lexer:
         if remaining.upper().startswith('NOT ') or remaining.upper().startswith('NOT('):
             self.pos += 3
             return Token(TokenType.NOT, 'NOT')
+
+        # + as shorthand for AND (useful for compound AI queries: ai:happy +ai:piano)
+        if ch == '+':
+            self.pos += 1
+            return Token(TokenType.AND, '+')
+
+        # - as shorthand for NOT (useful for compound AI queries: ai:dreamy -ai:electronic)
+        # Require space before - to avoid matching "j-pop", "lo-fi", etc.
+        if ch == '-' and self.pos > 0 and self.text[self.pos - 1] == ' ':
+            self.pos += 1
+            return Token(TokenType.NOT, '-')
 
         # Check for ai(subquery) function syntax
         if remaining.lower().startswith('ai('):
@@ -525,7 +538,7 @@ def _build_field_condition(cond: FieldCondition,
         # Playlist membership - search songs in playlists by name
         # Matches playlists owned by user OR public playlists
         if sql_op in ('LIKE', 'NOT LIKE'):
-            name_condition = "p.name LIKE ?"
+            name_condition = "p.name LIKE ? COLLATE NOCASE"
             name_value = f'%{cond.value}%'
         else:
             name_condition = "p.name = ? COLLATE NOCASE"
@@ -555,13 +568,13 @@ def _build_field_condition(cond: FieldCondition,
         else:
             value = cond.value
         # Use SUBSTR to get filename
-        return f"SUBSTR(file, LENGTH(file) - LENGTH(REPLACE(file, '/', '')) + 1) {sql_op} ?", [value]
+        return f"SUBSTR(file, LENGTH(file) - LENGTH(REPLACE(file, '/', '')) + 1) {sql_op} ? COLLATE NOCASE", [value]
 
-    # Handle LIKE operators - add wildcards
+    # Handle LIKE operators - add wildcards (case-insensitive)
     if sql_op == 'LIKE':
-        return f"{db_field} LIKE ?", [f'%{cond.value}%']
+        return f"{db_field} LIKE ? COLLATE NOCASE", [f'%{cond.value}%']
     if sql_op == 'NOT LIKE':
-        return f"{db_field} NOT LIKE ?", [f'%{cond.value}%']
+        return f"{db_field} NOT LIKE ? COLLATE NOCASE", [f'%{cond.value}%']
 
     # Handle numeric fields
     if db_field in NUMERIC_FIELDS:
@@ -588,9 +601,9 @@ def _build_text_search(search: TextSearch) -> Tuple[str, List]:
     if not search.value:
         return "1=1", []
 
-    # Search across multiple text fields
+    # Search across multiple text fields (case-insensitive)
     fields = ['title', 'artist', 'album', 'category', 'genre']
-    conditions = [f"{f} LIKE ?" for f in fields]
+    conditions = [f"{f} LIKE ? COLLATE NOCASE" for f in fields]
     params = [f'%{search.value}%'] * len(fields)
 
     return f"({' OR '.join(conditions)})", params
@@ -633,6 +646,26 @@ class AISearchInfo:
     text_prompts: List[str]  # List of ai:prompt values
     subqueries: List[ASTNode]  # List of ai(subquery) AST nodes
     context_ast: Optional[ASTNode]  # Non-AI portion of the AST for context
+    # Compound search support: track positive/negative terms separately
+    positive_texts: List[str] = None  # Positive ai:prompt values
+    negative_texts: List[str] = None  # Negated ai:prompt values (NOT ai:x or -ai:x)
+    positive_subqueries: List[ASTNode] = None  # Positive ai(subquery)
+    negative_subqueries: List[ASTNode] = None  # Negated ai(subquery)
+
+    def __post_init__(self):
+        if self.positive_texts is None:
+            self.positive_texts = []
+        if self.negative_texts is None:
+            self.negative_texts = []
+        if self.positive_subqueries is None:
+            self.positive_subqueries = []
+        if self.negative_subqueries is None:
+            self.negative_subqueries = []
+
+    @property
+    def has_compound_terms(self) -> bool:
+        """Check if there are negative terms (indicating compound query)."""
+        return len(self.negative_texts) > 0 or len(self.negative_subqueries) > 0
 
 
 def extract_ai_info(ast: ASTNode) -> AISearchInfo:
@@ -644,24 +677,39 @@ def extract_ai_info(ast: ASTNode) -> AISearchInfo:
     - text_prompts: List of text prompts from ai:prompt syntax
     - subqueries: List of subquery ASTs from ai(subquery) syntax
     - context_ast: The non-AI portion of the AST (for filtering context)
+    - positive_texts/negative_texts: For compound search support
+    - positive_subqueries/negative_subqueries: For compound search support
     """
     text_prompts = []
     subqueries = []
+    positive_texts = []
+    negative_texts = []
+    positive_subqueries = []
+    negative_subqueries = []
 
-    def collect_ai_nodes(node: ASTNode):
-        """Recursively collect AI nodes."""
+    def collect_ai_nodes(node: ASTNode, negated: bool = False):
+        """Recursively collect AI nodes, tracking negation state."""
         if isinstance(node, AITextSearch):
             text_prompts.append(node.prompt)
+            if negated:
+                negative_texts.append(node.prompt)
+            else:
+                positive_texts.append(node.prompt)
         elif isinstance(node, AISubquerySearch):
             subqueries.append(node.subquery)
+            if negated:
+                negative_subqueries.append(node.subquery)
+            else:
+                positive_subqueries.append(node.subquery)
         elif isinstance(node, AndNode):
-            collect_ai_nodes(node.left)
-            collect_ai_nodes(node.right)
+            collect_ai_nodes(node.left, negated)
+            collect_ai_nodes(node.right, negated)
         elif isinstance(node, OrNode):
-            collect_ai_nodes(node.left)
-            collect_ai_nodes(node.right)
+            collect_ai_nodes(node.left, negated)
+            collect_ai_nodes(node.right, negated)
         elif isinstance(node, NotNode):
-            collect_ai_nodes(node.child)
+            # Flip the negation state for children
+            collect_ai_nodes(node.child, not negated)
 
     def remove_ai_nodes(node: ASTNode) -> Optional[ASTNode]:
         """Remove AI nodes from AST, returning the non-AI portion."""
@@ -705,7 +753,11 @@ def extract_ai_info(ast: ASTNode) -> AISearchInfo:
         has_ai=bool(text_prompts or subqueries),
         text_prompts=text_prompts,
         subqueries=subqueries,
-        context_ast=context_ast
+        context_ast=context_ast,
+        positive_texts=positive_texts,
+        negative_texts=negative_texts,
+        positive_subqueries=positive_subqueries,
+        negative_subqueries=negative_subqueries
     )
 
 

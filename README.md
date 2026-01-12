@@ -401,7 +401,7 @@ Main Project: AGPLv3
 
 (If you host the project, you have to let your users access the code and any modifications you make if they ask for it. Most companies are allergic to this license, for good reason.)
 
-Dependencies (all bundled in minified form in this repo) are all MIT licensed:
+Frontend dependencies (all bundled in minified form in this repo) are all MIT licensed:
 
 - [Butterchurn](https://github.com/jberg/butterchurn)
 - [Butterchurn Presets](https://github.com/jberg/butterchurn-presets)

@@ -142,6 +142,53 @@ def ai_search_text(query, k=50, min_score=0.2, filter_uuids=None, details=None):
     return result
 
 
+@api_method('ai_search_compound', require='user')
+def ai_search_compound(positive_texts=None, negative_texts=None, positive_uuids=None,
+                       negative_uuids=None, k=50, min_score=0.2, neg_weight=0.5,
+                       filter_uuids=None, details=None):
+    """Search using compound embedding arithmetic (positive minus negative).
+
+    Combines text and song embeddings at the embedding level:
+    - Positive terms are averaged together
+    - Negative terms are subtracted (weighted by neg_weight)
+    - Result is normalized and searched
+
+    Args:
+        positive_texts: List of text prompts to include
+        negative_texts: List of text prompts to exclude
+        positive_uuids: List of song UUIDs to include
+        negative_uuids: List of song UUIDs to exclude
+        k: Number of results to return
+        min_score: Minimum similarity score (0-1)
+        neg_weight: Weight for negative terms (0-1, default 0.5)
+        filter_uuids: Optional list of UUIDs to filter within
+
+    Returns:
+        dict with 'results' list of {uuid, score}
+    """
+    _check_ai_enabled()
+
+    if not positive_texts and not positive_uuids:
+        raise ValueError("At least one positive term (text or UUID) required")
+
+    config = _get_ai_config()
+    result = _ai_request('/search/compound', {
+        'positive_texts': positive_texts or [],
+        'negative_texts': negative_texts or [],
+        'positive_uuids': positive_uuids or [],
+        'negative_uuids': negative_uuids or [],
+        'k': k,
+        'min_score': min_score,
+        'neg_weight': neg_weight,
+        'filter_uuids': filter_uuids
+    }, timeout=config['service_timeout'])
+
+    if 'error' in result:
+        raise ValueError(f"AI compound search failed: {result.get('message', result['error'])}")
+
+    return result
+
+
 @api_method('ai_search_similar', require='user')
 def ai_search_similar(uuid, k=50, exclude_uuids=None, filter_uuids=None, details=None):
     """Find songs similar to a given song.

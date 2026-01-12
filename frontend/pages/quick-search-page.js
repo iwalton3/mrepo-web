@@ -771,6 +771,15 @@ export default defineComponent('quick-search-page', {
                             <button class="example-btn" on-click="${() => this.insertExample('c:j-pop AND ai:\"happy anime song\"')}">c:j-pop AND ai:"happy anime song"</button>
                             <button class="example-btn" on-click="${() => this.insertExample('ai(a:Beatles)')}">ai(a:Beatles)</button>
                         </div>
+
+                        <h4>Compound AI Search</h4>
+                        <p>Use <code>+</code> to blend prompts and <code>-</code> to exclude concepts at the embedding level:</p>
+                        <div class="examples">
+                            <button class="example-btn" on-click="${() => this.insertExample('ai:dreamy +ai:piano')}">ai:dreamy +ai:piano</button>
+                            <button class="example-btn" on-click="${() => this.insertExample('ai:japanese pop -ai:rock')}">ai:japanese pop -ai:rock</button>
+                            <button class="example-btn" on-click="${() => this.insertExample('ai:melancholic +ai:acoustic -ai:electronic')}">ai:melancholic +ai:acoustic -ai:electronic</button>
+                        </div>
+                        <p class="help-note">Note: <code>-</code> requires a space before it (to allow terms like "j-pop", "lo-fi").</p>
                     </div>
                 `)}
                 `)}

@@ -273,8 +273,37 @@ def _handle_ai_search(ast, ai_info, cursor, offset, limit, details, original_que
                 'aiUsed': True
             }
 
+    # Handle compound AI search (with negative terms: ai:happy -ai:sad)
+    if ai_info.has_compound_terms:
+        try:
+            # Build request for compound search endpoint
+            compound_request = {
+                'positive_texts': ai_info.positive_texts,
+                'negative_texts': ai_info.negative_texts,
+                'positive_uuids': [],  # Could add ai(subquery) support later
+                'negative_uuids': [],
+                'k': ai_search_max,
+                'min_score': 0.2,
+                'neg_weight': 0.5,
+                'filter_uuids': context_uuids
+            }
+
+            response = requests.post(
+                f"{ai_service_url}/search/compound",
+                json=compound_request,
+                timeout=ai_timeout
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                matched_uuids = [r['uuid'] for r in result.get('results', [])]
+                if matched_uuids:
+                    return _fetch_songs_by_uuids(matched_uuids, cursor, offset, limit, True)
+        except requests.RequestException:
+            pass  # Fall through to standard text search
+
     # Handle AI text search (ai:prompt) - supports multiple prompts with AND semantics
-    if ai_info.text_prompts:
+    elif ai_info.text_prompts:
         all_ai_uuids = None
 
         for prompt in ai_info.text_prompts:

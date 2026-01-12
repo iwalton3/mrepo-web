@@ -67,6 +67,18 @@ class BatchSimilarRequest(BaseModel):
     exclude_uuids: List[str] = Field(default_factory=list)
 
 
+class CompoundSearchRequest(BaseModel):
+    """Request for compound embedding search with positive/negative terms."""
+    positive_texts: List[str] = Field(default_factory=list, max_length=10)
+    negative_texts: List[str] = Field(default_factory=list, max_length=10)
+    positive_uuids: List[str] = Field(default_factory=list, max_length=100)
+    negative_uuids: List[str] = Field(default_factory=list, max_length=100)
+    k: int = Field(default=50, ge=1, le=2000)
+    min_score: float = Field(default=0.2, ge=0.0, le=1.0)
+    neg_weight: float = Field(default=0.5, ge=0.0, le=1.0, description="Weight for negative terms (0.5 = half strength)")
+    filter_uuids: Optional[List[str]] = Field(default=None, description="If provided, only return results matching these UUIDs")
+
+
 class DuplicateCheckRequest(BaseModel):
     """Request for checking duplicates among songs."""
     uuids: List[str] = Field(..., min_length=1, max_length=1000)
@@ -372,6 +384,126 @@ async def batch_similar_search(request: BatchSimilarRequest):
 
     except Exception as e:
         logger.error(f"Batch similar search failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/search/compound", response_model=SearchResponse)
+async def compound_search(request: CompoundSearchRequest):
+    """Search using combined positive and negative embeddings.
+
+    Combines text and song embeddings at the embedding level:
+    - Positive terms are averaged together
+    - Negative terms are subtracted (weighted by neg_weight)
+    - Result is normalized and searched
+
+    This enables queries like "dreamy piano music" minus "electronic" minus "vocals".
+    """
+    if not request.positive_texts and not request.positive_uuids:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one positive term (text or UUID) required"
+        )
+
+    try:
+        analyzer = await get_analyzer()
+        loop = asyncio.get_event_loop()
+
+        # If filtering, adjust search size
+        filter_set = set(request.filter_uuids) if request.filter_uuids else None
+        if filter_set:
+            search_k = min(len(filter_set), 10000)
+        else:
+            search_k = request.k
+
+        def do_compound_search():
+            import numpy as np
+
+            positive_embs = []
+            negative_embs = []
+
+            # Get text embeddings for positive terms
+            if request.positive_texts:
+                # Add "music" suffix for better CLAP matching
+                texts = [t if 'music' in t.lower() else f"{t} music" for t in request.positive_texts]
+                text_embs = analyzer.model.get_text_embedding(texts, use_tensor=False)
+                positive_embs.extend(text_embs)
+
+            # Get song embeddings for positive UUIDs
+            for uuid in request.positive_uuids:
+                emb = analyzer.get_song_embedding(uuid)
+                if emb is not None:
+                    positive_embs.append(emb)
+
+            # Get text embeddings for negative terms
+            if request.negative_texts:
+                texts = [t if 'music' in t.lower() else f"{t} music" for t in request.negative_texts]
+                text_embs = analyzer.model.get_text_embedding(texts, use_tensor=False)
+                negative_embs.extend(text_embs)
+
+            # Get song embeddings for negative UUIDs
+            for uuid in request.negative_uuids:
+                emb = analyzer.get_song_embedding(uuid)
+                if emb is not None:
+                    negative_embs.append(emb)
+
+            if not positive_embs:
+                return []
+
+            # Combine embeddings
+            # Start with average of positive embeddings
+            combined = np.mean(positive_embs, axis=0)
+
+            # Subtract negative embeddings (weighted)
+            for neg_emb in negative_embs:
+                combined = combined - neg_emb * request.neg_weight
+
+            # Normalize
+            norm = np.linalg.norm(combined)
+            if norm > 0:
+                combined = combined / norm
+            else:
+                # Edge case: negatives cancelled out positives
+                return []
+
+            # Search FAISS
+            scores, indices = analyzer.faiss_index.search(
+                combined.reshape(1, -1).astype('float32'),
+                search_k
+            )
+
+            # Build results
+            exclude_set = set(request.positive_uuids) | set(request.negative_uuids)
+            results = []
+
+            conn = analyzer.get_metadata_db()
+            cur = conn.cursor()
+            for score, idx in zip(scores[0], indices[0]):
+                if idx < 0:
+                    continue
+                if score < request.min_score:
+                    continue
+
+                cur.execute("SELECT uuid FROM embeddings WHERE id = ?", (int(idx),))
+                row = cur.fetchone()
+                if row:
+                    uuid = row['uuid']
+                    if uuid in exclude_set:
+                        continue
+                    if filter_set and uuid not in filter_set:
+                        continue
+                    results.append(SearchResult(uuid=uuid, score=float(score)))
+                    if len(results) >= request.k:
+                        break
+            conn.close()
+
+            return results
+
+        results = await loop.run_in_executor(None, do_compound_search)
+
+        return SearchResponse(results=results)
+
+    except Exception as e:
+        logger.error(f"Compound search failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

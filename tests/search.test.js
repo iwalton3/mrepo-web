@@ -241,6 +241,170 @@ const test = new TestHelper();
         // (May show "no results" if UUID doesn't exist)
     });
 
+    // ==================== Compound AI Search Tests ====================
+
+    await test.test('Compound search with + operator', async () => {
+        await test.goto('/search/');
+        await test.wait(500);
+
+        const input = await test.page.$('.search-input, input[type="search"], input[placeholder*="Search"]');
+        if (input) {
+            await input.click({ clickCount: 3 });
+            await input.type('ai:happy +ai:piano');
+            await test.pressKey('Enter');
+            await test.wait(1500);
+
+            // Should process query without errors (results depend on AI service availability)
+        }
+    });
+
+    await test.test('Compound search with - (negative) operator', async () => {
+        await test.goto('/search/');
+        await test.wait(500);
+
+        const input = await test.page.$('.search-input, input[type="search"], input[placeholder*="Search"]');
+        if (input) {
+            await input.click({ clickCount: 3 });
+            await input.type('ai:dreamy -ai:electronic');
+            await test.pressKey('Enter');
+            await test.wait(1500);
+
+            // Should process compound query with negation without errors
+        }
+    });
+
+    await test.test('Hyphenated terms are not broken by - operator', async () => {
+        await test.goto('/search/');
+        await test.wait(500);
+
+        const input = await test.page.$('.search-input, input[type="search"], input[placeholder*="Search"]');
+        if (input) {
+            // "j-pop" should stay together since there's no space before the hyphen
+            await input.click({ clickCount: 3 });
+            await input.type('ai:j-pop happy');
+            await test.pressKey('Enter');
+            await test.wait(1500);
+
+            // Should process "j-pop" as a single term, not split at hyphen
+        }
+    });
+
+    await test.test('Hyphenated term with negation works correctly', async () => {
+        await test.goto('/search/');
+        await test.wait(500);
+
+        const input = await test.page.$('.search-input, input[type="search"], input[placeholder*="Search"]');
+        if (input) {
+            // "j-pop" stays together, but " -ai:rock" is a negation
+            await input.click({ clickCount: 3 });
+            await input.type('ai:j-pop -ai:rock');
+            await test.pressKey('Enter');
+            await test.wait(1500);
+
+            // Should treat j-pop as term, -ai:rock as negation
+        }
+    });
+
+    await test.test('Help panel shows compound AI search section', async () => {
+        await test.goto('/search/');
+        await test.wait(500);
+
+        // Click help toggle
+        const clicked = await test.page.evaluate(() => {
+            const toggle = document.querySelector('.help-toggle');
+            if (toggle) {
+                toggle.click();
+                return true;
+            }
+            return false;
+        });
+
+        if (clicked) {
+            // Wait for help panel to appear
+            await test.wait(500);
+
+            // Retry if panel not visible (toggle might have closed it)
+            const panelVisible = await test.page.evaluate(() => {
+                return document.querySelector('.help-panel') !== null;
+            });
+
+            if (!panelVisible) {
+                // Click again to open
+                await test.page.evaluate(() => {
+                    const toggle = document.querySelector('.help-toggle');
+                    if (toggle) toggle.click();
+                });
+                await test.wait(500);
+            }
+
+            const hasCompoundSection = await test.page.evaluate(() => {
+                const helpPanel = document.querySelector('.help-panel');
+                if (!helpPanel) return false;
+                return helpPanel.textContent.includes('Compound AI Search') ||
+                       helpPanel.textContent.includes('+ai:') ||
+                       helpPanel.textContent.includes('-ai:');
+            });
+
+            await test.assert(hasCompoundSection, 'Help panel should show compound AI search section');
+        }
+    });
+
+    await test.test('Compound search example buttons work', async () => {
+        await test.goto('/search/');
+        await test.wait(500);
+
+        // Click help toggle
+        await test.page.evaluate(() => {
+            const toggle = document.querySelector('.help-toggle');
+            if (toggle) toggle.click();
+        });
+        await test.wait(300);
+
+        // Find and click a compound search example
+        const clicked = await test.page.evaluate(() => {
+            const examples = document.querySelectorAll('.example-btn');
+            for (const btn of examples) {
+                if (btn.textContent.includes('+ai:') || btn.textContent.includes('-ai:')) {
+                    btn.click();
+                    return btn.textContent;
+                }
+            }
+            return null;
+        });
+
+        if (clicked) {
+            await test.wait(1000);
+
+            // Search input should be populated with the example
+            const value = await test.page.evaluate(() => {
+                const input = document.querySelector('.search-input');
+                return input ? input.value : '';
+            });
+
+            // Should have populated the search input
+            await test.assert(value.includes('ai:'), 'Search input should be populated with example');
+        }
+    });
+
+    // ==================== Case Insensitive Search Tests ====================
+
+    await test.test('Artist search is case insensitive', async () => {
+        await test.goto('/search/');
+        await test.wait(500);
+
+        const input = await test.page.$('.search-input, input[type="search"], input[placeholder*="Search"]');
+        if (input) {
+            // Search with lowercase
+            await input.click({ clickCount: 3 });
+            await input.type('a:test');
+            await test.pressKey('Enter');
+            await test.wait(1000);
+
+            // Should find results regardless of case in database
+            // (actual results depend on library content)
+        }
+    });
+
     // ==================== No Errors Test ====================
 
     await test.test('No console errors during search interactions', async () => {
@@ -258,9 +422,20 @@ const test = new TestHelper();
             await input.type('a:rock g:metal');
             await test.pressKey('Enter');
             await test.wait(500);
+
+            // Test compound search queries
+            await input.click({ clickCount: 3 });
+            await input.type('ai:happy +ai:upbeat');
+            await test.pressKey('Enter');
+            await test.wait(500);
+
+            await input.click({ clickCount: 3 });
+            await input.type('ai:dreamy -ai:loud');
+            await test.pressKey('Enter');
+            await test.wait(500);
         }
 
-        await test.assertNoConsoleErrors(['favicon', 'ResizeObserver']);
+        await test.assertNoConsoleErrors(['favicon', 'ResizeObserver', 'AI service']);
     });
 
     await test.teardown();
