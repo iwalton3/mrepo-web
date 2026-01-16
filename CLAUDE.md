@@ -32,7 +32,9 @@ mrepo-web/
 │       ├── history.py      # Play history
 │       ├── preferences.py  # User preferences, EQ presets
 │       ├── sync.py         # Offline sync support
-│       └── admin.py        # Admin functions, VFS
+│       ├── admin.py        # Admin functions, VFS
+│       ├── ai.py           # AI similarity search
+│       └── tags.py         # User tagging system
 ├── frontend/
 │   ├── index.html          # Entry point
 │   ├── music-app.js        # Main app component
@@ -47,7 +49,8 @@ mrepo-web/
 │   └── vendor/             # Third-party (Butterchurn)
 ├── docker/
 │   ├── Dockerfile
-│   └── docker-compose.yml
+│   └── docker-compose.example.yml
+├── docker-compose.yml      # At root (default dev setup)
 ├── requirements.txt
 ├── config.example.yaml
 └── README.md
@@ -206,3 +209,148 @@ Run TypeScript validation after:
 - Adding new exports to API modules
 - Creating wrapper modules (like `offline-api.js` wrapping `music-api.js`)
 - Refactoring imports across multiple files
+
+## Common Gotchas
+
+### Reactive Proxies Can't Be Stored in IndexedDB
+IndexedDB uses structured clone which can't handle Proxy objects:
+```javascript
+// ❌ Error: "proxy object could not be cloned"
+await offlineDb.save(this.state.myData);
+
+// ✅ Clone to strip proxy wrapper first
+const cleanData = JSON.parse(JSON.stringify(this.state.myData));
+await offlineDb.save(cleanData);
+```
+
+### Cache Update Required in Both Online and Offline Paths
+When using offline-first patterns, operations that succeed while online must ALSO update the local cache:
+```javascript
+// After successful online API call
+const cached = await offlineDb.getQueueCache();
+if (cached) {
+    cached.queueIndex = index;
+    await offlineDb.saveQueueCache(cached);
+}
+```
+
+### Queue Operations: Append vs Replace
+"Add All" should append; only "Play All" or explicit clear should replace:
+```javascript
+const wasEmpty = this.store.state.queue.length === 0;
+this.store.state.queue = [...this.store.state.queue, ...songs];
+if (wasEmpty) await this._autoplayQueue();
+```
+
+### findIndex vs findLastIndex for Duplicates
+When adding items that may already exist, use `findLastIndex` to find the newly added one:
+```javascript
+// ❌ Returns FIRST occurrence
+const idx = queue.findIndex(s => s.uuid === song.uuid);
+
+// ✅ Returns LAST (newly added) occurrence
+const idx = queue.findLastIndex(s => s.uuid === song.uuid);
+```
+
+### API Method Names
+API calls use method names directly, not prefixed:
+```javascript
+// ❌ Wrong
+await apiCall('music.sync_push', {...})
+
+// ✅ Correct
+await apiCall('sync_push', {...})
+```
+
+### ReplayGain Timing with Crossfade
+Configure Web Audio API ReplayGain nodes BEFORE calling `play()` on secondary audio:
+```javascript
+this._updateReplayGainNode(1, nextSong);  // Set ReplayGain first
+await this._secondaryAudio.play();         // Then play
+```
+
+### Temp Queue Exit Race Condition
+After exiting temp queue, prevent `_refreshQueueOnFocus()` from overwriting:
+```javascript
+this._tempQueueExitTime = Date.now();
+
+// In _refreshQueueOnFocus()
+if (Date.now() - this._tempQueueExitTime < 5000) return;
+```
+
+## Offline Sync Architecture
+
+### Transactional Batch Sync
+Offline writes are queued and committed atomically:
+1. Client pushes operations via `sync_push`
+2. Client calls `sync_commit` to execute all in one transaction
+3. Server either commits all or rolls back all
+
+### Temp ID Resolution
+Operations on offline-created playlists use temp IDs (`pending-xxx`) that get resolved during commit:
+```python
+temp_id_map = {}
+for op in operations:
+    if op['type'] == 'create':
+        real_id = execute(op)
+        if op.get('tempId'):
+            temp_id_map[op['tempId']] = real_id
+    else:
+        # Resolve temp IDs in later operations
+        if str(op['playlistId']).startswith('pending-'):
+            op['playlistId'] = temp_id_map[op['playlistId']]
+```
+
+### Optional `_conn` Parameter Pattern
+API methods support both standalone (auto-commit) and transactional use:
+```python
+def queue_add(song_uuids, position=None, details=None, _conn=None):
+    own_conn = _conn is None
+    conn = _conn if _conn else get_db()
+    # ... do work ...
+    if own_conn:
+        conn.commit()
+        conn.close()
+```
+
+## Audio Player Patterns
+
+### Separation of Per-Track vs Global Controls
+- **Per-track** (ReplayGain): Web Audio API gain nodes
+- **Global** (user volume): HTML5 audio.volume property
+
+### Dual-Mode Audio Architecture
+- **Simple mode** (no crossfade): `source → EQ → destination`
+- **Dual mode** (crossfade): `source → replayGainNode → fadeGain → mixer → EQ → destination`
+
+## Database Gotchas
+
+### Offset-Based Pagination
+Prefer offset-based pagination for complex sorts:
+```python
+offset = int(cursor) if cursor else 0
+rows = conn.execute(query + " LIMIT ? OFFSET ?", [limit + 1, offset]).fetchall()
+has_more = len(rows) > limit
+next_cursor = str(offset + limit) if has_more else None
+```
+
+### album_artist vs artist
+- `artist` = track-level (who performed this song)
+- `album_artist` = album-level (who released the album)
+Group by `album_artist` to avoid fragmenting albums with featuring tracks.
+
+### NULLIF for Empty Strings
+```sql
+-- ❌ Returns '' if album_artist is empty
+COALESCE(album_artist, 'Unknown')
+
+-- ✅ Treats empty string as NULL
+COALESCE(NULLIF(album_artist, ''), 'Unknown')
+```
+
+## Documentation Index
+
+| Doc File | When to Read |
+|----------|--------------|
+| `frontend/lib/FRAMEWORK.md` | VDX framework patterns for app development |
+| `README.md` | Project setup and overview |
