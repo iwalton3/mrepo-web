@@ -126,7 +126,7 @@ VDX is a zero-dependency reactive framework. For complete patterns, see **[front
 **Critical rules:**
 - Use `on-*` for events (not onclick)
 - Use `x-model` for two-way binding
-- Never mutate reactive arrays with `.sort()` - use `[...arr].sort()`
+- Array `.sort()` and `.reverse()` are safe (made atomic automatically)
 - Use `when()` for conditionals, `each()` for lists
 - Use `memoEach()` for large lists (queue, history)
 - Use `untracked()` for large arrays to avoid performance issues
@@ -323,6 +323,27 @@ def queue_add(song_uuids, position=None, details=None, _conn=None):
 - **Simple mode** (no crossfade): `source → EQ → destination`
 - **Dual mode** (crossfade): `source → replayGainNode → fadeGain → mixer → EQ → destination`
 
+### AudioContext latencyHint for Mobile
+Use `latencyHint: 'playback'` on mobile to prevent crackling:
+```javascript
+const context = new AudioContext({
+    latencyHint: navigator.userAgent.includes('Mobile') ? 'playback' : 'interactive'
+});
+```
+
+### Lazy AnalyserNode Creation
+AnalyserNode computes FFT even when not read - only create when visualizer is open:
+```javascript
+insertAnalyser() {
+    if (this._analyser) return;
+    this._analyser = audioContext.createAnalyser();
+}
+removeAnalyser() {
+    if (!this._analyser) return;
+    this._analyser = null;
+}
+```
+
 ## Database Gotchas
 
 ### Offset-Based Pagination
@@ -346,6 +367,36 @@ COALESCE(album_artist, 'Unknown')
 
 -- ✅ Treats empty string as NULL
 COALESCE(NULLIF(album_artist, ''), 'Unknown')
+```
+
+## Service Worker Patterns
+
+### Manifest Fetch Timeout
+Prevent indefinite hangs when server is unreachable:
+```javascript
+async function fetchManifest() {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+        const res = await fetch('/cache-manifest.json', { signal: controller.signal });
+        clearTimeout(timeout);
+        return await res.json();
+    } catch (err) {
+        clearTimeout(timeout);
+        throw err;
+    }
+}
+```
+
+### Periodic Reconnection Retry
+When offline, periodically check for connectivity:
+```javascript
+let retryIntervalId = null;
+function startRetryInterval() {
+    if (!retryIntervalId) {
+        retryIntervalId = setInterval(tryReconnect, 30000);
+    }
+}
 ```
 
 ## Documentation Index

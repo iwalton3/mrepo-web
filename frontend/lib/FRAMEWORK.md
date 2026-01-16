@@ -5,7 +5,7 @@ Zero-dependency reactive web framework. No build step required.
 ## Component Pattern
 
 ```javascript
-import { defineComponent, html, when, each } from 'vdx/lib/framework.js';
+import { defineComponent, html, when, each } from './lib/framework.js';
 
 export default defineComponent('my-component', {
     props: { title: 'Default' },          // Observed attributes
@@ -182,13 +182,13 @@ ${when(this.stores.auth.isAdmin, () => html`<admin-panel></admin-panel>`)}
 
 **Optional: untracked() to skip proxying entirely:**
 ```javascript
-import { untracked } from 'vdx/lib/framework.js';
+import { untracked } from './lib/framework.js';
 data() { return { songs: untracked([]) }; }  // Items aren't reactive
 ```
 
 **Immediate DOM updates:**
 ```javascript
-import { flushSync } from 'vdx/lib/framework.js';
+import { flushSync } from './lib/framework.js';
 flushSync(() => { this.state.showInput = true; });
 this.refs.input.focus();
 ```
@@ -213,7 +213,7 @@ defineComponent('my-component', {
 ## Router
 
 ```javascript
-import { enableRouting } from 'vdx/lib/router.js';
+import { enableRouting } from './lib/router.js';
 
 enableRouting(outlet, {
     '/': { component: 'home-page' },
@@ -237,7 +237,7 @@ defineComponent('my-component', {
 
 ## Component Library (cl-*)
 
-Common components from `vdx/componentlib/`:
+Common components from `./componentlib/`:
 
 ```javascript
 // Buttons
