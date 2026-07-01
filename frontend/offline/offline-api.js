@@ -153,6 +153,18 @@ async function updatePlaylistSongCount(playlistId, delta) {
  * Try online API call, fallback to offline on network error.
  * Handles cases where navigator.onLine is unreliable (e.g., airplane mode on mobile).
  */
+// apiCall() throws `Error: API error: <status>` for non-ok HTTP responses.
+// 5xx/429 are transient (server/proxy hiccup, overload) and the write did NOT
+// take effect — they should be queued and retried, not dropped. 4xx are
+// permanent app errors and must propagate (queuing them would just create a
+// poison pending write).
+function isTransientServerError(error) {
+    const m = /API error: (\d+)/.exec(error?.message || '');
+    if (!m) return false;
+    const status = parseInt(m[1], 10);
+    return status >= 500 || status === 429;
+}
+
 async function withOfflineFallback(onlineCall, offlineCall) {
     if (shouldUseOffline()) {
         return offlineCall();
@@ -161,11 +173,23 @@ async function withOfflineFallback(onlineCall, offlineCall) {
     try {
         return await onlineCall();
     } catch (error) {
-        // Network error (TypeError: Failed to fetch) - use offline fallback
+        // Genuine network error (TypeError: Failed to fetch) or offline: flip to
+        // offline mode and route through the offline handler.
         if (error.name === 'TypeError' || !navigator.onLine) {
             console.warn('[Offline API] Network error, using offline fallback');
             offlineStore.state.isOnline = false;
             return offlineCall();
+        }
+        // Transient server error (5xx/429): the server is reachable, so do NOT
+        // flip to offline (the browser `online` event would never fire to
+        // recover). Queue the write via the offline handler so it isn't lost,
+        // then trigger a sync to retry it. Previously this rethrew and the write
+        // vanished — local cache updated, server never told, nothing queued.
+        if (isTransientServerError(error)) {
+            console.warn('[Offline API] Transient server error, queuing write for retry:', error.message);
+            const result = await offlineCall();
+            window.dispatchEvent(new CustomEvent('offline-store-online'));
+            return result;
         }
         throw error;
     }
@@ -199,16 +223,34 @@ export const queue = {
         // Online - fetch from server and cache
         try {
             const result = await api.queue.list(options);
-            await offlineDb.saveQueueCache({
-                items: result.items || result,
-                queueIndex: result.queueIndex || 0,
-                // Store server's device info for conflict resolution
-                activeDeviceId: result.activeDeviceId || null,
-                activeDeviceSeq: result.activeDeviceSeq || 0,
-                scaEnabled: result.scaEnabled || false,
-                playMode: result.playMode || 'sequential',
-                lastSyncedAt: Date.now()
-            });
+
+            // D3: the backend returns errors in-band as {error: ...} (some with
+            // items: []). Never overwrite a good offline cache with an error or a
+            // malformed payload - only cache a well-formed items array.
+            if (result && !result.error && Array.isArray(result.items)) {
+                // C9: queue_list caps at `limit` and sets hasMore=true when it
+                // truncated the queue. Caching a short prefix over a complete
+                // cache strands the offline queue truncated if connectivity flips
+                // before the caller's follow-up full list() lands. When the
+                // response is truncated AND our existing cache is at least as
+                // long, keep the existing items and only refresh the lightweight
+                // playback state.
+                const existing = await offlineDb.getQueueCache();
+                const truncated = !!result.hasMore;
+                const keepExistingItems = truncated && existing?.items &&
+                    existing.items.length >= result.items.length;
+
+                await offlineDb.saveQueueCache({
+                    items: keepExistingItems ? existing.items : result.items,
+                    queueIndex: result.queueIndex || 0,
+                    // Store server's device info for conflict resolution
+                    activeDeviceId: result.activeDeviceId || null,
+                    activeDeviceSeq: result.activeDeviceSeq || 0,
+                    scaEnabled: result.scaEnabled || false,
+                    playMode: result.playMode || 'sequential',
+                    lastSyncedAt: Date.now()
+                });
+            }
             return result;
         } catch (error) {
             // Network error - try cache
@@ -264,8 +306,9 @@ export const queue = {
         return withOfflineFallback(
             async () => {
                 const result = await api.queue.add(songUuids, position);
-                // Refresh cache
-                await this.list();
+                // Refresh cache - request the full queue (server default limit is
+                // 100), otherwise we'd cache a truncated prefix (C9).
+                await this.list({ limit: 10000 });
                 return result;
             },
             offlineHandler
@@ -278,6 +321,12 @@ export const queue = {
     async remove(positions) {
         const offlineHandler = async () => {
             const cached = await offlineDb.getQueueCache();
+            // Record {position, uuid} pairs BEFORE mutating the cache so the
+            // server can verify each removal against its (possibly diverged)
+            // queue at sync time instead of trusting raw positions
+            const items = cached
+                ? positions.map(pos => ({ position: pos, uuid: cached.items[pos]?.uuid }))
+                : positions.map(pos => ({ position: pos }));
             if (cached) {
                 // Remove from highest position first to maintain indices
                 const sortedPositions = [...positions].sort((a, b) => b - a);
@@ -288,7 +337,7 @@ export const queue = {
             }
             // Skip queueWrite in temp queue mode
             if (!playerStore.state.tempQueueMode) {
-                await queueWrite('queue', 'remove', { positions });
+                await queueWrite('queue', 'remove', { positions, items });
             }
             return { success: true, queued: !playerStore.state.tempQueueMode };
         };
@@ -296,7 +345,7 @@ export const queue = {
         return withOfflineFallback(
             async () => {
                 const result = await api.queue.remove(positions);
-                await this.list();
+                await this.list({ limit: 10000 });
                 return result;
             },
             offlineHandler
@@ -324,7 +373,7 @@ export const queue = {
         return withOfflineFallback(
             async () => {
                 const result = await api.queue.clear();
-                await this.list();
+                await this.list({ limit: 10000 });
                 return result;
             },
             offlineHandler
@@ -380,6 +429,9 @@ export const queue = {
     async reorder(fromPos, toPos) {
         const offlineHandler = async () => {
             const cached = await offlineDb.getQueueCache();
+            // Capture the moved song's uuid before mutating so the server can
+            // verify/relocate it if the queue diverged while offline
+            const uuid = cached?.items[fromPos]?.uuid;
             if (cached) {
                 const [item] = cached.items.splice(fromPos, 1);
                 cached.items.splice(toPos, 0, item);
@@ -387,7 +439,7 @@ export const queue = {
             }
             // Skip queueWrite in temp queue mode
             if (!playerStore.state.tempQueueMode) {
-                await queueWrite('queue', 'reorder', { fromPos, toPos });
+                await queueWrite('queue', 'reorder', { fromPos, toPos, uuid });
             }
             return { success: true, queued: !playerStore.state.tempQueueMode };
         };
@@ -395,7 +447,7 @@ export const queue = {
         return withOfflineFallback(
             async () => {
                 const result = await api.queue.reorder(fromPos, toPos);
-                await this.list();
+                await this.list({ limit: 10000 });
                 return result;
             },
             offlineHandler
@@ -408,6 +460,10 @@ export const queue = {
     async reorderBatch(fromPositions, toPosition) {
         const offlineHandler = async () => {
             const cached = await offlineDb.getQueueCache();
+            // Capture uuids before mutating for server-side verification
+            const uuids = cached
+                ? fromPositions.map(pos => cached.items[pos]?.uuid)
+                : undefined;
             if (cached) {
                 // Sort positions ascending to maintain relative order
                 const sortedPositions = [...fromPositions].sort((a, b) => a - b);
@@ -431,7 +487,7 @@ export const queue = {
             }
             // Skip queueWrite in temp queue mode
             if (!playerStore.state.tempQueueMode) {
-                await queueWrite('queue', 'reorderBatch', { fromPositions, toPosition });
+                await queueWrite('queue', 'reorderBatch', { fromPositions, toPosition, uuids });
             }
             return { success: true, queued: !playerStore.state.tempQueueMode };
         };
@@ -498,7 +554,7 @@ export const queue = {
         }
 
         const result = await api.queue.addByPlaylist(playlistId, position, shuffle);
-        await this.list();
+        await this.list({ limit: 10000 });
         return result;
     },
 
@@ -794,8 +850,39 @@ export const eqPresets = {
         await offlineDb.saveSetting('eqPresets', cached);
 
         if (shouldUseOffline()) {
-            // Queue with original UUID (null for new presets) so server creates new
-            await queueWrite('eqPresets', 'save', { ...preset, uuid: originalUuid });
+            // C13: a preset created offline gets a `temp-` UUID that only exists in
+            // the local cache - the server never sees it. If the user edits that
+            // still-unsynced preset again, queueing a SECOND save keyed on the temp
+            // UUID would tell the server to update a preset that doesn't exist yet
+            // (-> "Preset not found" / lost edit / duplicate). Instead, find the
+            // original pending create (tagged with this temp UUID) and merge the new
+            // name/bands into it, keeping uuid null so sync still creates one preset.
+            if (typeof originalUuid === 'string' && originalUuid.startsWith('temp-')) {
+                const pendingWrites = await offlineDb.getPendingWrites();
+                const existingWrite = pendingWrites.find(w =>
+                    w.type === 'eqPresets' && w.operation === 'save' &&
+                    w.payload && w.payload.tempUuid === originalUuid
+                );
+                if (existingWrite) {
+                    await offlineDb.updatePendingWritePayload(existingWrite.id, {
+                        name: preset.name,
+                        bands: preset.bands,
+                        uuid: null
+                    });
+                    return { success: true, queued: true, uuid: preset.uuid };
+                }
+                // No pending create found (already synced, or queued before this
+                // fix) - fall through and queue a normal save.
+            }
+
+            // Queue with original UUID (null for new presets) so server creates new.
+            // Tag brand-new presets with their temp UUID so a later offline edit can
+            // find and merge into this write instead of queueing a second one.
+            const payload = { ...preset, uuid: originalUuid };
+            if (!originalUuid && typeof preset.uuid === 'string' && preset.uuid.startsWith('temp-')) {
+                payload.tempUuid = preset.uuid;
+            }
+            await queueWrite('eqPresets', 'save', payload);
             return { success: true, queued: true, uuid: preset.uuid };
         }
 
@@ -888,6 +975,15 @@ export const playlists = {
         // Online - fetch and cache
         try {
             const result = await api.playlists.list();
+
+            // D3: the backend returns errors in-band as {error: ...} (sometimes
+            // with items: []). Don't overwrite a good offline cache with an empty
+            // list derived from an error response - fall back to cache instead.
+            if (result && result.error) {
+                console.warn('[Offline API] Playlists list returned error, using cache:', result.error);
+                const cached = await offlineDb.getSetting('playlists');
+                return { items: cached || [] };
+            }
 
             // Handle different response formats (array or object with playlists/items)
             const playlistArray = Array.isArray(result) ? result :

@@ -37,18 +37,29 @@ export default defineComponent('offline-indicator', {
 
     methods: {
         async checkStatus() {
-            if (!this.props.songUuid) {
+            const uuid = this.props.songUuid;
+            if (!uuid) {
                 this.state.isChecking = false;
                 return;
             }
 
+            // Guard against out-of-order resolution: in a virtualized list the
+            // songUuid prop can change (row reused) before the previous IDB
+            // lookup resolves, which would show the wrong song's availability.
+            const requestId = (this._checkId || 0) + 1;
+            this._checkId = requestId;
+
             this.state.isChecking = true;
             try {
-                this.state.isOffline = await isAvailableOffline(this.props.songUuid);
+                const available = await isAvailableOffline(uuid);
+                if (this._checkId !== requestId) return;  // stale
+                this.state.isOffline = available;
             } catch (e) {
                 console.error('Failed to check offline status:', e);
             }
-            this.state.isChecking = false;
+            if (this._checkId === requestId) {
+                this.state.isChecking = false;
+            }
         },
 
         isDownloading() {

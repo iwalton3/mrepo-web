@@ -217,6 +217,15 @@ function setupNetworkListeners() {
 export function setWorkOfflineMode(enabled) {
     offlineStore.state.workOfflineMode = enabled;
     localStorage.setItem('music-work-offline', enabled ? 'true' : 'false');
+
+    // Turning work-offline OFF while the network is up is effectively "coming
+    // back online" for sync purposes, but no browser `online` event fires (the
+    // connection never dropped). Without this, writes queued during work-offline
+    // mode sit unsynced until the next real connectivity transition. Reuse the
+    // same signal the `online` listener dispatches so sync-manager flushes them.
+    if (!enabled && navigator.onLine) {
+        window.dispatchEvent(new CustomEvent('offline-store-online'));
+    }
 }
 
 /**

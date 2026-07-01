@@ -270,11 +270,12 @@ async function processPlaybackWrite(operation, payload) {
 }
 
 /**
- * Process history writes
+ * Process history writes.
+ * Returns true when the write completed (or is permanently unprocessable)
+ * and may be deleted; false when it failed transiently and must be retried.
  */
 async function processHistoryWrite(operation, payload, pendingWriteId) {
     if (operation === 'record') {
-        // Fire and forget - history is not critical
         try {
             const result = await api.history.record(
                 payload.songUuid,
@@ -282,26 +283,40 @@ async function processHistoryWrite(operation, payload, pendingWriteId) {
                 payload.skipped,
                 payload.source || 'browse'
             );
+            if (result?.error) {
+                // In-band server rejection won't improve on retry
+                console.warn('[Sync] History record rejected:', result.error);
+                return true;
+            }
             // Store mapping from local ID to server ID for potential later updates
             // This handles the case where sync happens before song ends/is skipped
             if (result?.id && pendingWriteId) {
                 await offlineDb.saveHistoryIdMapping(`local:${pendingWriteId}`, result.id);
             }
+            return true;
         } catch (e) {
-            // Ignore history sync failures
+            // Network failure mid-sync: keep the write so the plays aren't lost
+            console.warn('[Sync] History record failed, will retry:', e.message);
+            return false;
         }
     } else if (operation === 'update') {
         // Update an existing history entry (e.g., song started online, skipped offline)
         try {
-            await api.history.update(
+            const result = await api.history.update(
                 payload.historyId,
                 payload.durationSeconds,
                 payload.skipped
             );
+            if (result?.error) {
+                console.warn('[Sync] History update rejected:', result.error);
+            }
+            return true;
         } catch (e) {
-            // Ignore history sync failures
+            console.warn('[Sync] History update failed, will retry:', e.message);
+            return false;
         }
     }
+    return true; // Unknown operation - drop it
 }
 
 /**
@@ -315,7 +330,7 @@ function toOpType(type, operation) {
         'queue.clear': 'queue.clear',
         'queue.setIndex': 'queue.setIndex',
         'queue.reorder': 'queue.reorder',
-        'queue.reorderBatch': 'queue.reorder',  // Server handles as single reorder
+        'queue.reorderBatch': 'queue.reorderBatch',
         'playlists.addSong': 'playlists.addSong',
         'playlists.removeSong': 'playlists.removeSong',
         'playlists.removeSongs': 'playlists.removeSongs',
@@ -372,24 +387,61 @@ async function _doSyncPendingWrites() {
         return { success: true, synced: 0 };
     }
 
+    // Load persisted pending->real playlist ID mappings from earlier sync
+    // sessions so ops queued against a playlist created (and synced) offline
+    // still resolve after the in-memory map was cleared
+    const persistedIdMap = await offlineDb.getSetting('playlist-id-map') || {};
+    for (const [tempId, realId] of Object.entries(persistedIdMap)) {
+        resolvedPendingIds.set(tempId, realId);
+    }
+
     // Separate history writes - they need special handling for ID mapping
     const historyWrites = writes.filter(w => w.type === 'history');
     const batchWrites = writes.filter(w => w.type !== 'history');
 
-    // Process history writes first (fire-and-forget, stores ID mappings)
+    // Process history writes first (individually, stores ID mappings).
+    // Failed writes are kept for retry so plays aren't silently lost;
+    // permanently failing ones are dropped after MAX_RETRIES.
+    let historySynced = 0;
     for (const write of historyWrites) {
-        await processHistoryWrite(write.operation, write.payload, write.id);
-        await offlineDb.deletePendingWrite(write.id);
+        const done = await processHistoryWrite(write.operation, write.payload, write.id);
+        if (done) {
+            await offlineDb.deletePendingWrite(write.id);
+            historySynced++;
+        } else if ((write.retryCount || 0) + 1 >= MAX_RETRIES) {
+            await offlineDb.deletePendingWrite(write.id);
+            console.error('[Sync] Dropped history write after repeated failures');
+        } else {
+            await offlineDb.updatePendingWriteRetry(write.id);
+        }
     }
 
     if (batchWrites.length === 0) {
         await refreshPendingWriteCount();
-        return { success: true, synced: historyWrites.length };
+        return { success: true, synced: historySynced };
     }
 
-    const sessionId = generateSessionId();
+    // Commit idempotency: reuse the session ID when retrying the SAME batch,
+    // so a commit whose response was lost isn't re-applied by the server.
+    // If the batch composition changed, discard the old session and start fresh.
+    const batchKey = batchWrites.map(w => w.id).join(',');
+    const storedSession = await offlineDb.getSetting('sync-session');
+    let sessionId;
+    if (storedSession && storedSession.batchKey === batchKey) {
+        sessionId = storedSession.sessionId;
+    } else {
+        if (storedSession) {
+            try { await api.sync.discard(storedSession.sessionId); } catch (e) { /* best effort */ }
+        }
+        sessionId = generateSessionId();
+        await offlineDb.saveSetting('sync-session', { sessionId, batchKey });
+    }
+
     let seq = 0;
     let pushed = 0;
+    // Map server seq -> pending write, so a commit failure reporting
+    // failed_seq identifies the exact poison write
+    const seqToWrite = new Map();
 
     // Phase 1: Push all non-history operations to server
     for (const write of batchWrites) {
@@ -406,10 +458,12 @@ async function _doSyncPendingWrites() {
                 isPublic: payload.isPublic || false,
                 tempId: payload.tempId
             };
+            seqToWrite.set(seq, write);
             const createResult = await api.sync.push(sessionId, seq++, 'playlists.create', createPayload);
             if (createResult.error) {
                 console.error('[Sync] Failed to push create operation:', createResult.error);
                 await api.sync.discard(sessionId);
+                await offlineDb.saveSetting('sync-session', null);
                 return { success: false, error: createResult.error };
             }
             pushed++;
@@ -421,10 +475,12 @@ async function _doSyncPendingWrites() {
                     playlistId: payload.tempId,
                     songUuids: payload.songUuids
                 };
+                seqToWrite.set(seq, write);
                 const addResult = await api.sync.push(sessionId, seq++, 'playlists.addSongsBatch', addSongsPayload);
                 if (addResult.error) {
                     console.error('[Sync] Failed to push addSongsBatch operation:', addResult.error);
                     await api.sync.discard(sessionId);
+                    await offlineDb.saveSetting('sync-session', null);
                     return { success: false, error: addResult.error };
                 }
                 pushed++;
@@ -440,17 +496,20 @@ async function _doSyncPendingWrites() {
             };
         }
 
+        seqToWrite.set(seq, write);
         const result = await api.sync.push(sessionId, seq++, opType, transformedPayload);
         if (result.error) {
             console.error(`[Sync] Failed to push ${opType}:`, result.error);
             // Discard the session and abort
             await api.sync.discard(sessionId);
+            await offlineDb.saveSetting('sync-session', null);
             return { success: false, error: result.error };
         }
         pushed++;
     }
 
     if (pushed === 0) {
+        await offlineDb.saveSetting('sync-session', null);
         return { success: true, synced: 0 };
     }
 
@@ -459,11 +518,43 @@ async function _doSyncPendingWrites() {
 
     if (commitResult.error) {
         console.error('[Sync] Commit failed:', commitResult.error, 'at operation:', commitResult.failed_op);
-        // Keep local writes for retry - don't delete them
-        // Update retry count on all writes
-        for (const write of writes) {
+
+        // Poison-pill guard: the batch commits atomically, so a single op the
+        // server permanently rejects blocks EVERY queued change forever — each
+        // reconnect re-pushes the whole batch, fails at the same op, rolls back,
+        // and nothing syncs while offline edits pile up behind it. The server
+        // reports failed_seq, identifying the exact write; gate on THAT write's
+        // own retry count (batch-max would let an unrelated stale write trigger
+        // dropping a healthy one). Fall back to op_type matching for older
+        // servers that don't send failed_seq.
+        const poison = commitResult.failed_seq != null
+            ? seqToWrite.get(commitResult.failed_seq)
+            : (commitResult.failed_op
+                ? batchWrites.find(w => toOpType(w.type, w.operation) === commitResult.failed_op)
+                : null);
+
+        if (poison && (poison.retryCount || 0) + 1 >= MAX_RETRIES) {
+            await offlineDb.deletePendingWrite(poison.id);
+            // Batch composition changed - next attempt needs a fresh session
+            await offlineDb.saveSetting('sync-session', null);
+            console.error(`[Sync] Dropped poison write after ${(poison.retryCount || 0) + 1} attempts:`, poison.type, poison.operation);
+            showSyncToast('Change discarded', `A "${poison.type}.${poison.operation}" change couldn't be saved and was discarded after repeated failures.`, 'error');
+            // Bump retries on the rest so genuinely-failing batches still converge
+            for (const write of batchWrites) {
+                if (write.id !== poison.id) await offlineDb.updatePendingWriteRetry(write.id);
+            }
+            await refreshPendingWriteCount();
+            // Don't latch sync-failed — let the next sync proceed with the rest.
+            return { success: false, error: commitResult.error, droppedPoison: true };
+        }
+
+        // Keep local writes for retry - don't delete them.
+        // Bump retry count on the batch writes (history writes were already
+        // deleted above, so don't touch them).
+        for (const write of batchWrites) {
             await offlineDb.updatePendingWriteRetry(write.id);
         }
+
         await refreshPendingWriteCount();
 
         // Set sync failure state and show toast
@@ -473,9 +564,37 @@ async function _doSyncPendingWrites() {
         return { success: false, error: commitResult.error };
     }
 
-    // Phase 3: Success - clear local pending writes (history already deleted above)
+    // Phase 3: Success - clear local pending writes (history already deleted
+    // above) and the session record (commit is done; a new batch = new session)
     for (const write of batchWrites) {
         await offlineDb.deletePendingWrite(write.id);
+    }
+    await offlineDb.saveSetting('sync-session', null);
+
+    // Apply the server's pending->real playlist ID mappings: persist for
+    // future sync sessions, rewrite the cached playlists entry, and drop the
+    // pending-playlist-songs staging data (cross-session pending IDs were
+    // previously only resolved by the unused legacy path)
+    const tempIdMap = commitResult.tempIdMap || {};
+    if (Object.keys(tempIdMap).length > 0) {
+        const idMap = await offlineDb.getSetting('playlist-id-map') || {};
+        Object.assign(idMap, tempIdMap);
+        await offlineDb.saveSetting('playlist-id-map', idMap);
+
+        const cachedPlaylists = await offlineDb.getSetting('playlists') || [];
+        let cacheChanged = false;
+        for (const [tempId, realId] of Object.entries(tempIdMap)) {
+            resolvedPendingIds.set(tempId, realId);
+            const idx = cachedPlaylists.findIndex(p => String(p.id) === String(tempId));
+            if (idx >= 0) {
+                cachedPlaylists[idx] = { ...cachedPlaylists[idx], id: realId, pending: false };
+                cacheChanged = true;
+            }
+            await offlineDb.saveSetting(`pending-playlist-songs:${tempId}`, null);
+        }
+        if (cacheChanged) {
+            await offlineDb.saveSetting('playlists', cachedPlaylists);
+        }
     }
 
     await refreshPendingWriteCount();
@@ -489,7 +608,7 @@ async function _doSyncPendingWrites() {
 
     return {
         success: true,
-        synced: (commitResult.executed || 0) + historyWrites.length,
+        synced: (commitResult.executed || 0) + historySynced,
         skipped: commitResult.skipped
     };
 }
@@ -697,24 +816,25 @@ export async function syncQueueState() {
 }
 
 /**
- * Sync preferences with server (last-write-wins)
+ * Refresh the local preferences cache from the server.
+ *
+ * Offline preference changes are pushed through the pending-write batch
+ * (preferences.set ops), so this is pull-only. The old implementation
+ * compared the client clock against a server field the API never sends
+ * (lastModified vs updated_at) and pushed camelCase keys destructured from
+ * a snake_case cache — both sides of that "last-write-wins" were broken.
+ * Skip the pull while preference writes are still queued so the local
+ * changes aren't clobbered before they sync.
  */
 export async function syncPreferences() {
     if (!offlineStore.state.isOnline) return;
 
     try {
-        const cached = await offlineDb.getSettingWithMeta('preferences');
-        if (!cached) return;
+        const pending = await offlineDb.getPendingWrites();
+        if (pending.some(w => w.type === 'preferences')) return;
 
-        // Get server state
         const serverPrefs = await api.preferences.get();
-        const serverTimestamp = serverPrefs.lastModified || 0;
-
-        if (cached.localTimestamp > serverTimestamp) {
-            // Local is newer - push to server
-            await api.preferences.set(cached.value);
-        } else {
-            // Server is newer - update local
+        if (serverPrefs && !serverPrefs.error) {
             await offlineDb.saveSetting('preferences', serverPrefs);
         }
     } catch (error) {
@@ -722,20 +842,45 @@ export async function syncPreferences() {
     }
 }
 
+// Single-flight guard: online events, work-offline toggles, and transient-5xx
+// recovery can all trigger fullSync at once; concurrent runs interleave queue
+// cache writes and reset the live player queue repeatedly
+let fullSyncInFlight = null;
+
 /**
  * Full sync when coming online
  */
 export async function fullSync() {
-    // First, sync pending writes
-    await syncPendingWrites();
+    if (fullSyncInFlight) {
+        return fullSyncInFlight;
+    }
 
-    // Then sync state (syncQueueState also restores incomplete items)
-    await Promise.all([
-        syncQueueState(),
-        syncPreferences()
-    ]);
+    fullSyncInFlight = (async () => {
+        // First, push pending writes
+        const writeResult = await syncPendingWrites();
 
-    await setLastSyncTime();
+        // Only adopt server state as authoritative when the push actually
+        // succeeded (or there was nothing to push). After a FAILED push the
+        // server is missing this client's offline edits — overwriting the
+        // local queue with it would visually revert the user's changes while
+        // their pending writes still exist.
+        if (writeResult && writeResult.success === false) {
+            await syncPreferences(); // pull-only, guarded against pending writes
+            return;
+        }
+
+        // Then sync state (syncQueueState also restores incomplete items)
+        await Promise.all([
+            syncQueueState(),
+            syncPreferences()
+        ]);
+
+        await setLastSyncTime();
+    })().finally(() => {
+        fullSyncInFlight = null;
+    });
+
+    return fullSyncInFlight;
 }
 
 /**
@@ -760,10 +905,27 @@ setupListeners();
  * Discard all pending writes without syncing
  */
 export async function discardPendingWrites() {
+    // Wait for any in-flight sync so we don't delete writes mid-push (the
+    // server could still commit ops the user just discarded)
+    if (syncLockPromise) {
+        await syncLockPromise;
+    }
+
     const writes = await offlineDb.getPendingWrites();
     for (const write of writes) {
         await offlineDb.deletePendingWrite(write.id);
     }
+
+    // Drop the reusable session (and its server-side ops) so a later sync
+    // can't commit the discarded batch
+    const storedSession = await offlineDb.getSetting('sync-session');
+    if (storedSession) {
+        await offlineDb.saveSetting('sync-session', null);
+        if (offlineStore.state.isOnline) {
+            try { await api.sync.discard(storedSession.sessionId); } catch (e) { /* best effort */ }
+        }
+    }
+
     await refreshPendingWriteCount();
     clearSyncFailed();
     return { discarded: writes.length };
