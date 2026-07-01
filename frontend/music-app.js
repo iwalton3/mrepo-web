@@ -25,6 +25,7 @@ const loadEQ = () => import('./pages/eq-page.js');
 const loadLoopSong = () => import('./pages/loopsong-page.js');
 const loadLogin = () => import('./pages/login-page.js');
 const loadAdmin = () => import('./pages/admin-page.js');
+const loadNotFound = () => import('./pages/not-found-page.js');
 
 // Import mini player
 import './components/mini-player.js';
@@ -102,16 +103,29 @@ export default defineComponent('music-app', {
         document.body.classList.add('dark');
 
         // Initialize offline store first (loads cached favorites, etc.)
-        // This must complete before other components try to check favorites
+        // This must complete before other components try to check favorites.
+        // It reads local IndexedDB, so it's fast and safe to await.
         try {
             await initializeOfflineStore();
         } catch (e) {
             console.error('Failed to initialize offline store:', e);
         }
 
-        // Check authentication
+        // Setup routing immediately so a page always renders. This must NOT be
+        // gated behind auth.checkUser() (a network call with no timeout) - a hung
+        // connection would otherwise leave the outlet permanently blank.
+        this._setupRouting();
+
+        // Set initial active item based on hash
+        this._updateActiveFromHash();
+        window.addEventListener('hashchange', () => this._updateActiveFromHash());
+
+        // Check authentication AFTER routing is live. This only populates the
+        // user badge/admin menu and warms the playlist/favorites cache - pages
+        // don't need it to render.
         try {
             const result = await auth.checkUser();
+            if (!this._isMounted) return;
             this.state.authenticated = result.authenticated;
             this.state.user = result.user;
             // capabilities can be 'admin', 'admin,user', or array ['admin', 'user']
@@ -149,19 +163,15 @@ export default defineComponent('music-app', {
         } catch (e) {
             console.error('Failed to check auth:', e);
         }
-
-        // Setup routing
-        this._setupRouting();
-
-        // Set initial active item based on hash
-        this._updateActiveFromHash();
-        window.addEventListener('hashchange', () => this._updateActiveFromHash());
     },
 
     methods: {
         _setupRouting() {
             const outlet = this.querySelector('router-outlet');
-            if (!outlet) return;
+            if (!outlet) {
+                console.error('music-app: <router-outlet> not found - routing not initialized, app will render blank. Check the template markup.');
+                return;
+            }
 
             enableRouting(outlet, {
                 // Main routes
@@ -177,11 +187,14 @@ export default defineComponent('music-app', {
                     component: 'browse-page',
                     load: loadBrowse
                 },
-                '/browse/:path*/': {
+                // Specific route MUST be registered before the greedy wildcard,
+                // otherwise the insertion-order pattern loop in _findRoute matches
+                // '/browse/:path*/' first and this route becomes unreachable.
+                '/browse/path/:encodedPath/': {
                     component: 'browse-page',
                     load: loadBrowse
                 },
-                '/browse/path/:encodedPath/': {
+                '/browse/:path*/': {
                     component: 'browse-page',
                     load: loadBrowse
                 },
@@ -234,8 +247,9 @@ export default defineComponent('music-app', {
                 '/music/': { redirect: '/' },
                 '/music/visualizer/': { redirect: '/visualizer/' },
                 '/music/browse/': { redirect: '/browse/' },
-                '/music/browse/:path*/': { redirect: '/browse/$1/' },
+                // Specific redirect before the greedy wildcard (same reason as above).
                 '/music/browse/path/:encodedPath/': { redirect: '/browse/path/$1/' },
+                '/music/browse/:path*/': { redirect: '/browse/$1/' },
                 '/music/search/': { redirect: '/search/' },
                 '/music/radio/': { redirect: '/radio/' },
                 '/music/playlists/': { redirect: '/playlists/' },
@@ -244,7 +258,14 @@ export default defineComponent('music-app', {
                 '/music/history/': { redirect: '/history/' },
                 '/music/settings/': { redirect: '/settings/' },
                 '/music/eq/': { redirect: '/eq/' },
-                '/music/loopsong/:uuid/': { redirect: '/loopsong/$1/' }
+                '/music/loopsong/:uuid/': { redirect: '/loopsong/$1/' },
+
+                // Catch-all: unmatched routes fall back to this via _findRoute
+                // instead of silently rendering the root (Now Playing) page.
+                '/404': {
+                    component: 'not-found-page',
+                    load: loadNotFound
+                }
             });
         },
 

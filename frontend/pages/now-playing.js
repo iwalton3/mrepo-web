@@ -75,15 +75,6 @@ export default defineComponent('now-playing-page', {
             this._shell.style.setProperty('--shell-content-padding-bottom', '0');
         }
 
-        await this.loadPlaylists();
-        // Load EQ presets for quick switching dropdown
-        await eqPresetsStore.loadPresets();
-        this._setupScrollListener();
-        // Create debounced volume setter (50ms) for smoother slider interaction
-        this._debouncedSetVolume = debounce((value) => {
-            player.setVolume(value / 100);
-        }, 50);
-
         // Track last queue interaction time
         this._lastQueueInteraction = 0;
         // Track last known queue index for song change detection
@@ -95,8 +86,9 @@ export default defineComponent('now-playing-page', {
         // Flag to track if we've done the initial scroll
         this._initialScrollDone = false;
 
-        // Initial scroll to current song - either now if queue is loaded, or when it loads
-        this._tryInitialScroll();
+        // Register subscriptions/listeners BEFORE the first await so that
+        // navigating away mid-mount can't register them post-unmount and leak
+        // (unmounted() tears each of these down symmetrically).
 
         // Watch for queue index/version changes to auto-scroll
         this._unsubscribeQueueIndex = playerStore.subscribe((state) => {
@@ -126,6 +118,22 @@ export default defineComponent('now-playing-page', {
             }, 100);
         };
         window.addEventListener('temp-queue-exited', this._onTempQueueExited);
+
+        // Create debounced volume setter (50ms) for smoother slider interaction
+        this._debouncedSetVolume = debounce((value) => {
+            player.setVolume(value / 100);
+        }, 50);
+
+        await this.loadPlaylists();
+        if (!this._isMounted) return;  // Unmounted during load - stop before DOM work
+        // Load EQ presets for quick switching dropdown
+        await eqPresetsStore.loadPresets();
+        if (!this._isMounted) return;  // Unmounted during load - stop before DOM work
+
+        this._setupScrollListener();
+
+        // Initial scroll to current song - either now if queue is loaded, or when it loads
+        this._tryInitialScroll();
     },
 
     unmounted() {
@@ -1556,36 +1564,71 @@ export default defineComponent('now-playing-page', {
         // Get visible queue (filtered when offline)
         const visibleQueue = this.getVisibleQueue();
         const visibleQueueLength = visibleQueue.length;
+        // Raw (unfiltered) queue count and initial-load flag for the empty-state gating.
+        // queueLoaded is false until the initial queue load/restore completes, letting us
+        // distinguish "still loading" and "offline-filtered to empty" from a truly empty queue.
+        const rawQueueLength = this.stores.player.queue.length;
+        const queueLoaded = this.stores.player.queueLoaded;
         const itemHeight = 48;
         const { visibleStart, visibleEnd } = this.state;
 
         return html`
             <div class="now-playing">
-                <!-- Empty state when no queue -->
-                ${when(visibleQueueLength === 0, () => html`
-                    <div class="empty-state">
-                        <div class="empty-icon">${this.stores.player.tempQueueMode ? '♻️' : '🎵'}</div>
-                        <h2>${this.stores.player.tempQueueMode ? 'Temp Queue Empty' : 'No Songs in Queue'}</h2>
-                        <p>${this.stores.player.tempQueueMode
-                            ? 'Browse your library to add songs, or exit temp queue to restore your synced queue'
-                            : 'Browse your library or start a radio session to play music'}</p>
-                        <div class="empty-actions">
-                            ${when(this.stores.player.tempQueueMode, () => html`
-                                <cl-button severity="warning" on-click="handleToggleTempQueue">
-                                    Exit Temp Queue
+                <!-- Empty/loading state when nothing is visible -->
+                ${when(visibleQueueLength === 0, () => {
+                    // Initial queue load hasn't finished yet - show a lightweight loader
+                    // instead of the misleading "empty queue" CTA (see audit A10).
+                    if (!queueLoaded) {
+                        return html`
+                            <div class="empty-state">
+                                <div class="empty-icon">⏳</div>
+                                <h2>Loading Queue…</h2>
+                                <p>Fetching your queue…</p>
+                            </div>
+                        `;
+                    }
+                    // Queue is loaded and non-empty, but offline filtering removed every
+                    // song (none cached for offline playback) - distinct from empty queue.
+                    if (rawQueueLength > 0) {
+                        return html`
+                            <div class="empty-state">
+                                <div class="empty-icon">📶</div>
+                                <h2>Nothing Available Offline</h2>
+                                <p>${rawQueueLength} song${rawQueueLength === 1 ? '' : 's'} in queue — none are downloaded for offline playback</p>
+                                <div class="empty-actions">
+                                    <cl-button severity="primary" on-click="${() => window.location.hash = '/browse/'}">
+                                        Browse Music
+                                    </cl-button>
+                                </div>
+                            </div>
+                        `;
+                    }
+                    // Genuinely empty queue - original CTA
+                    return html`
+                        <div class="empty-state">
+                            <div class="empty-icon">${this.stores.player.tempQueueMode ? '♻️' : '🎵'}</div>
+                            <h2>${this.stores.player.tempQueueMode ? 'Temp Queue Empty' : 'No Songs in Queue'}</h2>
+                            <p>${this.stores.player.tempQueueMode
+                                ? 'Browse your library to add songs, or exit temp queue to restore your synced queue'
+                                : 'Browse your library or start a radio session to play music'}</p>
+                            <div class="empty-actions">
+                                ${when(this.stores.player.tempQueueMode, () => html`
+                                    <cl-button severity="warning" on-click="handleToggleTempQueue">
+                                        Exit Temp Queue
+                                    </cl-button>
+                                `)}
+                                <cl-button severity="primary" on-click="${() => window.location.hash = '/browse/'}">
+                                    Browse Music
                                 </cl-button>
-                            `)}
-                            <cl-button severity="primary" on-click="${() => window.location.hash = '/browse/'}">
-                                Browse Music
-                            </cl-button>
-                            ${when(!this.stores.player.tempQueueMode, () => html`
-                                <cl-button severity="secondary" on-click="${() => window.location.hash = '/radio/'}">
-                                    Start Radio
-                                </cl-button>
-                            `)}
+                                ${when(!this.stores.player.tempQueueMode, () => html`
+                                    <cl-button severity="secondary" on-click="${() => window.location.hash = '/radio/'}">
+                                        Start Radio
+                                    </cl-button>
+                                `)}
+                            </div>
                         </div>
-                    </div>
-                `)}
+                    `;
+                })}
 
                 <!-- Queue as main content -->
                 ${when(visibleQueueLength > 0, () => html`

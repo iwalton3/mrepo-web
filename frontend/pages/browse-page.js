@@ -66,7 +66,7 @@ export default defineComponent('browse-page', {
 
             // Multi-select mode
             selectionMode: false,
-            selectedSongs: [],  // Array of {uuid, title} for selected songs
+            selectedSongs: [],  // Full song objects (so selection survives navigation)
             showPlaylistPicker: false,
             userPlaylists: [],
             addingToPlaylist: false,
@@ -87,7 +87,9 @@ export default defineComponent('browse-page', {
         // Initialize from URL params if present (only once)
         if (this._initialized) return;
         this._initialized = true;
-        this._initFromUrl();
+        // Single reconciliation entry point — reads BOTH params and query and
+        // computes/applies the target view (see _reconcileRoute).
+        this._reconcileRoute();
         this._setupInfiniteScroll();
     },
 
@@ -103,112 +105,144 @@ export default defineComponent('browse-page', {
         }
     },
 
-    propsChanged(prop, newValue) {
-        if (prop === 'params') {
-            if (newValue.encodedPath) {
-                // Handle /browse/path/:encodedPath/ route
-                const newPath = '/' + decodeURIComponent(newValue.encodedPath);
-                // Skip if we already loaded this path
-                if (this._lastLoadedPath === newPath) return;
-                this._lastLoadedPath = newPath;
-                this.state.filterText = '';
-                this.state.viewMode = 'filepath';
-                this.state.currentPath = newPath;
-                this.state.items = [];
-                this.state.cursor = null;
-                this.state.hasMore = true;
-                this.loadFilePath();
-            } else if (newValue.path) {
-                // Handle /browse/:path*/ route (path segments)
-                const newPath = '/' + newValue.path;
-                if (this._lastLoadedPath === newPath) return;
-                this._lastLoadedPath = newPath;
-                this.state.filterText = '';
-                this.state.viewMode = 'filepath';
-                this.state.currentPath = newPath;
-                this.state.items = [];
-                this.state.cursor = null;
-                this.state.hasMore = true;
-                this.loadFilePath();
-            } else if (this.state.viewMode === 'filepath') {
-                // Handle navigation to root (no encodedPath or path)
-                const newPath = '/';
-                if (this._lastLoadedPath === newPath) return;
-                this._lastLoadedPath = newPath;
-                this.state.filterText = '';
-                this.state.currentPath = newPath;
-                this.state.items = [];
-                this.state.cursor = null;
-                this.state.hasMore = true;
-                this.loadFilePath();
-            }
-        } else if (prop === 'query') {
-            // Handle query param changes for hierarchy mode
-            this._handleHierarchyQuery(newValue || {});
+    propsChanged(prop) {
+        // The router delivers route props via a batched setProps: by the time
+        // EITHER propsChanged('params') or propsChanged('query') fires, BOTH
+        // this.props.params and this.props.query already hold the new route.
+        // So both signals funnel into a single reconciler that reads both and
+        // is idempotent — whichever fires first applies, the second no-ops.
+        // This replaces the old split params/query handlers that clobbered each
+        // other (A2/A3).
+        if (prop === 'params' || prop === 'query') {
+            this._reconcileRoute();
         }
     },
 
     methods: {
-        _initFromUrl() {
+        // ── Route reconciliation ─────────────────────────────────────────────
+        // A single source of truth that maps (params, query) → a target view
+        // and applies it exactly once. This closes A2/A3 (split handlers racing)
+        // and, together with _routeEpoch, A7 (cross-mode stale applies).
+
+        // Compute the target view descriptor from the current route props.
+        // NOTE (A6): the router already URL-decodes params once (matchRoute →
+        // safeDecodeURIComponent). We use params.encodedPath / params.path
+        // verbatim — a second decodeURIComponent() here corrupted names with
+        // literal %xx and threw URIError on names like "100% Hits".
+        _computeTargetFromProps() {
             const params = this.props.params || {};
+            const query = this.props.query || {};
 
             if (params.encodedPath) {
-                // /browse/path/:encodedPath/ - URL encoded path
-                this.state.viewMode = 'filepath';
-                this.state.currentPath = '/' + decodeURIComponent(params.encodedPath);
-                this._lastLoadedPath = this.state.currentPath;
-                this.loadFilePath();
-                return;
+                return { mode: 'filepath', path: '/' + params.encodedPath };
             }
-
             if (params.path) {
-                // /browse/:path*/ - path segments
-                this.state.viewMode = 'filepath';
-                this.state.currentPath = '/' + params.path;
-                this._lastLoadedPath = this.state.currentPath;
-                this.loadFilePath();
-                return;
+                return { mode: 'filepath', path: '/' + params.path };
             }
 
-            // Check query params for hierarchy state
-            const query = this.props.query || {};
-            if (query.category || query.genre || query.artist || query.album) {
-                this._handleHierarchyQuery(query);
-                return;
+            // Bare /browse/ — the query decides the view. ?view=… encodes the
+            // genres/artists/files "roots" so they survive reload and are
+            // distinguishable from a fresh bare /browse/ (categories root).
+            if (query.view === 'files') {
+                return { mode: 'filepath', path: '/' };
+            }
+            if (query.view === 'genres') {
+                return { mode: 'genres' };
+            }
+            if (query.view === 'artists') {
+                return { mode: 'artists' };
             }
 
-            this.loadItems();
+            return {
+                mode: 'hierarchy',
+                category: query.category || null,
+                genre: query.genre || null,
+                artist: query.artist || null,
+                album: query.album || null
+            };
         },
 
-        _handleHierarchyQuery(query) {
-            // Build a unique key for this hierarchy state
-            const key = `${query.category || ''}|${query.genre || ''}|${query.artist || ''}|${query.album || ''}`;
-            if (this._lastHierarchyKey === key) return;
-            this._lastHierarchyKey = key;
+        // Serialize a target to a stable key so reconciliation is idempotent.
+        _serializeTarget(t) {
+            if (t.mode === 'filepath') return 'filepath|' + t.path;
+            if (t.mode === 'genres') return 'genres';
+            if (t.mode === 'artists') return 'artists';
+            return 'hierarchy|' + [t.category, t.genre, t.artist, t.album].join('|');
+        },
 
-            this.state.viewMode = 'hierarchy';
-            this.state.currentCategory = query.category || null;
-            this.state.currentGenre = query.genre || null;
-            this.state.currentArtist = query.artist || null;
-            this.state.currentAlbum = query.album || null;
+        // Derive the hierarchy drill level from which filters are set.
+        _deriveHierarchyLevel(t) {
+            if (t.album) return 'songs';
+            if (t.artist) return 'album';
+            if (t.genre) return 'artist';
+            if (t.category) return 'genre';
+            return 'category';
+        },
 
-            // Determine level based on what's set
-            if (query.album) {
-                this.state.level = 'songs';
-            } else if (query.artist) {
-                this.state.level = 'album';
-            } else if (query.genre) {
-                this.state.level = 'artist';
-            } else if (query.category) {
-                this.state.level = 'genre';
-            } else {
-                this.state.level = 'category';
-            }
+        // Reconcile the live view against the route props. Idempotent: if the
+        // computed target already matches what we applied last, do nothing —
+        // this is how the URL "echo" of our own in-page navigations no-ops
+        // (replaces the scattered dedupe guards).
+        _reconcileRoute() {
+            const target = this._computeTargetFromProps();
+            if (this._serializeTarget(target) === this._appliedRoute) return;
+            this._applyTarget(target);
+        },
 
+        // Apply a target: set state, reset list state, bump the route epoch (so
+        // in-flight loads from the previous target are discarded), record the
+        // applied-route snapshot, and kick off the correct loader. Callers that
+        // originate a navigation (tabs, drills) call this AND update the URL;
+        // the resulting propsChanged then reconciles to a no-op.
+        _applyTarget(target) {
+            this._appliedRoute = this._serializeTarget(target);
+            this._routeEpoch = (this._routeEpoch || 0) + 1;
+
+            // Reset shared list state for the fresh view.
+            this.state.filterText = '';
             this.state.items = [];
             this.state.cursor = null;
             this.state.hasMore = true;
-            this.state.filterText = '';
+            this.state.totalCount = 0;  // reset so a stale count doesn't suppress the empty state
+            this.state.visibleStart = 0;
+            this.state.visibleEnd = 50;
+
+            if (target.mode === 'filepath') {
+                this.state.viewMode = 'filepath';
+                this.state.currentPath = target.path;
+                this.loadFilePath();
+                return;
+            }
+
+            if (target.mode === 'genres') {
+                this.state.viewMode = 'genres';
+                this.state.level = 'genre';
+                this.state.currentCategory = null;
+                this.state.currentGenre = null;
+                this.state.currentArtist = null;
+                this.state.currentAlbum = null;
+                this.loadAllGenres();
+                return;
+            }
+
+            if (target.mode === 'artists') {
+                this.state.viewMode = 'artists';
+                this.state.level = 'artists';
+                this.state.currentCategory = null;
+                this.state.currentGenre = null;
+                this.state.currentArtist = null;
+                this.state.currentAlbum = null;
+                this.loadArtists();
+                return;
+            }
+
+            // Hierarchy
+            this.state.viewMode = 'hierarchy';
+            this.state.currentCategory = target.category;
+            this.state.currentGenre = target.genre;
+            this.state.currentArtist = target.artist;
+            this.state.currentAlbum = target.album;
+            this.state.level = this._deriveHierarchyLevel(target);
             this.loadItems();
         },
 
@@ -216,6 +250,26 @@ export default defineComponent('browse-page', {
         _apiValue(val, allName) {
             if (val === allName) return null;
             return val;
+        },
+
+        // Build a filter object for songs/queue/playlist APIs that translates
+        // hierarchy aggregator names ([All Genres], [All Artists], [All Albums])
+        // into null. Without this, those literal strings get passed to the
+        // backend (songs_by_filter / queue_add_by_filter), which matches them
+        // as exact values and returns 0 songs — silent no-op. The browse APIs
+        // (album_songs etc.) understand the placeholders directly, but the
+        // songs/queue paths don't, so we translate here.
+        _apiFilters(overrides = {}) {
+            const cat = 'category' in overrides ? overrides.category : this.state.currentCategory;
+            const gen = 'genre'    in overrides ? overrides.genre    : this.state.currentGenre;
+            const art = 'artist'   in overrides ? overrides.artist   : this.state.currentArtist;
+            const alb = 'album'    in overrides ? overrides.album    : this.state.currentAlbum;
+            return {
+                category: cat,
+                genre:  gen === '[All Genres]'  ? null : gen,
+                artist: art === '[All Artists]' ? null : art,
+                album:  alb === '[All Albums]'  ? null : alb
+            };
         },
 
         async loadItems() {
@@ -226,6 +280,12 @@ export default defineComponent('browse-page', {
             // Track which request is latest (allow concurrent requests, discard stale ones)
             this._hierarchyRequestId = (this._hierarchyRequestId || 0) + 1;
             const thisRequestId = this._hierarchyRequestId;
+            // Capture the route epoch too: a view-mode switch (e.g. to genres/
+            // filepath) calls a DIFFERENT loader, so _hierarchyRequestId alone
+            // wouldn't invalidate an in-flight loadItems. Re-check epoch after
+            // the await so a stale hierarchy response can't land in another view
+            // (A7).
+            const epoch = this._routeEpoch;
 
             this.state.isLoading = true;
 
@@ -279,9 +339,10 @@ export default defineComponent('browse-page', {
                         break;
                 }
 
-                // Discard if hierarchy changed or a newer request started
+                // Discard if hierarchy changed, the view mode changed, or a
+                // newer request started
                 const currentKey = `${this.state.level}|${this.state.currentCategory}|${this.state.currentGenre}|${this.state.currentArtist}|${this.state.currentAlbum}`;
-                if (currentKey !== loadKey || this._hierarchyRequestId !== thisRequestId) {
+                if (currentKey !== loadKey || this._hierarchyRequestId !== thisRequestId || this._routeEpoch !== epoch) {
                     return;
                 }
 
@@ -297,18 +358,23 @@ export default defineComponent('browse-page', {
                 // Setup scroll listener for windowed rendering
                 this._setupScrollListener();
             } catch (e) {
-                if (this._hierarchyRequestId === thisRequestId) {
+                if (this._hierarchyRequestId === thisRequestId && this._routeEpoch === epoch) {
                     console.error('Failed to load items:', e);
                 }
             } finally {
-                if (this._hierarchyRequestId === thisRequestId) {
+                if (this._hierarchyRequestId === thisRequestId && this._routeEpoch === epoch) {
                     this.state.isLoading = false;
                 }
             }
         },
 
         async loadAllGenres() {
-            if (this.state.isLoading) return;
+            // Supersede any in-flight genres load rather than no-opping when
+            // isLoading is true — a tab click during another mode's in-flight
+            // load previously left stale items on screen.
+            this._genresRequestId = (this._genresRequestId || 0) + 1;
+            const thisRequestId = this._genresRequestId;
+            const epoch = this._routeEpoch;
             this.state.isLoading = true;
 
             try {
@@ -317,6 +383,12 @@ export default defineComponent('browse-page', {
                     minSongs: 0,
                     sort: this.state.sortBy === 'count' ? 'song_count' : 'name'
                 });
+
+                // Discard if a newer genres load started or the view changed
+                if (this._genresRequestId !== thisRequestId || this._routeEpoch !== epoch) {
+                    return;
+                }
+
                 this.state.items = result.items;
                 this.state.totalCount = result.totalCount;
                 this.state.hasMore = false;  // All genres loaded at once
@@ -324,14 +396,21 @@ export default defineComponent('browse-page', {
                 this.state.breadcrumbs = [{ label: 'All Genres', level: 'genre' }];
                 this._setupScrollListener();
             } catch (e) {
-                console.error('Failed to load genres:', e);
+                if (this._genresRequestId === thisRequestId && this._routeEpoch === epoch) {
+                    console.error('Failed to load genres:', e);
+                }
             } finally {
-                this.state.isLoading = false;
+                if (this._genresRequestId === thisRequestId && this._routeEpoch === epoch) {
+                    this.state.isLoading = false;
+                }
             }
         },
 
         async loadArtists() {
-            if (this.state.isLoading) return;
+            this._artistsRequestId = (this._artistsRequestId || 0) + 1;
+            const thisRequestId = this._artistsRequestId;
+            const epoch = this._routeEpoch;
+
             this.state.isLoading = true;
             this.state.visibleStart = 0;
             this.state.visibleEnd = 50;
@@ -346,6 +425,8 @@ export default defineComponent('browse-page', {
                     minSongs,
                     sort
                 });
+
+                if (this._artistsRequestId !== thisRequestId || this._routeEpoch !== epoch) return;
 
                 const totalCount = result.totalCount || result.items.length;
 
@@ -366,12 +447,16 @@ export default defineComponent('browse-page', {
 
                 // Start background loading of all remaining artists
                 if (result.hasMore) {
-                    this._loadArtistsInBackground(result.nextCursor, result.items.length, minSongs, sort);
+                    this._loadArtistsInBackground(result.nextCursor, result.items.length, minSongs, sort, thisRequestId);
                 }
             } catch (e) {
-                console.error('Failed to load artists:', e);
+                if (this._artistsRequestId === thisRequestId && this._routeEpoch === epoch) {
+                    console.error('Failed to load artists:', e);
+                }
             } finally {
-                this.state.isLoading = false;
+                if (this._artistsRequestId === thisRequestId && this._routeEpoch === epoch) {
+                    this.state.isLoading = false;
+                }
             }
         },
 
@@ -383,6 +468,10 @@ export default defineComponent('browse-page', {
             // Just increment a counter to track which request is latest
             this._loadRequestId = (this._loadRequestId || 0) + 1;
             const thisRequestId = this._loadRequestId;
+            // Capture the route epoch: switching to a non-filepath view calls a
+            // different loader, so _loadRequestId alone wouldn't discard this
+            // in-flight response (A7).
+            const epoch = this._routeEpoch;
 
             this.state.isLoading = true;
             this.state.visibleStart = 0;
@@ -392,8 +481,8 @@ export default defineComponent('browse-page', {
                 const sort = this.state.sortBy === 'count' ? 'song_count' : 'name';
                 const result = await browse.path(loadingPath, { limit: 200, sort });
 
-                // Discard if path changed or a newer request started
-                if (this.state.currentPath !== loadingPath || this._loadRequestId !== thisRequestId) {
+                // Discard if path changed, the view mode changed, or a newer request started
+                if (this.state.currentPath !== loadingPath || this._loadRequestId !== thisRequestId || this._routeEpoch !== epoch) {
                     return;
                 }
 
@@ -420,12 +509,12 @@ export default defineComponent('browse-page', {
                 }
             } catch (e) {
                 // Only log if this is still the current request
-                if (this._loadRequestId === thisRequestId) {
+                if (this._loadRequestId === thisRequestId && this._routeEpoch === epoch) {
                     console.error('Failed to load path:', e);
                 }
             } finally {
                 // Only clear loading if this is still the current request
-                if (this._loadRequestId === thisRequestId) {
+                if (this._loadRequestId === thisRequestId && this._routeEpoch === epoch) {
                     this.state.isLoading = false;
                 }
             }
@@ -557,46 +646,33 @@ export default defineComponent('browse-page', {
         },
 
         async _loadRemainingInBackground(cursor, offset, sort) {
-            let currentCursor = cursor;
-            let currentOffset = offset;
-
-            while (currentCursor) {
-                try {
-                    const result = await browse.path(this.state.currentPath, {
-                        cursor: currentCursor,
-                        limit: 500,
-                        sort
-                    });
-
-                    const items = [...this.state.items];
-                    result.items.forEach((item, i) => {
-                        items[currentOffset + i] = item;
-                    });
-                    this.state.items = items;
-                    this.state.hasMore = result.hasMore;
-
-                    currentOffset += result.items.length;
-                    currentCursor = result.nextCursor;
-                } catch (e) {
-                    console.error('Background loading failed:', e);
-                    break;
-                }
-            }
-        },
-
-        async _loadArtistsInBackground(cursor, offset, minSongs, sort) {
+            // Capture path/request id at entry. If the user navigates while we're
+            // paginating, bail — otherwise the cursor (issued for the old path) is
+            // used against the new path and stale rows clobber the new sparse array.
+            const loadingPath = this.state.currentPath;
+            const thisRequestId = this._loadRequestId;
+            const epoch = this._routeEpoch;
             this._backgroundLoadingActive = true;
             let currentCursor = cursor;
             let currentOffset = offset;
 
-            while (currentCursor) {
-                try {
-                    const result = await browse.artists({
-                        cursor: currentCursor,
-                        limit: 500,
-                        minSongs,
-                        sort
-                    });
+            try {
+                while (currentCursor) {
+                    if (this.state.currentPath !== loadingPath || this._loadRequestId !== thisRequestId || this._routeEpoch !== epoch) return;
+
+                    let result;
+                    try {
+                        result = await browse.path(loadingPath, {
+                            cursor: currentCursor,
+                            limit: 500,
+                            sort
+                        });
+                    } catch (e) {
+                        console.error('Background loading failed:', e);
+                        return;
+                    }
+
+                    if (this.state.currentPath !== loadingPath || this._loadRequestId !== thisRequestId || this._routeEpoch !== epoch) return;
 
                     const items = [...this.state.items];
                     result.items.forEach((item, i) => {
@@ -607,14 +683,55 @@ export default defineComponent('browse-page', {
 
                     currentOffset += result.items.length;
                     currentCursor = result.nextCursor;
-                } catch (e) {
-                    console.error('Artists background loading failed:', e);
-                    break;
+                }
+            } finally {
+                if (this._loadRequestId === thisRequestId) {
+                    this._backgroundLoadingActive = false;
                 }
             }
+        },
 
-            this._backgroundLoadingActive = false;
-            this.state.filterLoading = false;
+        async _loadArtistsInBackground(cursor, offset, minSongs, sort, requestId) {
+            const epoch = this._routeEpoch;
+            this._backgroundLoadingActive = true;
+            let currentCursor = cursor;
+            let currentOffset = offset;
+
+            try {
+                while (currentCursor) {
+                    if (this._artistsRequestId !== requestId || this._routeEpoch !== epoch) return;
+
+                    let result;
+                    try {
+                        result = await browse.artists({
+                            cursor: currentCursor,
+                            limit: 500,
+                            minSongs,
+                            sort
+                        });
+                    } catch (e) {
+                        console.error('Artists background loading failed:', e);
+                        return;
+                    }
+
+                    if (this._artistsRequestId !== requestId || this._routeEpoch !== epoch) return;
+
+                    const items = [...this.state.items];
+                    result.items.forEach((item, i) => {
+                        items[currentOffset + i] = item;
+                    });
+                    this.state.items = items;
+                    this.state.hasMore = result.hasMore;
+
+                    currentOffset += result.items.length;
+                    currentCursor = result.nextCursor;
+                }
+            } finally {
+                if (this._artistsRequestId === requestId) {
+                    this._backgroundLoadingActive = false;
+                    this.state.filterLoading = false;
+                }
+            }
         },
 
         _updateBreadcrumbs() {
@@ -656,37 +773,44 @@ export default defineComponent('browse-page', {
                 return;
             }
 
-            const { level, viewMode } = this.state;
+            const { level } = this.state;
+
+            // Build the next hierarchy target by drilling one level from the
+            // current filters. _applyTarget derives the new level, loads, and
+            // records the applied-route snapshot; _updateHierarchyUrl then
+            // echoes it into the URL (the resulting propsChanged no-ops).
+            const target = {
+                mode: 'hierarchy',
+                category: this.state.currentCategory,
+                genre: this.state.currentGenre,
+                artist: this.state.currentArtist,
+                album: this.state.currentAlbum
+            };
 
             switch (level) {
                 case 'category':
-                    this.state.currentCategory = item.name;
-                    this.state.level = 'genre';
+                    target.category = item.name;
                     break;
                 case 'genre':
-                    // Store actual name including [All Genres] for URL deep linking
-                    this.state.currentGenre = item.name;
-                    this.state.level = 'artist';
-                    // For standalone genres mode, switch to hierarchy mode
-                    if (viewMode === 'genres') {
-                        this.state.viewMode = 'hierarchy';
-                    }
+                    // Store actual name including [All Genres] for URL deep linking.
+                    // (From the standalone Genres tab currentCategory is null, so
+                    // this naturally drills into a category-less genre.)
+                    target.genre = item.name;
                     break;
                 case 'artist':
                     // Store actual name including [All Artists] for URL deep linking
-                    this.state.currentArtist = item.name;
-                    this.state.level = 'album';
+                    target.artist = item.name;
                     break;
                 case 'artists':
-                    // Artist clicked from Artists tab - show their albums
-                    this.state.currentArtist = item.display_name || item.name;
-                    this.state.level = 'album';
-                    this.state.viewMode = 'hierarchy';
+                    // Artist clicked from the Artists tab - show their albums
+                    target.category = null;
+                    target.genre = null;
+                    target.artist = item.display_name || item.name;
+                    target.album = null;
                     break;
                 case 'album':
                     // Store actual name including [All Albums], [Unknown Album] for URL deep linking
-                    this.state.currentAlbum = item.name;
-                    this.state.level = 'songs';
+                    target.album = item.name;
                     break;
                 case 'songs':
                     // Play the song
@@ -694,13 +818,8 @@ export default defineComponent('browse-page', {
                     return;
             }
 
-            this.state.items = [];
-            this.state.cursor = null;
-            this.state.hasMore = true;
-            this.state.filterText = '';
-            this.state.totalCount = 0;
+            this._applyTarget(target);
             this._updateHierarchyUrl();
-            this.loadItems();
         },
 
         _handleFilePathClick(item) {
@@ -719,109 +838,118 @@ export default defineComponent('browse-page', {
         },
 
         _navigateToFilePath(newPath) {
-            // Use router.navigate() to properly trigger propsChanged
+            // Use router.navigate() so reconciliation handles loading.
+            // Encode once → the router decodes once (matchRoute) → the page uses
+            // the raw value (A6: no second decode).
             const router = getRouter();
             const encodedPath = encodeURIComponent(newPath.replace(/^\//, ''));
-            const routePath = encodedPath ? `/browse/path/${encodedPath}/` : '/browse/';
-            router.navigate(routePath);
-        },
-
-        _updateHierarchyUrl() {
-            // Build query string from current hierarchy state
-            // Use encodeURIComponent instead of URLSearchParams to avoid + for spaces
-            const { currentCategory, currentGenre, currentArtist, currentAlbum } = this.state;
-            const parts = [];
-
-            if (currentCategory) parts.push(`category=${encodeURIComponent(currentCategory)}`);
-            if (currentGenre) parts.push(`genre=${encodeURIComponent(currentGenre)}`);
-            if (currentArtist) parts.push(`artist=${encodeURIComponent(currentArtist)}`);
-            if (currentAlbum) parts.push(`album=${encodeURIComponent(currentAlbum)}`);
-
-            const queryString = parts.join('&');
-            const newHash = queryString ? `#/browse/?${queryString}` : '#/browse/';
-            if (window.location.hash !== newHash) {
-                history.pushState(null, '', newHash);
+            if (encodedPath) {
+                router.navigate(`/browse/path/${encodedPath}/`);
+            } else {
+                // Filepath root: a bare /browse/ would be read as the hierarchy
+                // (categories) root, so mark the files view explicitly.
+                this._updateViewUrl('files');
             }
         },
 
+        _updateHierarchyUrl() {
+            // Navigate through the router (not raw history.pushState) so the
+            // router's currentRoute.query stays authoritative. Otherwise back/
+            // forward navigation compares the new URL against a stale
+            // currentRoute and never fires propsChanged, leaving the previous
+            // level's items on screen. The post-navigation propsChanged is a
+            // no-op here because _applyTarget already recorded _appliedRoute to
+            // match this URL (see _reconcileRoute), so this does not double-load.
+            const { currentCategory, currentGenre, currentArtist, currentAlbum } = this.state;
+            const router = getRouter();
+            router.navigate('/browse/', {
+                category: currentCategory || null,
+                genre: currentGenre || null,
+                artist: currentArtist || null,
+                album: currentAlbum || null
+            });
+        },
+
+        // Update the URL for a "root" view (genres/artists/files) using an
+        // explicit ?view= marker. Encoding the tab in the URL (rather than a
+        // transient flag) keeps a genres/artists/files view distinguishable
+        // from a bare /browse/ (categories root) — so the URL echo of a tab
+        // click reconciles to a no-op instead of snapping back to Categories
+        // (A3), and the view survives reload / back-forward.
+        _updateViewUrl(view) {
+            const router = getRouter();
+            router.navigate('/browse/', { view });
+        },
+
         handleBreadcrumbClick(crumb) {
-            if (this.state.viewMode === 'filepath') {
-                // Navigate using router - propsChanged will handle loading
+            const { viewMode } = this.state;
+
+            if (viewMode === 'filepath') {
+                // Navigate using router - reconciliation will handle loading
                 this._navigateToFilePath(crumb.path);
                 return;
             }
 
-            const { level: targetLevel } = crumb;
-            this.state.level = targetLevel;
+            // Genres/Artists views only have their single root crumb; clicking
+            // it just reloads that view (don't fall through to the hierarchy
+            // reset, which would drop us to Categories).
+            if (viewMode === 'genres') {
+                this._applyTarget({ mode: 'genres' });
+                this._updateViewUrl('genres');
+                return;
+            }
+            if (viewMode === 'artists') {
+                this._applyTarget({ mode: 'artists' });
+                this._updateViewUrl('artists');
+                return;
+            }
+
+            const targetLevel = crumb.level;
+            const target = {
+                mode: 'hierarchy',
+                category: this.state.currentCategory,
+                genre: this.state.currentGenre,
+                artist: this.state.currentArtist,
+                album: this.state.currentAlbum
+            };
 
             // Reset lower levels
             if (targetLevel === 'category') {
-                this.state.currentCategory = null;
-                this.state.currentGenre = null;
-                this.state.currentArtist = null;
-                this.state.currentAlbum = null;
+                target.category = target.genre = target.artist = target.album = null;
             } else if (targetLevel === 'genre') {
-                this.state.currentGenre = null;
-                this.state.currentArtist = null;
-                this.state.currentAlbum = null;
+                target.genre = target.artist = target.album = null;
             } else if (targetLevel === 'artist') {
-                this.state.currentArtist = null;
-                this.state.currentAlbum = null;
+                target.artist = target.album = null;
             } else if (targetLevel === 'album') {
-                this.state.currentAlbum = null;
+                target.album = null;
             }
 
-            this.state.items = [];
-            this.state.cursor = null;
-            this.state.hasMore = true;
-            this.state.filterText = '';
-            this.state.totalCount = 0;
+            this._applyTarget(target);
             this._updateHierarchyUrl();
-            this.loadItems();
         },
 
         handleViewModeChange(mode) {
-            this.state.viewMode = mode;
-            this.state.items = [];
-            this.state.cursor = null;
-            this.state.hasMore = true;
-            this.state.filterText = '';
-            this.state.totalCount = 0;
-
+            // Set state AND update the URL. _applyTarget records _appliedRoute so
+            // the URL echo reconciles to a no-op; the ?view= marker keeps the
+            // genres/artists/files roots distinguishable from a bare /browse/.
             if (mode === 'hierarchy') {
-                this.state.level = 'category';
-                this.state.currentCategory = null;
-                this.state.currentGenre = null;
-                this.state.currentArtist = null;
-                this.state.currentAlbum = null;
-                this._updateHierarchyUrl();
-                this.loadItems();
+                this._applyTarget({ mode: 'hierarchy', category: null, genre: null, artist: null, album: null });
+                this._updateHierarchyUrl();  // all-null query → bare /browse/
             } else if (mode === 'genres') {
-                this.state.level = 'genre';
-                this.state.currentCategory = null;
-                this.state.currentGenre = null;
-                this.state.currentArtist = null;
-                this.state.currentAlbum = null;
-                this._updateHierarchyUrl();
-                this.loadAllGenres();
+                this._applyTarget({ mode: 'genres' });
+                this._updateViewUrl('genres');
             } else if (mode === 'artists') {
-                this.state.level = 'artists';
-                this.state.currentCategory = null;
-                this.state.currentGenre = null;
-                this.state.currentArtist = null;
-                this.state.currentAlbum = null;
-                this._updateHierarchyUrl();
-                this.loadArtists();
+                this._applyTarget({ mode: 'artists' });
+                this._updateViewUrl('artists');
             } else {
-                // Filepath mode - load directly, don't rely on router
-                this.state.currentPath = '/';
-                this._lastLoadedPath = '/';
-                this.loadFilePath();
+                // Filepath root
+                this._applyTarget({ mode: 'filepath', path: '/' });
+                this._updateViewUrl('files');
             }
         },
 
         async handlePlayAll() {
-            const { viewMode, currentCategory, currentGenre, currentArtist, currentAlbum, currentPath } = this.state;
+            const { viewMode, currentPath } = this.state;
 
             this.state.isLoading = true;
             try {
@@ -829,12 +957,7 @@ export default defineComponent('browse-page', {
                 if (viewMode === 'filepath') {
                     await player.addByPath(currentPath);
                 } else {
-                    await player.addByFilter({
-                        category: currentCategory,
-                        genre: this._apiValue(currentGenre, '[All Genres]'),
-                        artist: this._apiValue(currentArtist, '[All Artists]'),
-                        album: this._apiValue(currentAlbum, '[All Albums]')
-                    });
+                    await player.addByFilter(this._apiFilters());
                 }
             } catch (e) {
                 console.error('Failed to play all:', e);
@@ -844,24 +967,18 @@ export default defineComponent('browse-page', {
         },
 
         async handleShuffleAll() {
-            const { viewMode, currentCategory, currentGenre, currentArtist, currentAlbum, currentPath } = this.state;
+            const { viewMode, currentPath } = this.state;
 
             this.state.isLoading = true;
             try {
-                // Enable shuffle first
-                if (!player.state.shuffle) {
-                    player.toggleShuffle();
-                }
+                // Enable shuffle first (await: it persists play_mode, and we
+                // clear/refill the queue right after — don't race the writes)
+                await player.setShuffle(true);
                 await player.clearQueue();
                 if (viewMode === 'filepath') {
                     await player.addByPath(currentPath);
                 } else {
-                    await player.addByFilter({
-                        category: currentCategory,
-                        genre: this._apiValue(currentGenre, '[All Genres]'),
-                        artist: this._apiValue(currentArtist, '[All Artists]'),
-                        album: this._apiValue(currentAlbum, '[All Albums]')
-                    });
+                    await player.addByFilter(this._apiFilters());
                 }
             } catch (e) {
                 console.error('Failed to shuffle all:', e);
@@ -871,19 +988,14 @@ export default defineComponent('browse-page', {
         },
 
         async handleAddAllToQueue() {
-            const { viewMode, currentCategory, currentGenre, currentArtist, currentAlbum, currentPath } = this.state;
+            const { viewMode, currentPath } = this.state;
 
             this.state.isLoading = true;
             try {
                 if (viewMode === 'filepath') {
                     await player.addByPath(currentPath);
                 } else {
-                    await player.addByFilter({
-                        category: currentCategory,
-                        genre: this._apiValue(currentGenre, '[All Genres]'),
-                        artist: this._apiValue(currentArtist, '[All Artists]'),
-                        album: this._apiValue(currentAlbum, '[All Albums]')
-                    });
+                    await player.addByFilter(this._apiFilters());
                 }
             } catch (e) {
                 console.error('Failed to add all to queue:', e);
@@ -893,20 +1005,18 @@ export default defineComponent('browse-page', {
         },
 
         async handleStartRadio() {
-            const { viewMode, level, currentCategory, currentGenre, currentArtist, currentAlbum, currentPath } = this.state;
+            const { viewMode, currentPath } = this.state;
 
             let filter = null;
             if (viewMode === 'filepath') {
                 filter = `p:mt:${currentPath}`;
             } else {
+                const { category, genre, artist, album } = this._apiFilters();
                 const parts = [];
-                if (currentCategory) parts.push(`c:eq:${currentCategory}`);
-                const apiGenre = this._apiValue(currentGenre, '[All Genres]');
-                const apiArtist = this._apiValue(currentArtist, '[All Artists]');
-                const apiAlbum = this._apiValue(currentAlbum, '[All Albums]');
-                if (apiGenre) parts.push(`g:eq:${apiGenre}`);
-                if (apiArtist) parts.push(`a:eq:${apiArtist}`);
-                if (apiAlbum) parts.push(`l:eq:${apiAlbum}`);
+                if (category) parts.push(`c:eq:${category}`);
+                if (genre)    parts.push(`g:eq:${genre}`);
+                if (artist)   parts.push(`a:eq:${artist}`);
+                if (album)    parts.push(`l:eq:${album}`);
                 if (parts.length > 0) filter = parts.join(' AND ');
             }
 
@@ -914,9 +1024,10 @@ export default defineComponent('browse-page', {
         },
 
         async handleAddAllToPlaylist() {
-            // Set flag to indicate we're adding all songs, not just selection
+            // Set flag to indicate we're adding all songs, not just selection.
+            // Bypass openPlaylistPicker (which clears the flag for the selection-bar entry).
             this.state.addingAllToPlaylist = true;
-            await this.openPlaylistPicker();
+            await this._showPlaylistPicker();
         },
 
         handleAddToQueue(item, e) {
@@ -928,20 +1039,21 @@ export default defineComponent('browse-page', {
             e.stopPropagation();
             this.state.isLoading = true;
             try {
-                const { viewMode, level, currentCategory, currentGenre, currentArtist, currentPath } = this.state;
+                const { viewMode, level, currentPath } = this.state;
 
                 if (viewMode === 'filepath') {
                     // Add songs from this directory
                     const path = currentPath === '/' ? '/' + item.name : currentPath + '/' + item.name;
                     await player.addByPath(path);
                 } else {
-                    // Add songs matching this hierarchy item
-                    await player.addByFilter({
-                        category: level === 'category' ? item.name : currentCategory,
-                        genre: level === 'genre' ? item.name : this._apiValue(currentGenre, '[All Genres]'),
-                        artist: level === 'artist' ? item.name : this._apiValue(currentArtist, '[All Artists]'),
-                        album: level === 'album' ? item.name : null
-                    });
+                    // Override the level we're clicking into; deeper levels are
+                    // null in state already so _apiFilters fills them correctly.
+                    const overrides = {};
+                    if (level === 'category')   overrides.category = item.name;
+                    else if (level === 'genre') overrides.genre    = item.name;
+                    else if (level === 'artist') overrides.artist  = item.name;
+                    else if (level === 'album') overrides.album    = item.name;
+                    await player.addByFilter(this._apiFilters(overrides));
                 }
             } catch (e) {
                 console.error('Failed to add folder to queue:', e);
@@ -1211,13 +1323,31 @@ export default defineComponent('browse-page', {
             if (this.isSelected(item)) {
                 this.state.selectedSongs = this.state.selectedSongs.filter(s => s.uuid !== item.uuid);
             } else {
-                this.state.selectedSongs = [...this.state.selectedSongs, { uuid: item.uuid, title: item.title }];
+                // Store the full song so navigating away doesn't strand it.
+                this.state.selectedSongs = [...this.state.selectedSongs, item];
             }
         },
 
-        selectAll() {
-            const songs = this.getFilteredItems().filter(item => item.uuid);
-            this.state.selectedSongs = songs.map(s => ({ uuid: s.uuid, title: s.title }));
+        async selectAll() {
+            // If everything is loaded (or the user has narrowed the view with a
+            // text filter), select what's visible. Otherwise fetch the full set
+            // — sparse-array placeholders would silently drop unloaded songs.
+            const hasFilter = this.state.filterText.trim().length > 0;
+            const allLoaded = !this.state.hasMore
+                && !this._backgroundLoadingActive
+                && !this.state.items.some(i => i == null);
+
+            if (hasFilter || allLoaded) {
+                this.state.selectedSongs = this.getFilteredItems().filter(item => item && item.uuid);
+                return;
+            }
+
+            try {
+                this.state.selectedSongs = await this._getAllSongsFromView();
+            } catch (e) {
+                console.error('selectAll: failed to fetch full song list, falling back to loaded items:', e);
+                this.state.selectedSongs = this.getFilteredItems().filter(item => item && item.uuid);
+            }
         },
 
         clearSelection() {
@@ -1228,19 +1358,18 @@ export default defineComponent('browse-page', {
             const songs = this.state.selectedSongs;
             if (songs.length === 0) return;
 
-            // Get full song objects from items for queue
-            const items = this.getFilteredItems();
-            const fullSongs = songs
-                .map(s => items.find(item => item.uuid === s.uuid))
-                .filter(Boolean);
-
-            if (fullSongs.length > 0) {
-                await player.addToQueue(fullSongs, false);
-            }
+            await player.addToQueue(songs, false);
             this.clearSelection();
         },
 
         async openPlaylistPicker() {
+            // Direct entry from the selection bar — make sure a stale flag from
+            // a prior "Add All" session doesn't redirect us into the all-songs path.
+            this.state.addingAllToPlaylist = false;
+            await this._showPlaylistPicker();
+        },
+
+        async _showPlaylistPicker() {
             // Load playlists if not already loaded
             if (this.state.userPlaylists.length === 0) {
                 try {
@@ -1259,19 +1388,17 @@ export default defineComponent('browse-page', {
         },
 
         async addSelectedToPlaylist(playlistId) {
+            const wasAddingAll = this.state.addingAllToPlaylist;
             this.state.addingToPlaylist = true;
             try {
                 let songs;
 
-                if (this.state.addingAllToPlaylist) {
+                if (wasAddingAll) {
                     // Adding all songs from current view (full objects)
                     songs = await this._getAllSongsFromView();
                 } else {
                     // Adding selected songs only (already full objects)
-                    if (this.state.selectedSongs.length === 0) {
-                        this.state.addingToPlaylist = false;
-                        return;
-                    }
+                    if (this.state.selectedSongs.length === 0) return;
                     songs = this.state.selectedSongs;
                 }
 
@@ -1287,13 +1414,13 @@ export default defineComponent('browse-page', {
                 this.state.showPlaylistPicker = false;
                 this.state.selectionMode = false;
                 this.state.selectedSongs = [];
-                this.state.addingAllToPlaylist = false;
             } catch (e) {
                 console.error('Failed to add songs to playlist:', e);
                 const toast = document.querySelector('cl-toast');
                 if (toast) toast.show({ severity: 'error', summary: 'Error', detail: 'Failed to add songs to playlist' });
             } finally {
                 this.state.addingToPlaylist = false;
+                this.state.addingAllToPlaylist = false;
             }
         },
 
@@ -1302,7 +1429,7 @@ export default defineComponent('browse-page', {
          * Used for adding all songs to a playlist (returns full song objects for metadata caching).
          */
         async _getAllSongsFromView() {
-            const { viewMode, currentCategory, currentGenre, currentArtist, currentAlbum, currentPath } = this.state;
+            const { viewMode, currentPath } = this.state;
             const allSongs = [];
             let cursor = null;
 
@@ -1315,16 +1442,10 @@ export default defineComponent('browse-page', {
                     cursor = result.nextCursor || null;
                 } while (cursor);
             } else {
-                // Fetch all songs by filter
+                // Fetch all songs by filter (translates [All Genres]/[All Artists] to null)
+                const filters = this._apiFilters();
                 do {
-                    const result = await songsApi.byFilter({
-                        category: currentCategory,
-                        genre: currentGenre,
-                        artist: currentArtist,
-                        album: currentAlbum,
-                        cursor,
-                        limit: 500
-                    });
+                    const result = await songsApi.byFilter({ ...filters, cursor, limit: 500 });
                     const songs = result.items || result.songs || [];
                     allSongs.push(...songs);
                     cursor = result.nextCursor || null;
@@ -1403,9 +1524,7 @@ export default defineComponent('browse-page', {
 
         // Download selected songs
         async downloadSelected() {
-            const allSongs = this.getFilteredItems().filter(item => item && item.uuid);
-            const selectedUuids = new Set(this.state.selectedSongs.map(s => s.uuid));
-            const songs = allSongs.filter(s => selectedUuids.has(s.uuid));
+            const songs = this.state.selectedSongs.filter(item => item && item.uuid);
 
             // Filter out already offline songs first
             const notOffline = songs.filter(s =>
@@ -1851,7 +1970,7 @@ export default defineComponent('browse-page', {
                                             </button>
                                         `)}
                                     </div>
-                                `, item => item.uuid || `${item.type}-${item.name}`)}
+                                `, item => item.uuid || `${level}-${item.type}-${item.name}`)}
                             </div>
 
                             ${when(this.state.hasMore && !filterText, html`

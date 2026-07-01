@@ -74,10 +74,9 @@ export default defineComponent('visualizer-page', {
             this._shell.style.setProperty('--shell-content-padding-bottom', '0');
         }
 
-        // Wait for next frame to ensure refs are available
-        await new Promise(r => requestAnimationFrame(r));
-        await this._initVisualizer();
-        this._startRenderLoop();
+        // Register removable listeners BEFORE the first await so navigating away
+        // mid-mount can't register them post-unmount and leak them permanently
+        // (unmounted() removes each of these symmetrically).
 
         // Handle resize
         this._resizeHandler = () => this._handleResize();
@@ -89,14 +88,23 @@ export default defineComponent('visualizer-page', {
         };
         document.addEventListener('fullscreenchange', this._fullscreenHandler);
 
-        // Request screen wake lock to prevent phone sleeping during visualizer
-        this._requestWakeLock();
+        // Re-request wake lock when the tab becomes visible again
         this._visibilityHandler = () => {
             if (document.visibilityState === 'visible') {
                 this._requestWakeLock();
             }
         };
         document.addEventListener('visibilitychange', this._visibilityHandler);
+
+        // Request screen wake lock to prevent phone sleeping during visualizer
+        this._requestWakeLock();
+
+        // Wait for next frame to ensure refs are available
+        await new Promise(r => requestAnimationFrame(r));
+        if (!this._isMounted) return;  // Unmounted during the frame wait
+        await this._initVisualizer();
+        if (!this._isMounted) return;  // Unmounted during init - don't start the rAF loop
+        this._startRenderLoop();
     },
 
     unmounted() {
@@ -130,6 +138,13 @@ export default defineComponent('visualizer-page', {
         // Always remove the analyser when leaving visualizer to save CPU
         // (FFT calculations are expensive even when not rendering)
         player.removeAnalyser();
+
+        // Release the visualizer instance so its WebGL context/analyser can be GC'd.
+        // (An init that resolved after unmount is already blocked by _isMounted guards
+        // in _initVisualizer, so nothing recreates these afterwards.)
+        this._visualizer = null;
+        this._presets = null;
+        this._analyser = null;
 
         // Check if low latency is always enabled in settings
         let lowLatencyAlways = false;
@@ -181,6 +196,7 @@ export default defineComponent('visualizer-page', {
                     import(BUTTERCHURN_PRESETS_URL),
                     import(BUTTERCHURN_PRESET_META_URL)
                 ]);
+                if (!this._isMounted) return;  // Unmounted during dynamic imports
 
                 // Get butterchurn from ES module default export
                 const butterchurn = butterchurnModule.default || butterchurnModule;
@@ -213,7 +229,9 @@ export default defineComponent('visualizer-page', {
                 // Switch to low-latency mode for synchronized visualizer
                 // This recreates the audio element with latencyHint: 'interactive'
                 // and returns the analyser node
-                this._analyser = await player.switchLatencyMode('interactive');
+                const analyser = await player.switchLatencyMode('interactive');
+                if (!this._isMounted) return;  // Unmounted during latency switch - don't retain analyser
+                this._analyser = analyser;
 
                 const audioContext = player.getAudioContext();
 
@@ -231,6 +249,7 @@ export default defineComponent('visualizer-page', {
                 // Ensure audio context is running (may be suspended without user gesture)
                 if (audioContext.state === 'suspended') {
                     await audioContext.resume();
+                    if (!this._isMounted) return;  // Unmounted while resuming audio context
                 }
 
                 // Set up 2D canvas context for spectrogram/waveform modes
@@ -483,8 +502,17 @@ export default defineComponent('visualizer-page', {
             let lastToolbarUpdate = 0;
             // Track current song to detect changes
             this._lastSongUuid = playerStore.state.currentSong?.uuid || null;
+            // Flag lets the loop self-terminate; cleared by _stopRenderLoop()/unmounted()
+            this._renderLoopActive = true;
 
             const render = (time) => {
+                // Self-terminate if the component unmounted or the loop was stopped,
+                // so a loop started right before unmount can't run forever in the background
+                if (!this._renderLoopActive || !this._isMounted) {
+                    this._animationFrame = null;
+                    return;
+                }
+
                 // Render based on current mode at ~60fps
                 if (time - lastTime >= 16) {
                     switch (this.state.mode) {
@@ -767,6 +795,8 @@ export default defineComponent('visualizer-page', {
         },
 
         _stopRenderLoop() {
+            // Clear the flag first so any already-scheduled frame self-terminates
+            this._renderLoopActive = false;
             if (this._animationFrame) {
                 cancelAnimationFrame(this._animationFrame);
                 this._animationFrame = null;

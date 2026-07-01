@@ -36,6 +36,7 @@ export default defineComponent('playlists-page', {
             playlistSongs: untracked([]),  // Large list - untracked for performance
             playlistVersion: 0,  // Bumped on reorder to invalidate memoEach cache
             isLoading: false,
+            detailError: null,      // Error message for detail/shared load failures
             isAuthenticated: false,
             showCreateDialog: false,
             showShareDialog: false,
@@ -86,9 +87,28 @@ export default defineComponent('playlists-page', {
     },
 
     async mounted() {
+        this._isMounted = true;
+
+        // Register the listener BEFORE any awaits so a fast unmount during the async
+        // work below doesn't cause the listener to register after unmount and leak.
+        this._playlistsChangedHandler = () => this.loadPlaylists(true);
+        window.addEventListener('playlists-changed', this._playlistsChangedHandler);
+
+        // Honor deep-link params synchronously so a direct link to /playlists/5/ shows
+        // the detail (or its loading state) immediately instead of flashing the list.
+        const { id, token } = this.props.params || {};
+        if (token) {
+            this.state.view = 'shared';
+            this.loadSharedPlaylist(token);  // byToken doesn't need the playlist list
+        } else if (id) {
+            this.state.view = 'detail';
+            this.state.isLoading = true;  // render the loading indicator right away
+        }
+
         // Check auth
         try {
             const result = await auth.checkUser();
+            if (!this._isMounted) return;
             this.state.isAuthenticated = result.authenticated;
         } catch (e) {
             console.error('Auth check failed:', e);
@@ -97,31 +117,25 @@ export default defineComponent('playlists-page', {
         // Check AI status
         try {
             const aiStatus = await ai.status();
+            if (!this._isMounted) return;
             this.state.aiEnabled = aiStatus.enabled && aiStatus.status === 'ok';
         } catch (e) {
             console.error('AI status check failed:', e);
             this.state.aiEnabled = false;
         }
 
-        // Listen for playlist changes from other components
-        this._playlistsChangedHandler = () => this.loadPlaylists(true);
-        window.addEventListener('playlists-changed', this._playlistsChangedHandler);
-
         // Always load playlists first with force refresh (catches playlists created on other devices)
         await this.loadPlaylists(true);
+        if (!this._isMounted) return;
 
-        // Determine view from params
-        const { id, token } = this.props.params || {};
-        if (token) {
-            this.state.view = 'shared';
-            this.loadSharedPlaylist(token);
-        } else if (id) {
-            this.state.view = 'detail';
+        // Now that playlist metadata is available, load the deep-linked detail
+        if (!token && id) {
             this.loadPlaylistDetail(id);
         }
     },
 
     unmounted() {
+        this._isMounted = false;
         if (this._intersectionObserver) {
             this._intersectionObserver.disconnect();
         }
@@ -149,6 +163,7 @@ export default defineComponent('playlists-page', {
                 // Ensure playlists are loaded for playlist info
                 if (this.state.myPlaylists.length === 0) {
                     await this.loadPlaylists(true);
+                    if (!this._isMounted) return;
                 }
                 this.state.view = 'detail';
                 this.loadPlaylistDetail(id);
@@ -377,16 +392,20 @@ export default defineComponent('playlists-page', {
         },
 
         async loadPlaylists(forceRefresh = false) {
+            // Request-ID guard: concurrent loads (mount, playlists-changed, propsChanged)
+            // must not let a slower response overwrite a newer one.
+            const requestId = this._listRequestId = (this._listRequestId || 0) + 1;
             this.state.isLoading = true;
             try {
                 if (this.state.isAuthenticated) {
                     const result = await playlistsApi.list(forceRefresh);
+                    if (this._listRequestId !== requestId) return;  // Stale
                     this.state.myPlaylists = result.items || [];
                 }
             } catch (e) {
                 console.error('Failed to load playlists:', e);
             } finally {
-                this.state.isLoading = false;
+                if (this._listRequestId === requestId) this.state.isLoading = false;
             }
         },
 
@@ -406,7 +425,12 @@ export default defineComponent('playlists-page', {
         },
 
         async loadPlaylistDetail(id) {
+            // Request-ID guard shared with loadSharedPlaylist (both fill the same detail
+            // view). Navigating /playlists/5/ → /playlists/7/ quickly must not let the
+            // slower response overwrite the newer playlist's data.
+            const requestId = this._detailRequestId = (this._detailRequestId || 0) + 1;
             this.state.isLoading = true;
+            this.state.detailError = null;
             this.state.cursor = null;
             this.state.visibleStart = 0;
             this.state.visibleEnd = 50;
@@ -416,6 +440,7 @@ export default defineComponent('playlists-page', {
             try {
                 // Get first batch with totalCount
                 const result = await playlistsApi.getSongs(id, { limit: 100 });
+                if (this._detailRequestId !== requestId) return;  // Stale
                 const totalCount = result.totalCount || result.items.length;
 
                 // Create sparse array and fill first batch
@@ -437,6 +462,7 @@ export default defineComponent('playlists-page', {
                 if (!found && this.state.publicPlaylists.length === 0) {
                     try {
                         const publicResult = await playlistsApi.public({ limit: 50 });
+                        if (this._detailRequestId !== requestId) return;  // Stale
                         this.state.publicPlaylists = publicResult.items || [];
                         found = this.state.publicPlaylists.find(p => p.id == id);
                     } catch (e) {
@@ -459,26 +485,33 @@ export default defineComponent('playlists-page', {
                     this._loadRemainingInBackground(id, result.nextCursor);
                 }
             } catch (e) {
+                if (this._detailRequestId !== requestId) return;  // Stale
                 console.error('Failed to load playlist:', e);
+                this.state.detailError = "Couldn't load playlist — check your connection.";
             } finally {
-                this.state.isLoading = false;
+                if (this._detailRequestId === requestId) this.state.isLoading = false;
             }
         },
 
         async loadSharedPlaylist(token) {
+            // Shares the detail request-ID counter with loadPlaylistDetail (same view).
+            const requestId = this._detailRequestId = (this._detailRequestId || 0) + 1;
             this.state.isLoading = true;
+            this.state.detailError = null;
             this.state.cursor = null;
             this.state.visibleStart = 0;
             this.state.visibleEnd = 50;
             try {
                 const playlist = await playlistsApi.byToken(token);
+                if (this._detailRequestId !== requestId) return;  // Stale
                 if (playlist.error) {
-                    console.error('Playlist not found');
+                    this.state.detailError = 'This shared playlist link is invalid or has expired.';
                     return;
                 }
                 this.state.currentPlaylist = playlist;
 
                 const result = await playlistsApi.getSongs(playlist.id, { limit: 100 });
+                if (this._detailRequestId !== requestId) return;  // Stale
                 const totalCount = result.totalCount || result.items.length;
 
                 // Create sparse array
@@ -498,9 +531,11 @@ export default defineComponent('playlists-page', {
                     this._loadRemainingInBackground(playlist.id, result.nextCursor);
                 }
             } catch (e) {
+                if (this._detailRequestId !== requestId) return;  // Stale
                 console.error('Failed to load shared playlist:', e);
+                this.state.detailError = 'This shared playlist link is invalid or has expired.';
             } finally {
-                this.state.isLoading = false;
+                if (this._detailRequestId === requestId) this.state.isLoading = false;
             }
         },
 
@@ -541,6 +576,7 @@ export default defineComponent('playlists-page', {
         handleBackToList() {
             this.state.view = 'list';
             this.state.currentPlaylist = null;
+            this.state.detailError = null;
             this.state.playlistSongs = [];
             // Clear selection when leaving detail view
             this.state.selectionMode = false;
@@ -1488,7 +1524,7 @@ export default defineComponent('playlists-page', {
 
     template() {
         const { view, tab, myPlaylists, publicPlaylists, currentPlaylist, playlistSongs,
-                isLoading, isAuthenticated, showCreateDialog, showShareDialog, shareToken,
+                isLoading, detailError, isAuthenticated, showCreateDialog, showShareDialog, shareToken,
                 newPlaylistName, newPlaylistDesc, newPlaylistPublic, hasMore, totalCount,
                 visibleStart, visibleEnd,
                 showAddSongs, searchQuery, searchResults, searchLoading,
@@ -1801,6 +1837,15 @@ export default defineComponent('playlists-page', {
                             </div>
                         </div>
                     `)}
+                `, () => html`
+                    <!-- No playlist loaded yet: show the error, otherwise the load is
+                         still in flight (or superseded by a newer one) so show loading
+                         instead of a blank page. -->
+                    ${when(detailError, () => html`
+                        <div class="detail-error">${detailError}</div>
+                    `, () => html`
+                        <div class="loading"><cl-spinner></cl-spinner></div>
+                    `)}
                 `)}
 
                 <!-- Share Dialog -->
@@ -1981,6 +2026,13 @@ export default defineComponent('playlists-page', {
             text-align: center;
             padding: 3rem;
             color: var(--text-secondary, #a0a0a0);
+        }
+
+        /* Detail load error (invalid share token, offline fetch, etc.) */
+        .detail-error {
+            text-align: center;
+            padding: 3rem 1.5rem;
+            color: var(--danger-300, #f5a5a5);
         }
 
         /* Playlist List */

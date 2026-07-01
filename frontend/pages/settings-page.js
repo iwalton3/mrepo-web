@@ -129,8 +129,13 @@ export default defineComponent('settings-page', {
                     const defaultAlgo = this.state.aiEnabled ? 'clap' : 'sca';
 
                     this.state.prefs = {
-                        shuffle: result.shuffle || false,
-                        repeatMode: result.repeat_mode || 'none',
+                        // Shuffle/repeat are the LIVE playback mode, owned by the
+                        // player store (persisted server-side as play_mode). Read
+                        // from the player — not user_preferences.shuffle/repeat_mode,
+                        // which is a separate column the player never reads, so the
+                        // two used to drift and the setting appeared to "not sync".
+                        shuffle: player.state.shuffle,
+                        repeatMode: player.state.repeatMode,
                         radioEopp: result.radio_eopp !== false,
                         radioAlgorithm: result.radio_algorithm || defaultAlgo,
                         replayGainMode: result.replay_gain_mode || 'off',
@@ -157,8 +162,10 @@ export default defineComponent('settings-page', {
 
             try {
                 await preferences.set({
-                    shuffle: this.state.prefs.shuffle,
-                    repeatMode: this.state.prefs.repeatMode,
+                    // shuffle/repeatMode are applied immediately via the player
+                    // store (handleShuffleChange/handleRepeatChange) and persisted
+                    // as play_mode, so they are intentionally NOT sent here — that
+                    // is the single source of truth.
                     radioEopp: this.state.prefs.radioEopp,
                     radioAlgorithm: this.state.prefs.radioAlgorithm,
                     replayGainMode: this.state.prefs.replayGainMode,
@@ -179,12 +186,19 @@ export default defineComponent('settings-page', {
             }
         },
 
-        handleShuffleChange(e) {
-            this.state.prefs.shuffle = e.target.checked;
+        async handleShuffleChange(e) {
+            // Apply through the player store (single source of truth → play_mode).
+            await player.setShuffle(e.target.checked);
+            // Reflect the player's resolved state: shuffle and repeat are mutually
+            // exclusive, so enabling one may clear the other.
+            this.state.prefs.shuffle = player.state.shuffle;
+            this.state.prefs.repeatMode = player.state.repeatMode;
         },
 
-        handleRepeatChange(e) {
-            this.state.prefs.repeatMode = e.target.value;
+        async handleRepeatChange(e) {
+            await player.setRepeatMode(e.target.value);
+            this.state.prefs.shuffle = player.state.shuffle;
+            this.state.prefs.repeatMode = player.state.repeatMode;
         },
 
         handleEoppChange(e) {

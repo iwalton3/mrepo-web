@@ -8,7 +8,7 @@
  * - Uses player's audio pipeline (EQ, crossfeed, etc.)
  */
 
-import { defineComponent, html, when } from '../../../lib/framework.js';
+import { defineComponent, html, when } from '../lib/framework.js';
 import { songs as songsApi, getStreamUrl } from '../offline/offline-api.js';
 import { getAudioUrl } from '../offline/offline-audio.js';
 import { player } from '../stores/player-store.js';
@@ -1153,6 +1153,32 @@ export default defineComponent('loopsong-page', {
         await this._loadSong(uuid);
     },
 
+    propsChanged(prop, newValue) {
+        // The router reuses this element for /loopsong/A/ → /loopsong/B/ and updates
+        // params WITHOUT remounting, so we must react to uuid changes here or song A
+        // keeps playing under B's URL. Use newValue directly, not this.props (may be stale).
+        if (prop !== 'params') return;
+
+        const uuid = /** @type {{uuid?: string}} */ (newValue)?.uuid;
+        // Skip if unchanged or already the song we're loading/playing
+        if (!uuid || uuid === this._currentUuid) return;
+
+        // Tear down the previous song's playback/loop state before loading the new one
+        this._teardownSong();
+
+        // Reset per-song reactive state so stale info doesn't flash under the new URL
+        this.state.song = null;
+        this.state.error = null;
+        this.state.isPlaying = false;
+        this.state.currentTime = 0;
+        this.state.duration = 0;
+        this.state.loopCount = 0;
+        this.state.analyzing = false;
+
+        // _loadSong bumps _loadRequestId, so a rapid A→B→C sequence can't interleave
+        this._loadSong(uuid);
+    },
+
     unmounted() {
         // Stop the looper
         if (this._looper) {
@@ -1179,12 +1205,20 @@ export default defineComponent('loopsong-page', {
 
     methods: {
         async _loadSong(uuid) {
+            // Mark this uuid as the current target and stamp the load so a newer
+            // navigation started mid-flight wins (rapid A→B→C can't interleave).
+            this._currentUuid = uuid;
+            // Nullish-safe bump so it works even if _loadSong runs before mounted()
+            // (propsChanged can fire first for property-delivered params).
+            const requestId = this._loadRequestId = (this._loadRequestId || 0) + 1;
+
             this.state.loading = true;
             this.state.error = null;
 
             try {
                 // Fetch song metadata
                 const song = await songsApi.get(uuid);
+                if (this._loadRequestId !== requestId) return;  // Stale - newer load started
                 if (!song || song.error) {
                     this.state.error = song?.error || 'Song not found';
                     this.state.loading = false;
@@ -1196,6 +1230,7 @@ export default defineComponent('loopsong-page', {
 
                 // Get audio URL (try offline first, then streaming)
                 let audioUrl = await getAudioUrl(uuid);
+                if (this._loadRequestId !== requestId) return;  // Stale - newer load started
                 if (!audioUrl) {
                     audioUrl = getStreamUrl(uuid, song.type);
                 }
@@ -1203,10 +1238,40 @@ export default defineComponent('loopsong-page', {
                 this._audioUrl = audioUrl;
                 this.state.loading = false;
             } catch (e) {
+                if (this._loadRequestId !== requestId) return;  // Stale - ignore late failure
                 console.error('Failed to load song:', e);
                 this.state.error = `Failed to load song: ${e.message}`;
                 this.state.loading = false;
             }
+        },
+
+        /**
+         * Tear down the current song's playback/loop resources so a new uuid starts
+         * clean. Does NOT close the shared audio context (owned by the player and
+         * reused across songs); unmounted() handles full teardown.
+         */
+        _teardownSong() {
+            if (this._looper) {
+                this._looper.stop();
+                this._looper = null;
+            }
+            if (this._analysisAudio1) {
+                this._analysisAudio1.pause();
+                this._analysisAudio1.src = '';
+                this._analysisAudio1 = null;
+            }
+            if (this._analysisAudio2) {
+                this._analysisAudio2.pause();
+                this._analysisAudio2.src = '';
+                this._analysisAudio2 = null;
+            }
+            if (this._timeUpdateInterval) {
+                clearInterval(this._timeUpdateInterval);
+                this._timeUpdateInterval = null;
+            }
+            // Drop the decoded buffer/url so the next play re-inits the pipeline
+            this._audioBuffer = null;
+            this._audioUrl = null;
         },
 
         async _initAudioPipeline() {
