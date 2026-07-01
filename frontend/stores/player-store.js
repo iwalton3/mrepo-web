@@ -296,6 +296,10 @@ export const playerStore = createStore({
 
     // Server sync state
     serverLoaded: false,
+    // True once the initial queue load/restore attempt has finished (success,
+    // failure, or temp-queue restore) - UI uses this to distinguish "still
+    // loading" from a genuinely empty queue
+    queueLoaded: false,
 
     // EQ settings (device-specific, loaded from localStorage)
     eqEnabled: eqSettings?.enabled || false,
@@ -403,6 +407,14 @@ class AudioController {
         this._noiseHighFilter = null;     // BiquadFilterNode highshelf for treble control
         this._noiseMerger = null;         // GainNode to merge noise with music
 
+        // Track-advance overlap guard (see next()/previous()/play()):
+        // _advanceSeq is a monotonic token - stale async continuations bail
+        // out when a newer advance has started. _advanceActive counts
+        // in-flight advances so the 'ended' handler doesn't double-advance
+        // while a user-initiated next() is mid-network-call.
+        this._advanceSeq = 0;
+        this._advanceActive = 0;
+
         // Set up event listeners on BOTH audio elements once (not per-swap)
         // Guards in handlers ensure only active element updates state
         this._setupEventListeners(this._audioElements[0]);
@@ -452,6 +464,7 @@ class AudioController {
                 console.log('[TempQueue] Restored temp queue from previous session');
                 this._applyReplayGain();
                 this.store.state.serverLoaded = true;
+                this.store.state.queueLoaded = true;
                 this._initAudioPipelineOnStartup();
                 return;
             }
@@ -474,8 +487,20 @@ class AudioController {
             ]);
 
             if (!queueResult.error) {
-                this.store.state.queue = queueResult.items || [];
-                this.store.state.queueIndex = queueResult.queueIndex || 0;
+                // The user may have started playback while this fetch was in
+                // flight (slow connection + quick click). In that case the
+                // audio element is live - adopting the server's song/index/
+                // time would leave the UI showing one song while another
+                // plays. Preserve live playback and only re-anchor the index.
+                const wasPlaying = this.store.state.isPlaying || this.store.state.isLoading;
+                const playingUuid = wasPlaying ? this.store.state.currentSong?.uuid : null;
+
+                const items = queueResult.items || [];
+                this.store.state.queue = items;
+                // Clamp - a stale/foreign server index must not point past the queue
+                const serverIndex = items.length > 0
+                    ? Math.max(0, Math.min(queueResult.queueIndex || 0, items.length - 1))
+                    : 0;
                 this.store.state.scaEnabled = queueResult.scaEnabled || false;
                 this.store.state.queueVersion++;  // Trigger re-render
 
@@ -495,10 +520,15 @@ class AudioController {
                     this.store.state.repeatMode = 'none';
                 }
 
-                // Always use server's queueIndex for currentSong
-                if (this.store.state.queue.length > 0) {
-                    const serverIndex = this.store.state.queueIndex;
-                    const serverSong = this.store.state.queue[serverIndex];
+                if (playingUuid) {
+                    // Re-anchor the index to the playing song if it's in the
+                    // fetched queue; never touch currentSong/currentTime while
+                    // audio is live
+                    const anchored = this._findNearestOccurrence(items, playingUuid, this.store.state.queueIndex);
+                    this.store.state.queueIndex = anchored >= 0 ? anchored : serverIndex;
+                } else if (items.length > 0) {
+                    this.store.state.queueIndex = serverIndex;
+                    const serverSong = items[serverIndex];
                     if (serverSong) {
                         this.store.state.currentSong = { ...serverSong };
                         if (local?.currentSongUuid === serverSong.uuid && local?.currentTime > 0) {
@@ -506,6 +536,7 @@ class AudioController {
                         }
                     }
                 } else {
+                    this.store.state.queueIndex = 0;
                     this.store.state.currentSong = null;
                 }
             } else {
@@ -528,8 +559,29 @@ class AudioController {
             console.error('Failed to load queue from server:', e);
         }
 
+        // Mark the initial load attempt finished regardless of outcome so the
+        // UI stops showing a loading state
+        this.store.state.queueLoaded = true;
+
         // Initialize audio pipeline regardless of server load success (effects are local-only)
         this._initAudioPipelineOnStartup();
+    }
+
+    /**
+     * Find the occurrence of a song uuid nearest to a reference index.
+     * Handles duplicate songs correctly (nearest, not first, occurrence).
+     * @returns {number} index, or -1 if the uuid is not in the queue
+     */
+    _findNearestOccurrence(queue, uuid, referenceIndex) {
+        let nearest = -1;
+        let best = Infinity;
+        for (let i = 0; i < queue.length; i++) {
+            if (queue[i].uuid === uuid) {
+                const d = Math.abs(i - referenceIndex);
+                if (d < best) { best = d; nearest = i; }
+            }
+        }
+        return nearest;
     }
 
     /**
@@ -755,8 +807,16 @@ class AudioController {
                         this.store.state.queueIndex = nearestIndex;
                     } else {
                         // Current song no longer in queue - use server's index
-                        this.store.state.queueIndex = result.queueIndex || 0;
-                        this.store.state.currentSong = queue[this.store.state.queueIndex] || null;
+                        // (clamped). We're in the shouldPreserveLocal branch,
+                        // which usually means audio is LIVE - replacing
+                        // currentSong would show one song while another plays,
+                        // so only adopt the server's song when not playing.
+                        this.store.state.queueIndex = queue.length > 0
+                            ? Math.max(0, Math.min(result.queueIndex || 0, queue.length - 1))
+                            : 0;
+                        if (!wasPlaying) {
+                            this.store.state.currentSong = queue[this.store.state.queueIndex] || null;
+                        }
                     }
                 }
 
@@ -920,13 +980,26 @@ class AudioController {
             return;
         }
 
+        const wasPlaying = this.store.state.isPlaying;
+        const currentUuid = this.store.state.currentSong?.uuid;
+        const oldIndex = this.store.state.queueIndex;
+
         // Update queue with restored items (full metadata)
         this.store.state.queue = items;
         this.store.state.queueVersion++;  // Trigger re-render
 
-        // Update queueIndex if provided
-        if (queueIndex !== undefined) {
-            this.store.state.queueIndex = queueIndex;
+        // Adopt the server index, but clamped into range, and never yank the
+        // position out from under live playback - if this device is playing,
+        // re-anchor to the playing song like _refreshQueueOnFocus does
+        // (another device's seq may have won on the server while offline)
+        const clamped = items.length > 0
+            ? Math.max(0, Math.min(queueIndex !== undefined ? queueIndex : oldIndex, items.length - 1))
+            : 0;
+        if (wasPlaying && currentUuid) {
+            const anchored = this._findNearestOccurrence(items, currentUuid, oldIndex);
+            this.store.state.queueIndex = anchored >= 0 ? anchored : clamped;
+        } else {
+            this.store.state.queueIndex = clamped;
         }
 
         // Update currentSong metadata if it was incomplete
@@ -1030,6 +1103,15 @@ class AudioController {
             return;
         }
 
+        // If a user-initiated advance is already mid-flight (next() awaiting
+        // its network sync), the old track firing 'ended' must not trigger a
+        // SECOND advance - the in-flight one already handles the transition.
+        // Without this the queue jumps two songs (index N+1 then N+2) and the
+        // interleaved play() calls can leave audio and UI on different songs.
+        if (this._advanceActive > 0) {
+            return;
+        }
+
         // Record play in history (fire-and-forget, don't block playback)
         const currentSong = this.store.state.currentSong;
         if (currentSong) {
@@ -1076,6 +1158,12 @@ class AudioController {
             return;
         }
 
+        // If an advance is already in flight, its play() will resolve the
+        // error state - don't pile a second advance on top
+        if (this._advanceActive > 0) {
+            return;
+        }
+
         // Try to skip to the next song
         console.log(`Playback error, skipping to next (error ${this._consecutiveErrors}/${maxErrors})`);
         this.next({ userInitiated: false }).catch(err => {
@@ -1086,19 +1174,37 @@ class AudioController {
     }
 
     /**
+     * Persist the queue index to the server (or the temp-queue store when in
+     * temp mode). Fire-and-forget - playback must not block on the network.
+     */
+    _persistQueueIndex(index) {
+        if (this.store.state.tempQueueMode) {
+            this._saveTempQueueState().catch(e => console.error('Failed to save temp queue state:', e));
+        } else {
+            queueApi.setIndex(index).catch(e => console.error('Failed to sync queue index:', e));
+        }
+    }
+
+    /**
      * Play a song. If unavailable offline, automatically skips to next available song.
      * @param {Object} song - Song to play
      * @param {number} [skipCount=0] - Internal counter to prevent infinite skip loops
+     * @param {number|null} [opToken=null] - Advance token from a next()/previous()
+     *   caller; direct calls claim their own so they supersede in-flight advances
      */
-    async play(song, skipCount = 0) {
+    async play(song, skipCount = 0, opToken = null) {
         // Check sleep timer between songs - if expired, don't start next song
         if (this._checkSleepTimerAndMaybeSleep()) {
             return;
         }
 
+        const op = opToken ?? ++this._advanceSeq;
+
         this.store.state.isLoading = true;
         this.store.state.error = null;
-        this.store.state.currentSong = song;
+        // Copy - assigning the queue's own (untracked) object would let any
+        // currentSong mutation silently edit the queue item
+        this.store.state.currentSong = { ...song };
         this.store.state.currentTime = 0;
         this.store.state.duration = song.duration_seconds || 0;
 
@@ -1107,6 +1213,7 @@ class AudioController {
         if (offlineStore.state.workOfflineMode || !offlineStore.state.isOnline) {
             // In offline mode, only use cached audio
             audioUrl = await getAudioUrl(song.uuid);
+            if (op !== this._advanceSeq) return; // superseded by a newer play/advance
             if (!audioUrl) {
                 console.warn('Song not available offline, skipping:', song.uuid);
 
@@ -1114,13 +1221,19 @@ class AudioController {
                 const queueLength = this.store.state.queue.length;
                 if (skipCount < queueLength) {
                     this.store.state.isLoading = false;
-                    // Advance to next and try again
-                    const nextIndex = this.store.state.queueIndex + 1;
+                    // Advance to next and try again (wrapping in repeat-all)
+                    let nextIndex = this.store.state.queueIndex + 1;
+                    if (nextIndex >= queueLength && this.store.state.repeatMode === 'all') {
+                        nextIndex = 0;
+                    }
                     if (nextIndex < queueLength) {
                         this.store.state.queueIndex = nextIndex;
+                        // Keep the server/temp store in step so a later focus
+                        // refresh doesn't snap back to the skipped song
+                        this._persistQueueIndex(nextIndex);
                         const nextSong = this.store.state.queue[nextIndex];
                         if (nextSong) {
-                            return this.play(nextSong, skipCount + 1);
+                            return this.play(nextSong, skipCount + 1, op);
                         }
                     }
                 }
@@ -1134,6 +1247,7 @@ class AudioController {
         } else {
             // Online - try offline audio first, fall back to streaming
             audioUrl = await getAudioUrl(song.uuid);
+            if (op !== this._advanceSeq) return; // superseded by a newer play/advance
             if (!audioUrl) {
                 audioUrl = getStreamUrl(song.uuid, song.type);
             }
@@ -1145,6 +1259,7 @@ class AudioController {
             if (!this._dualPipelineActive) {
                 console.log('[Play] Initializing dual pipeline for crossfade');
                 await this._ensureAudioPipeline();
+                if (op !== this._advanceSeq) return; // superseded
             }
             // Ensure the primary audio source is connected to the pipeline
             if (this._dualPipelineActive && !this._audioSources[this._primaryIndex]) {
@@ -1174,6 +1289,7 @@ class AudioController {
 
         try {
             await this.audio.play();
+            if (op !== this._advanceSeq) return; // superseded mid-start
             // Explicitly set state - don't rely solely on 'play' event
             this.store.state.isPlaying = true;
             this.store.state.isPaused = false;
@@ -1255,12 +1371,25 @@ class AudioController {
             // Seek to saved position after metadata loads (requires range request support)
             if (savedTime > 0) {
                 await new Promise(resolve => {
-                    const onLoaded = () => {
+                    // Also resolve on 'error' and after a timeout - a dead
+                    // source (offline, expired stream URL) never fires
+                    // loadedmetadata and would leave this await pending
+                    // forever, stacking a listener per resume attempt
+                    let settled = false;
+                    const settle = (seek) => {
+                        if (settled) return;
+                        settled = true;
+                        clearTimeout(timer);
                         this.audio.removeEventListener('loadedmetadata', onLoaded);
-                        this.audio.currentTime = savedTime;
+                        this.audio.removeEventListener('error', onError);
+                        if (seek) this.audio.currentTime = savedTime;
                         resolve();
                     };
+                    const onLoaded = () => settle(true);
+                    const onError = () => settle(false);
+                    const timer = setTimeout(() => settle(false), 15000);
                     this.audio.addEventListener('loadedmetadata', onLoaded);
+                    this.audio.addEventListener('error', onError);
                 });
             }
         }
@@ -3795,8 +3924,10 @@ class AudioController {
             this.audio = this._audioElements[secondaryIndex];
             this.preloadAudio = this._audioElements[oldPrimaryIndex];
 
-            // Update state to reflect new song (UI updates during crossfade)
-            this.store.state.currentSong = nextSong;
+            // Update state to reflect new song (UI updates during crossfade).
+            // Copy - aliasing the untracked queue item lets currentSong
+            // mutations silently edit the queue.
+            this.store.state.currentSong = { ...nextSong };
             this.store.state.queueIndex = nextIndex;
             this.store.state.currentTime = 0;
             this.store.state.duration = nextSong.duration_seconds || secondaryAudio.duration || 0;
@@ -3991,6 +4122,14 @@ class AudioController {
             // cannot be reset via any AudioParam method - only recreation works.
             this._forceRecreateGainAtIndex(activeIndex, 1.0);
             this._forceRecreateGainAtIndex(inactiveIndex, 0);
+
+            // The crossfade advances currentSong/queueIndex at ramp START but
+            // only syncs the server in _completeCrossfade at ramp END. A
+            // cancel (e.g. pause mid-fade) landed between the two, so the
+            // server still had the old index and no device seq was bumped -
+            // the next focus refresh would "win" with stale data and snap the
+            // player back a song. Persist whatever the local state says now.
+            this._persistQueueIndex(this.store.state.queueIndex);
         }
     }
 
@@ -4235,12 +4374,27 @@ class AudioController {
      * @param {boolean} [options.skipRecorded=false] - Whether skip was already recorded (to avoid double-recording)
      */
     async next({ userInitiated = true, skipRecorded = false } = {}) {
+        // Claim an advance token: any older in-flight next()/previous()/play()
+        // continuation becomes stale, and _advanceActive tells the 'ended'
+        // handler an advance is already handling the transition
+        const op = ++this._advanceSeq;
+        this._advanceActive++;
+        try {
+            await this._nextInternal(op, { userInitiated, skipRecorded });
+        } finally {
+            this._advanceActive--;
+        }
+    }
+
+    async _nextInternal(op, { userInitiated, skipRecorded }) {
         // Only cancel crossfade for user-initiated skips, not automatic track transitions
         if (userInitiated) {
             this._cancelCrossfade();
         }
 
         const { queue, queueIndex, repeatMode, scaEnabled, shuffle } = this.store.state;
+        const offline = offlineStore.state.workOfflineMode || !offlineStore.state.isOnline;
+        const isPlayable = (s) => !offline || offlineStore.state.offlineSongUuids.has(s.uuid);
 
         // Update history entry as skipped for user-initiated skips (unless already recorded by skip())
         const currentSong = queue[queueIndex];
@@ -4272,12 +4426,19 @@ class AudioController {
 
         // Handle shuffle mode
         if (shuffle && queue.length > 1) {
-            // Pick a random index different from current
+            // Pick a random index different from current; offline, only
+            // consider cached songs (a bounded selection, not a recursive
+            // random walk that never terminates when nothing is cached)
             const availableIndices = [];
             for (let i = 0; i < queue.length; i++) {
-                if (i !== queueIndex) {
+                if (i !== queueIndex && isPlayable(queue[i])) {
                     availableIndices.push(i);
                 }
+            }
+            if (availableIndices.length === 0) {
+                this.store.state.isPlaying = false;
+                if (offline) this.store.state.error = 'No songs available offline';
+                return;
             }
             nextIndex = availableIndices[Math.floor(Math.random() * availableIndices.length)];
         } else {
@@ -4290,10 +4451,14 @@ class AudioController {
             if (scaEnabled) {
                 try {
                     const result = await this._populateScaQueue(10);
+                    if (op !== this._advanceSeq) return; // superseded during populate
                     if (result.songs && result.songs.length > 0) {
-                        this.store.state.queue = [...queue, ...result.songs];
+                        // Append to the CURRENT queue - it may have changed
+                        // during the network call (focus refresh, addToQueue)
+                        const cur = this.store.state.queue;
+                        nextIndex = cur.length;  // First of newly added songs
+                        this.store.state.queue = [...cur, ...result.songs];
                         this.store.state.queueVersion++;
-                        nextIndex = queue.length;  // First of newly added songs
                     } else {
                         // Pool exhausted
                         this.store.state.isPlaying = false;
@@ -4313,17 +4478,42 @@ class AudioController {
             }
         }
 
-        this.store.state.queueIndex = nextIndex;
-
-        // In work offline mode, skip songs that aren't cached
-        if (offlineStore.state.workOfflineMode || !offlineStore.state.isOnline) {
-            const nextSong = this.store.state.queue[nextIndex];
-            if (nextSong && !offlineStore.state.offlineSongUuids.has(nextSong.uuid)) {
-                // Song not cached, skip to next
-                console.log('[Player] Skipping uncached song in offline mode:', nextSong.title);
-                return this.next({ userInitiated: false });
+        // In work offline mode, scan forward for the next cached song.
+        // Bounded iteration (at most one full pass, wrapping only in
+        // repeat-all) - the old recursive version looped forever with zero
+        // cached songs and recorded bogus history/shuffle entries per hop.
+        if (offline && !shuffle) {
+            const curQueue = this.store.state.queue;
+            let steps = 0;
+            let candidate = nextIndex;
+            let found = -1;
+            while (steps < curQueue.length) {
+                if (candidate >= curQueue.length) {
+                    if (repeatMode === 'all') {
+                        candidate = 0;
+                    } else {
+                        break;
+                    }
+                }
+                if (curQueue[candidate] && isPlayable(curQueue[candidate])) {
+                    found = candidate;
+                    break;
+                }
+                candidate++;
+                steps++;
+            }
+            if (found === -1) {
+                this.store.state.isPlaying = false;
+                this.store.state.error = 'No songs available offline';
+                return;
+            }
+            if (found !== nextIndex) {
+                console.log('[Player] Skipped uncached songs in offline mode');
+                nextIndex = found;
             }
         }
+
+        this.store.state.queueIndex = nextIndex;
 
         // Sync index to server (skip in temp queue mode)
         if (this.store.state.tempQueueMode) {
@@ -4335,8 +4525,9 @@ class AudioController {
                 console.error('Failed to sync queue index:', e);
             }
         }
+        if (op !== this._advanceSeq) return; // superseded during index sync
 
-        await this.play(this.store.state.queue[nextIndex]);
+        await this.play(this.store.state.queue[nextIndex], 0, op);
 
         // If SCA enabled and queue running low, preemptively populate more
         if (scaEnabled) {
@@ -4359,10 +4550,22 @@ class AudioController {
      * Play previous song in queue.
      */
     async previous() {
+        const op = ++this._advanceSeq;
+        this._advanceActive++;
+        try {
+            await this._previousInternal(op);
+        } finally {
+            this._advanceActive--;
+        }
+    }
+
+    async _previousInternal(op) {
         // Cancel any in-progress crossfade
         this._cancelCrossfade();
 
         const { queue, queueIndex, repeatMode, shuffle, scaEnabled } = this.store.state;
+        const offline = offlineStore.state.workOfflineMode || !offlineStore.state.isOnline;
+        const isPlayable = (s) => !offline || offlineStore.state.offlineSongUuids.has(s.uuid);
 
         // If in the last 90% of the song, restart instead of going to previous
         const duration = this.audio.duration || 0;
@@ -4399,8 +4602,17 @@ class AudioController {
                 if (index >= 0 && index < queue.length && queue[index]?.uuid === uuid) {
                     prevIndex = index;
                 } else {
-                    // Queue changed - fall back to finding by UUID (first match)
-                    prevIndex = queue.findIndex(song => song.uuid === uuid);
+                    // Queue changed - find the occurrence nearest the stored index,
+                    // not the first match (a duplicate earlier in the queue would
+                    // otherwise send "previous" to the wrong copy).
+                    let nearest = -1, best = Infinity;
+                    for (let i = 0; i < queue.length; i++) {
+                        if (queue[i].uuid === uuid) {
+                            const d = Math.abs(i - index);
+                            if (d < best) { best = d; nearest = i; }
+                        }
+                    }
+                    prevIndex = nearest;
                 }
             }
             // Save updated history (we may have popped multiple items)
@@ -4422,14 +4634,38 @@ class AudioController {
             }
         }
 
-        // In work offline mode, skip songs that aren't cached
-        if (offlineStore.state.workOfflineMode || !offlineStore.state.isOnline) {
-            const prevSong = queue[prevIndex];
-            if (prevSong && !offlineStore.state.offlineSongUuids.has(prevSong.uuid)) {
-                console.log('[Player] Skipping uncached song in offline mode:', prevSong.title);
-                // Update index and recurse to find previous cached song
-                this.store.state.queueIndex = prevIndex;
-                return this.previous();
+        // In work offline mode, scan backward for the previous cached song.
+        // Bounded iteration (at most one full pass, wrapping only in
+        // repeat-all) - the old recursive version looped forever with zero
+        // cached songs and recorded a bogus "played and skipped" history
+        // entry for every song it hopped over.
+        if (offline && prevIndex >= 0) {
+            let steps = 0;
+            let candidate = prevIndex;
+            let found = -1;
+            while (steps < queue.length) {
+                if (candidate < 0) {
+                    if (repeatMode === 'all') {
+                        candidate = queue.length - 1;
+                    } else {
+                        break;
+                    }
+                }
+                if (queue[candidate] && isPlayable(queue[candidate])) {
+                    found = candidate;
+                    break;
+                }
+                candidate--;
+                steps++;
+            }
+            if (found === -1) {
+                this.store.state.isPlaying = false;
+                this.store.state.error = 'No songs available offline';
+                return;
+            }
+            if (found !== prevIndex) {
+                console.log('[Player] Skipped uncached songs in offline mode');
+                prevIndex = found;
             }
         }
 
@@ -4445,8 +4681,9 @@ class AudioController {
                 console.error('Failed to sync queue index:', e);
             }
         }
+        if (op !== this._advanceSeq) return; // superseded during index sync
 
-        await this.play(queue[prevIndex]);
+        await this.play(queue[prevIndex], 0, op);
     }
 
     /**
@@ -4770,7 +5007,10 @@ class AudioController {
      * Skips unavailable offline songs automatically.
      */
     async _autoplayQueue() {
-        const song = this.store.state.queue[this.store.state.queueIndex];
+        // Autoplay starts from the top of the freshly-built queue: read the
+        // song at index 0, matching the index we set below (reading a stale
+        // nonzero index would play one song while the index says another)
+        const song = this.store.state.queue[0];
         if (!song) return;
 
         try {
@@ -4872,9 +5112,16 @@ class AudioController {
                         if (nearestIndex >= 0) {
                             this.store.state.queueIndex = nearestIndex;
                         } else {
-                            // Song not in queue - use server's index
-                            this.store.state.queueIndex = serverIndex;
-                            this.store.state.currentSong = queue[serverIndex] || null;
+                            // Song not in queue - use server's index (clamped)
+                            this.store.state.queueIndex = queue.length > 0
+                                ? Math.max(0, Math.min(serverIndex, queue.length - 1))
+                                : 0;
+                            // Never replace currentSong while audio is live -
+                            // the UI/metadata would show a different song than
+                            // the one actually playing
+                            if (!this.store.state.isPlaying) {
+                                this.store.state.currentSong = queue[this.store.state.queueIndex] || null;
+                            }
                         }
                     }
 
@@ -4901,21 +5148,30 @@ class AudioController {
 
         if (index < 0 || index >= queue.length) return;
 
-        this.store.state.queueIndex = index;
+        // Claim an advance token (see next()) so an in-flight next()/track-end
+        // advance can't interleave with this explicit selection
+        const op = ++this._advanceSeq;
+        this._advanceActive++;
+        try {
+            this.store.state.queueIndex = index;
 
-        // Temp queue mode: update locally only
-        if (this.store.state.tempQueueMode) {
-            await this._saveTempQueueState();
-        } else {
-            // Sync index to server
-            try {
-                await queueApi.setIndex(index);
-            } catch (e) {
-                console.error('Failed to sync queue index:', e);
+            // Temp queue mode: update locally only
+            if (this.store.state.tempQueueMode) {
+                await this._saveTempQueueState();
+            } else {
+                // Sync index to server
+                try {
+                    await queueApi.setIndex(index);
+                } catch (e) {
+                    console.error('Failed to sync queue index:', e);
+                }
             }
-        }
+            if (op !== this._advanceSeq) return; // superseded during index sync
 
-        await this.play(queue[index]);
+            await this.play(queue[index], 0, op);
+        } finally {
+            this._advanceActive--;
+        }
     }
 
     /**
@@ -5113,11 +5369,14 @@ class AudioController {
             const playingOffset = sortedIndices.indexOf(queueIndex);
             this.store.state.queueIndex = adjustedTarget + playingOffset;
         } else {
-            // Count how queue index shifts
+            // Current song wasn't moved. Its index in the moved-items-removed
+            // list is queueIndex minus the moved items that were before it; if
+            // the re-inserted block lands at/before that slot, it shifts right
+            // by the whole block. (Exact positional math — the previous
+            // movedBeforeNew formula mis-shifted at the insertion boundary.)
             const movedBeforeOld = sortedIndices.filter(i => i < queueIndex).length;
-            const movedBeforeNew = itemsToMove.length > 0 && adjustedTarget <= queueIndex - movedBeforeOld
-                ? itemsToMove.length : 0;
-            this.store.state.queueIndex = queueIndex - movedBeforeOld + movedBeforeNew;
+            const remIdx = queueIndex - movedBeforeOld;
+            this.store.state.queueIndex = remIdx < adjustedTarget ? remIdx : remIdx + itemsToMove.length;
         }
 
         this.store.state.queueVersion++;
@@ -5194,9 +5453,15 @@ class AudioController {
             });
         }
 
-        // Update queue and reset to start
+        // Re-anchor on the currently-playing song instead of jumping to 0 —
+        // otherwise the audio keeps playing one song while the queue highlights
+        // a different one and next() advances from the wrong spot. (Server mode
+        // reloads from the server below, whose queue_sort preserves the index;
+        // this matters most for temp-queue mode, which returns early.)
+        const sortCurrentUuid = this.store.state.currentSong?.uuid;
+        const sortNewIndex = sortCurrentUuid ? sorted.findIndex(s => s.uuid === sortCurrentUuid) : -1;
         this.store.state.queue = sorted;
-        this.store.state.queueIndex = 0;
+        this.store.state.queueIndex = sortNewIndex >= 0 ? sortNewIndex : 0;
         this.store.state.queueVersion++;
 
         // Temp queue mode: save locally
@@ -5288,6 +5553,13 @@ class AudioController {
             return;
         }
 
+        // Radio is a synced, server-backed mode — it can't coexist with the
+        // local-only temp queue. Tear temp mode down cleanly first so the
+        // tempQueueMode flag doesn't end up contradicting a server-synced queue.
+        if (this.store.state.tempQueueMode) {
+            await this.exitTempQueueMode();
+        }
+
         try {
             this.store.state.isLoading = true;
 
@@ -5333,6 +5605,11 @@ class AudioController {
         if (offlineStore.state.workOfflineMode) {
             this.store.state.error = 'Radio requires network connection';
             return;
+        }
+
+        // Radio can't coexist with the local-only temp queue (see startScaFromQueue).
+        if (this.store.state.tempQueueMode) {
+            await this.exitTempQueueMode();
         }
 
         try {
@@ -5394,6 +5671,15 @@ class AudioController {
             return;
         }
 
+        // Radio is server-synced and can't coexist with the local-only temp
+        // queue (same guard as startScaFromQueue/startScaFromPlaylist -
+        // without it tempQueueMode and scaEnabled are both true, and the
+        // server-backed radio queue gets persisted into the temp-queue store
+        // then discarded on exit while the server still thinks radio is live)
+        if (this.store.state.tempQueueMode) {
+            await this.exitTempQueueMode();
+        }
+
         try {
             this.store.state.isLoading = true;
             const result = await radio.start(seedUuid, filterQuery);
@@ -5445,7 +5731,7 @@ class AudioController {
         }
 
         try {
-            await playback.setState({ playMode });
+            await this._persistPlayMode(playMode);
         } catch (e) {
             console.error('Failed to sync shuffle to server:', e);
         }
@@ -5493,7 +5779,7 @@ class AudioController {
         }
 
         try {
-            await playback.setState({ playMode });
+            await this._persistPlayMode(playMode);
         } catch (e) {
             console.error('Failed to sync shuffle to server:', e);
         }
@@ -5523,7 +5809,7 @@ class AudioController {
         }
 
         try {
-            await playback.setState({ playMode });
+            await this._persistPlayMode(playMode);
         } catch (e) {
             console.error('Failed to sync repeat mode to server:', e);
         }
@@ -5556,6 +5842,12 @@ class AudioController {
                 repeatMode: this.store.state.repeatMode
             }));
 
+            // Persist FIRST. If the IndexedDB write fails (quota, private
+            // mode), the live queue hasn't been touched - the old order
+            // (wipe, then save, catch only resets the flag) stranded the user
+            // with an empty queue and stopped playback on failure.
+            await offlineDb.saveTempQueueState(tempQueue, savedQueue);
+
             // Clear queue and enter temp mode
             this.store.state.tempQueueMode = true;
             this.store.state.queue = [];
@@ -5564,13 +5856,13 @@ class AudioController {
             this.store.state.scaEnabled = false;
             this.stop();
 
-            // Save to IndexedDB for persistence
-            await offlineDb.saveTempQueueState(tempQueue, savedQueue);
-
             console.log('[TempQueue] Entered temp queue mode');
         } catch (e) {
             console.error('Failed to enter temp queue mode:', e);
+            // Nothing was mutated - the snapshot write failed before any
+            // state change, so we're still cleanly in normal mode
             this.store.state.tempQueueMode = false;
+            this.store.state.error = 'Failed to enter temp queue mode';
         }
     }
 
@@ -5593,9 +5885,15 @@ class AudioController {
             const { savedQueue } = await offlineDb.getTempQueueState();
 
             if (savedQueue) {
-                // Restore original queue
-                this.store.state.queue = savedQueue.items || [];
-                this.store.state.queueIndex = savedQueue.queueIndex || 0;
+                // Restore original queue. Clamp the saved index into range — the
+                // saved queue could have been edited elsewhere, and an out-of-range
+                // index would make queue[queueIndex] undefined, leaving currentSong
+                // unset (stale temp song) while the queue shows the restored one.
+                const restoredItems = savedQueue.items || [];
+                this.store.state.queue = restoredItems;
+                this.store.state.queueIndex = restoredItems.length > 0
+                    ? Math.max(0, Math.min(savedQueue.queueIndex || 0, restoredItems.length - 1))
+                    : 0;
                 this.store.state.scaEnabled = savedQueue.scaEnabled || false;
                 this.store.state.queueVersion++;
 
@@ -5637,6 +5935,17 @@ class AudioController {
                     this.store.state.currentSong = null;
                     this.store.state.duration = 0;
                 }
+            } else {
+                // Snapshot missing (cleared or never written). Do NOT leave
+                // the temp-only items in place while flipping to synced mode -
+                // their positions would drive server mutations against a
+                // completely different queue. Clear and reload from server.
+                console.warn('[TempQueue] No saved queue snapshot - reloading from server');
+                this.store.state.queue = [];
+                this.store.state.queueIndex = 0;
+                this.store.state.queueVersion++;
+                this.store.state.currentSong = null;
+                this.store.state.duration = 0;
             }
 
             // Reset playback state
@@ -5650,7 +5959,8 @@ class AudioController {
             // This prevents race with _refreshQueueOnFocus overwriting the restored position
             if (savedQueue && savedQueue.queueIndex !== undefined) {
                 try {
-                    await queueApi.setIndex(savedQueue.queueIndex);
+                    // Use the clamped index actually in effect, not the raw saved one.
+                    await queueApi.setIndex(this.store.state.queueIndex);
                 } catch (e) {
                     console.warn('[TempQueue] Failed to sync restored position to server:', e);
                 }
@@ -5659,13 +5969,22 @@ class AudioController {
             // Clear temp queue from IndexedDB
             await offlineDb.clearTempQueueState();
 
+            // Missing snapshot: adopt the server queue now that temp mode is off
+            if (!savedQueue) {
+                await this.reloadQueue().catch(e =>
+                    console.error('[TempQueue] Failed to reload server queue:', e));
+            }
+
             // Dispatch event so UI can scroll to current song
             window.dispatchEvent(new CustomEvent('temp-queue-exited'));
 
             console.log('[TempQueue] Exited temp queue mode, restored queue');
         } catch (e) {
             console.error('Failed to exit temp queue mode:', e);
-            this.store.state.tempQueueMode = false;
+            // STAY in temp mode on failure: flipping to synced mode while the
+            // queue still holds temp-only items would let their positions
+            // corrupt server mutations. The user can retry the toggle.
+            this.store.state.error = 'Failed to exit temp queue mode';
         } finally {
             // Clear guard flag and record exit time for cooldown
             this._isExitingTempQueue = false;
@@ -5697,6 +6016,22 @@ class AudioController {
     /**
      * Save current temp queue state to IndexedDB for persistence.
      */
+    /**
+     * Persist the current playback mode (shuffle/repeat). In temp-queue mode the
+     * mode is local-only and must be written to the temp-queue snapshot, NOT to
+     * the real queue's server play_mode — otherwise toggling shuffle/repeat while
+     * in temp mode silently rewrites the suspended real queue's mode (and leaks
+     * to other devices), then diverges when temp mode is exited and the saved
+     * mode is restored.
+     */
+    async _persistPlayMode(playMode) {
+        if (this.store.state.tempQueueMode) {
+            await this._saveTempQueueState();
+        } else {
+            await playback.setState({ playMode });
+        }
+    }
+
     async _saveTempQueueState() {
         if (!this.store.state.tempQueueMode) return;
 
@@ -5762,16 +6097,38 @@ class AudioController {
 
         try {
             const result = await queueApi.list({ limit: 10000 });
-            let items = result.items || [];
+            if (result.error) return;
+            const allItems = result.items || [];
+            const serverIndex = allItems.length > 0
+                ? Math.max(0, Math.min(result.queueIndex || 0, allItems.length - 1))
+                : 0;
 
-            // Filter queue to only cached songs when in work offline mode
+            let items = allItems;
+            let newIndex = serverIndex;
+
+            // Filter queue to only cached songs when in work offline mode.
+            // The server index refers to the UNFILTERED queue - remap it to
+            // the filtered array (position of the last cached song at/before
+            // the server index) instead of using it raw, which highlighted
+            // and played a different song than was current.
             if (offlineStore.state.workOfflineMode || !offlineStore.state.isOnline) {
                 const offlineUuids = offlineStore.state.offlineSongUuids;
-                items = items.filter(item => offlineUuids.has(item.uuid));
+                items = [];
+                newIndex = 0;
+                for (let i = 0; i < allItems.length; i++) {
+                    if (offlineUuids.has(allItems[i].uuid)) {
+                        if (i <= serverIndex) {
+                            newIndex = items.length;
+                        }
+                        items.push(allItems[i]);
+                    }
+                }
             }
 
             this.store.state.queue = items;
-            this.store.state.queueIndex = Math.min(result.queueIndex || 0, Math.max(0, items.length - 1));
+            this.store.state.queueIndex = items.length > 0
+                ? Math.min(newIndex, items.length - 1)
+                : 0;
             this.store.state.scaEnabled = result.scaEnabled || false;
             this.store.state.queueVersion++;  // Trigger re-render
         } catch (e) {
