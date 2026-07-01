@@ -265,6 +265,20 @@ def playlists_add_song(playlist_id, song_uuid, details=None, _conn=None):
                 cur.execute("ROLLBACK")
             raise ValueError('Playlist not found or access denied')
 
+        # Idempotent add: skip if the song is already in this playlist. The
+        # table's PRIMARY KEY is (playlist_id, position), so INSERT OR IGNORE
+        # would NOT dedupe by song_uuid — a repeated add (e.g. an offline sync
+        # replay) would create a duplicate row. Check explicitly instead. This
+        # also keeps a duplicate add a harmless no-op rather than an error that
+        # poisons the atomic sync batch.
+        cur.execute("""
+            SELECT 1 FROM playlist_songs WHERE playlist_id = ? AND song_uuid = ?
+        """, (playlist_id, song_uuid))
+        if cur.fetchone():
+            if own_conn:
+                cur.execute("COMMIT")
+            return {'success': True, 'skipped': True, 'alreadyInPlaylist': True}
+
         # Get next position (now protected by write lock)
         cur.execute("SELECT MAX(position) FROM playlist_songs WHERE playlist_id = ?",
                    (playlist_id,))
@@ -272,7 +286,7 @@ def playlists_add_song(playlist_id, song_uuid, details=None, _conn=None):
         next_pos = (result[0] or 0) + 1
 
         cur.execute("""
-            INSERT OR IGNORE INTO playlist_songs (playlist_id, song_uuid, position)
+            INSERT INTO playlist_songs (playlist_id, song_uuid, position)
             VALUES (?, ?, ?)
         """, (playlist_id, song_uuid, next_pos))
 

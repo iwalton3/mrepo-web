@@ -339,6 +339,20 @@ def _run_migrations(db):
         ''')
         cur.execute('CREATE INDEX idx_pending_sync_user ON pending_sync_ops(user_id)')
 
+    # Commit idempotency: if a commit succeeds but the client never sees the
+    # response (connectivity flip), it retries with the same session id; the
+    # stored result is returned instead of re-applying the batch.
+    if 'sync_committed_sessions' not in existing_tables:
+        cur.execute('''
+            CREATE TABLE sync_committed_sessions (
+                session_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                result TEXT NOT NULL,
+                committed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cur.execute('CREATE INDEX idx_sync_committed_at ON sync_committed_sessions(committed_at)')
+
     # SCA song pool table
     if 'sca_song_pool' not in existing_tables:
         cur.execute('''

@@ -247,6 +247,25 @@ def queue_remove(positions, details=None, _conn=None):
                 VALUES (?, ?, ?)
             """, (user_id, song['song_uuid'], i))
 
+        # Maintain the currently-playing index across renumbering. Removal
+        # preserves relative order, so the current song shifts left by the
+        # number of removed positions before it. If the current song itself was
+        # removed, whatever song shifts into its slot becomes current. Without
+        # this, queue_index keeps pointing at a now-different song (remove a song
+        # before the one playing and the highlight/next-track advance desync).
+        cur.execute("SELECT queue_index FROM user_playback_state WHERE user_id = ?", (user_id,))
+        idx_row = cur.fetchone()
+        if idx_row is not None:
+            current_index = idx_row['queue_index'] or 0
+            removed_before = sum(1 for p in positions if p < current_index)
+            new_index = current_index - removed_before
+            new_index = 0 if not songs else max(0, min(new_index, len(songs) - 1))
+            cur.execute("""
+                UPDATE user_playback_state
+                SET queue_index = ?, updated_at = ?
+                WHERE user_id = ?
+            """, (new_index, datetime.utcnow(), user_id))
+
         if own_conn:
             cur.execute("COMMIT")
         return {'removed': len(positions), 'queueLength': len(songs)}
@@ -277,10 +296,17 @@ def queue_clear(details=None, _conn=None):
 
         cur.execute("DELETE FROM user_queue WHERE user_id = ?", (user_id,))
 
-        # Reset playback state
+        # Reset queue index. NOTE: never use INSERT OR REPLACE on
+        # user_playback_state — it deletes and re-inserts the row, silently
+        # resetting every column not in the column list (active_device_id/seq).
+        # Changing the queue index must not wipe the active device, or the next
+        # focus refresh misdetects the active device and jumps position.
         cur.execute("""
-            INSERT OR REPLACE INTO user_playback_state (user_id, queue_index, updated_at)
+            INSERT INTO user_playback_state (user_id, queue_index, updated_at)
             VALUES (?, 0, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                queue_index = 0,
+                updated_at = excluded.updated_at
         """, (user_id, datetime.utcnow()))
 
         if own_conn:
@@ -335,6 +361,28 @@ def queue_reorder(from_pos, to_pos, details=None, _conn=None):
                 VALUES (?, ?, ?)
             """, (user_id, uuid, i))
 
+        # Maintain queue_index so the currently-playing song stays anchored
+        # after the move (otherwise the stored index keeps pointing at whatever
+        # song now occupies the old slot).
+        cur.execute("SELECT queue_index FROM user_playback_state WHERE user_id = ?", (user_id,))
+        idx_row = cur.fetchone()
+        if idx_row is not None:
+            ci = idx_row['queue_index'] or 0
+            if ci == from_pos:
+                new_index = to_pos
+            elif from_pos < to_pos:
+                # Moving down: items in (from_pos, to_pos] shift left by one
+                new_index = ci - 1 if from_pos < ci <= to_pos else ci
+            else:
+                # Moving up: items in [to_pos, from_pos) shift right by one
+                new_index = ci + 1 if to_pos <= ci < from_pos else ci
+            new_index = max(0, min(new_index, len(songs) - 1)) if songs else 0
+            cur.execute("""
+                UPDATE user_playback_state
+                SET queue_index = ?, updated_at = ?
+                WHERE user_id = ?
+            """, (new_index, datetime.utcnow(), user_id))
+
         if own_conn:
             cur.execute("COMMIT")
         return {'success': True}
@@ -368,34 +416,73 @@ def queue_reorder_batch(from_positions, to_position, details=None, _conn=None):
         cur.execute("""
             SELECT song_uuid FROM user_queue WHERE user_id = ? ORDER BY position
         """, (user_id,))
-        songs = [row['song_uuid'] for row in cur.fetchall()]
+        all_uuids = [row['song_uuid'] for row in cur.fetchall()]
 
-        # Extract the songs being moved (in their current relative order)
-        from_positions_sorted = sorted(from_positions)
-        moving_songs = [songs[pos] for pos in from_positions_sorted if 0 <= pos < len(songs)]
+        # Deduplicate/normalize the source positions and drop out-of-range ones
+        from_positions_sorted = sorted(set(int(p) for p in from_positions))
+        to_position = int(to_position)
+        valid_positions = [p for p in from_positions_sorted if 0 <= p < len(all_uuids)]
 
-        # Remove them from the list (from end to preserve indices)
-        for pos in sorted(from_positions, reverse=True):
-            if 0 <= pos < len(songs):
-                songs.pop(pos)
+        if not valid_positions:
+            if own_conn:
+                cur.execute("COMMIT")
+            return {'success': True, 'moved': 0}
 
-        # Insert at target position
-        insert_pos = min(to_position, len(songs))
-        for i, song in enumerate(moving_songs):
-            songs.insert(insert_pos + i, song)
+        # Extract items to move (maintaining relative order)
+        items_to_move = [all_uuids[p] for p in valid_positions]
+
+        # Create new list without the moved items
+        positions_set = set(valid_positions)
+        remaining = [uuid for i, uuid in enumerate(all_uuids) if i not in positions_set]
+
+        # Calculate adjusted target (account for removed items before target).
+        # This matches the frontend reorderQueueBatch math so client and server
+        # agree on where the block lands.
+        adjusted_target = to_position
+        for pos in valid_positions:
+            if pos < to_position:
+                adjusted_target -= 1
+        adjusted_target = max(0, min(adjusted_target, len(remaining)))
+
+        # Build new queue: items before target, moved items, items after target
+        new_queue = remaining[:adjusted_target] + items_to_move + remaining[adjusted_target:]
 
         # Update database
         cur.execute("DELETE FROM user_queue WHERE user_id = ?", (user_id,))
 
-        for i, uuid in enumerate(songs):
+        for i, uuid in enumerate(new_queue):
             cur.execute("""
                 INSERT INTO user_queue (user_id, song_uuid, position)
                 VALUES (?, ?, ?)
             """, (user_id, uuid, i))
 
+        # Maintain queue_index across the batch move (positional, exact).
+        cur.execute("SELECT queue_index FROM user_playback_state WHERE user_id = ?", (user_id,))
+        idx_row = cur.fetchone()
+        if idx_row is not None:
+            ci = idx_row['queue_index'] or 0
+            if ci in positions_set:
+                # Current song was one of the moved items; it lands inside the
+                # re-inserted block at its relative offset among moved items.
+                playing_offset = valid_positions.index(ci)
+                new_index = adjusted_target + playing_offset
+            else:
+                # Not moved: its index in the remaining list is ci minus moved
+                # items before it; the re-inserted block shifts it right if it
+                # lands at/before the current slot.
+                moved_before = sum(1 for p in valid_positions if p < ci)
+                rem_idx = ci - moved_before
+                new_index = rem_idx if rem_idx < adjusted_target else rem_idx + len(items_to_move)
+            new_index = max(0, min(new_index, len(new_queue) - 1)) if new_queue else 0
+            cur.execute("""
+                UPDATE user_playback_state
+                SET queue_index = ?, updated_at = ?
+                WHERE user_id = ?
+            """, (new_index, datetime.utcnow(), user_id))
+
         if own_conn:
             cur.execute("COMMIT")
-        return {'success': True}
+        return {'success': True, 'moved': len(items_to_move)}
     except Exception as e:
         if own_conn:
             try:
@@ -482,6 +569,20 @@ def queue_sort(sort_by='artist', order='asc', details=None):
     cur = conn.cursor()
     user_id = details['user_id']
 
+    # Autocommit mode: the read-sort-rebuild below must be atomic or a
+    # concurrent reader sees a half-rebuilt (empty/partial) queue.
+    cur.execute("BEGIN IMMEDIATE")
+    try:
+        return _queue_sort_locked(cur, user_id, sort_by, order)
+    except Exception:
+        try:
+            cur.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+
+
+def _queue_sort_locked(cur, user_id, sort_by, order):
     # Get current playing song UUID before sorting
     cur.execute("""
         SELECT queue_index FROM user_playback_state WHERE user_id = ?
@@ -560,6 +661,7 @@ def queue_sort(sort_by='artist', order='asc', details=None):
         WHERE user_id = ?
     """, (new_index, datetime.utcnow(), user_id))
 
+    cur.execute("COMMIT")
     return {'success': True, 'queueLength': len(songs), 'newIndex': new_index}
 
 
