@@ -10,6 +10,7 @@
 
 import { defineComponent, html, when, each, memoEach, untracked } from 'vdx/framework.js';
 import { createWindowing } from 'vdx/windowing.js';
+import { createRowGestures } from 'vdx/gestures.js';
 import { songs as songsApi, playlists as playlistsApi, auth, ai } from '../offline/offline-api.js';
 import { profile } from '#profile';
 import offlineStore, { shouldShowOfflineWarnings, setDownloadProgress, computeOfflineFilterSets, shouldUseOffline } from '../offline/offline-store.js';
@@ -37,6 +38,65 @@ export default defineComponent('playlists-page', {
             count: () => this.state.playlistSongs.length,
             scrollContainer: 'window',
             measureElement: () => this.refs.songsContainer
+        });
+
+        // Row-gesture controller: desktop drag-reorder, long-press context menu,
+        // and touch drag (drag-handle in normal mode; selected-row body in
+        // selection mode). All state is INDEX-based - playlists allow duplicate
+        // songs, so uuid->index resolution finds the wrong copy. 'pointer' touch
+        // targeting preserves the hovered-row gap the reorder call sites expect;
+        // reorderPlaylistSongs/Batch receive the gap directly (they do their own
+        // remove-shift), so no gapToRemoveInsertIndex translation here.
+        this._g = createRowGestures(this, {
+            itemHeight: 52,
+            count: () => this.state.playlistSongs.length,
+            rowClass: 'song-item',
+            rowSelector: (i) => `.song-item[data-index="${i}"]`,
+            touchTarget: 'pointer',
+            excludeSelector: '.selection-checkbox',
+            activationThreshold: 16,
+            canDrag: (i) => this.state.selectedIndices.has(i),
+            selection: {
+                isSelected: (i) => this.state.selectionMode && this.state.selectedIndices.has(i),
+                indices: () => [...this.state.selectedIndices]
+            },
+            onTap: (index, e) => {
+                if (this.state.selectionMode) {
+                    this.toggleSelection(index, e);
+                } else {
+                    const song = this.state.playlistSongs[index];
+                    if (song) this.handleSongClick(song);
+                }
+            },
+            onLongPress: (index, e) => {
+                const song = this.state.playlistSongs[index];
+                const t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
+                if (song && t) showSongContextMenu(song, t.clientX, t.clientY);
+            },
+            onContextMenu: (index, e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const song = this.state.playlistSongs[index];
+                if (song) showSongContextMenu(song, e.clientX, e.clientY);
+            },
+            onReorder: (fromIndices, gap) => {
+                if (fromIndices.length > 1) {
+                    // Group drag: reorderPlaylistSongsBatch treats the target as a
+                    // gap and does the remove-shift internally. Remap the
+                    // selection to the landed contiguous positions.
+                    const sorted = [...fromIndices].sort((a, b) => a - b);
+                    let adjustedTarget = gap;
+                    for (const idx of sorted) if (idx < gap) adjustedTarget--;
+                    adjustedTarget = Math.max(0, Math.min(adjustedTarget, this.state.playlistSongs.length - sorted.length));
+                    const newSet = new Set();
+                    for (let i = 0; i < sorted.length; i++) newSet.add(adjustedTarget + i);
+                    this.reorderPlaylistSongsBatch(fromIndices, gap);
+                    this.state.selectedIndices = newSet;
+                    this.state.playlistVersion++;
+                } else {
+                    this.reorderPlaylistSongs(fromIndices[0], gap);
+                }
+            }
         });
 
         return {
@@ -152,6 +212,7 @@ export default defineComponent('playlists-page', {
     unmounted() {
         this._isMounted = false;
         this._win.destroy();
+        this._g.destroy();
         if (this._intersectionObserver) {
             this._intersectionObserver.disconnect();
         }
@@ -189,14 +250,6 @@ export default defineComponent('playlists-page', {
     },
 
     methods: {
-        /**
-         * Check if we're on a touch device (mobile).
-         * Drag-drop is disabled on touch devices to prevent conflicts with long-press context menu.
-         */
-        isTouchDevice() {
-            return 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-        },
-
         // Selection mode methods
         toggleSelectionMode() {
             // No playlistVersion bump: selection mode/state live in the
@@ -1047,379 +1100,6 @@ export default defineComponent('playlists-page', {
             }
         },
 
-        handlePlaylistDragStart(index, e) {
-            // Check if dragging a selected item - enable group drag
-            if (this.state.selectionMode && this.state.selectedIndices.has(index)) {
-                this._groupDrag = true;
-                this._draggedIndices = [...this.state.selectedIndices].sort((a, b) => a - b);
-                // Add group-dragging class to all selected items
-                this._draggedIndices.forEach(i => {
-                    const item = this.querySelector(`.song-item[data-index="${i}"]`);
-                    if (item) item.classList.add('group-dragging');
-                });
-            } else {
-                this._groupDrag = false;
-                this._draggedIndices = [index];
-            }
-            this._dragIndex = index;
-            this._dropGap = null;
-            e.dataTransfer.effectAllowed = 'move';
-            e.dataTransfer.setData('text/plain', index);
-            e.currentTarget.classList.add('dragging');
-        },
-
-        handlePlaylistDragEnd(e) {
-            e.currentTarget.classList.remove('dragging');
-            // Clear all drag indicator and group-dragging classes
-            this.querySelectorAll('.drag-over, .drag-over-below').forEach(el => el.classList.remove('drag-over', 'drag-over-below'));
-            this.querySelectorAll('.group-dragging').forEach(el => el.classList.remove('group-dragging'));
-            this._dragIndex = null;
-            this._dropGap = null;
-            this._groupDrag = false;
-            this._draggedIndices = null;
-        },
-
-        /**
-         * Pointer-midpoint insertion gap for a dragover/drop on row `index`:
-         * upper half = insert before this row (gap = index), lower half =
-         * insert after (gap = index + 1). Tolerates sub-row content drift
-         * under the cursor from drag-autoscroll (the off-by-one drop bug).
-         * Returns null when geometry is unavailable (caller falls back to
-         * legacy drop-row semantics).
-         */
-        _computeDropGap(index, e) {
-            const row = e.currentTarget;
-            if (!row || typeof e.clientY !== 'number') return null;
-            const rect = row.getBoundingClientRect();
-            if (!rect || !(rect.height > 0)) return null;
-            return (e.clientY - rect.top) > rect.height / 2 ? index + 1 : index;
-        },
-
-        handlePlaylistDragOver(index, e) {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = 'move';
-            if (this._dragIndex === null) return;
-
-            const gap = this._computeDropGap(index, e);
-            if (gap === null) return;
-            this._dropGap = gap;
-
-            // No indicator when the drop would be a no-op: for single drags,
-            // a gap adjacent to the dragged row; for group drags, hovering the
-            // dragged row itself (parity with the previous behavior)
-            const isNoop = this._groupDrag
-                ? index === this._dragIndex
-                : (gap === this._dragIndex || gap === this._dragIndex + 1);
-            if (isNoop) {
-                this.querySelectorAll('.drag-over, .drag-over-below').forEach(el => el.classList.remove('drag-over', 'drag-over-below'));
-                return;
-            }
-
-            // Indicator edge matches the insertion gap: top border for
-            // "before this row", bottom border for "after this row"
-            const cls = gap === index ? 'drag-over' : 'drag-over-below';
-            const songItem = e.currentTarget;
-            if (!songItem.classList.contains(cls)) {
-                // Clear previous indicator and set the new one
-                this.querySelectorAll('.drag-over, .drag-over-below').forEach(el => el.classList.remove('drag-over', 'drag-over-below'));
-                songItem.classList.add(cls);
-            }
-        },
-
-        handlePlaylistDragEnter(index, e) {
-            // Handled in dragOver for consistency
-        },
-
-        handlePlaylistDragLeave(e) {
-            // Only remove if leaving the container entirely
-            const relatedTarget = e.relatedTarget;
-            if (!relatedTarget || !e.currentTarget.contains(relatedTarget)) {
-                e.currentTarget.classList.remove('drag-over', 'drag-over-below');
-            }
-        },
-
-        async handlePlaylistDrop(index, e) {
-            e.preventDefault();
-            // Clear all drag indicator and group-dragging classes
-            this.querySelectorAll('.drag-over, .drag-over-below').forEach(el => el.classList.remove('drag-over', 'drag-over-below'));
-            this.querySelectorAll('.group-dragging').forEach(el => el.classList.remove('group-dragging'));
-
-            // Insertion gap from the drop event's own geometry (freshest
-            // pointer info); fall back to the last dragover's gap, then to
-            // legacy drop-row semantics when no gap was ever computed.
-            const dropGap = this._computeDropGap(index, e);
-            const gap = dropGap !== null ? dropGap : this._dropGap;
-            this._dropGap = null;
-
-            if (this._dragIndex !== null) {
-                if (this._groupDrag && this._draggedIndices && this._draggedIndices.length > 1) {
-                    // Group drag: move all selected items. Self-drop guard
-                    // (dropping on the dragged row) stays a no-op as before.
-                    if (index !== this._dragIndex) {
-                        const songsLen = this.state.playlistSongs.length;
-                        const target = gap !== null ? gap : index;
-                        const sortedIndices = [...this._draggedIndices].sort((a, b) => a - b);
-
-                        // Calculate where items will end up (same logic as reorderPlaylistSongsBatch)
-                        let adjustedTarget = target;
-                        for (const idx of sortedIndices) {
-                            if (idx < target) adjustedTarget--;
-                        }
-                        adjustedTarget = Math.max(0, Math.min(adjustedTarget, songsLen - sortedIndices.length));
-
-                        // New positions: adjustedTarget, adjustedTarget+1, adjustedTarget+2, ...
-                        const newSet = new Set();
-                        for (let i = 0; i < sortedIndices.length; i++) {
-                            newSet.add(adjustedTarget + i);
-                        }
-
-                        await this.reorderPlaylistSongsBatch(this._draggedIndices, target);
-
-                        // Update selection to new positions
-                        this.state.selectedIndices = newSet;
-                        this.state.playlistVersion++;
-                    }
-                } else {
-                    // Single item drag. reorderPlaylistSongs' insertIndex math
-                    // (from < to ? to - 1 : to) makes `to = gap` land exactly in
-                    // the gap for both directions. Gaps adjacent to the dragged
-                    // row are no-ops - skip to avoid a pointless API call.
-                    const from = this._dragIndex;
-                    if (gap !== null) {
-                        if (gap !== from && gap !== from + 1) {
-                            await this.reorderPlaylistSongs(from, gap);
-                        }
-                    } else if (index !== from) {
-                        // Legacy fallback: no pointer geometry available
-                        await this.reorderPlaylistSongs(from, index);
-                    }
-                }
-            }
-            this._dragIndex = null;
-            this._groupDrag = false;
-            this._draggedIndices = null;
-        },
-
-        // Touch drag on whole item in selection mode (mobile)
-        // Differs from handleHandleTouchStart: doesn't preventDefault immediately,
-        // allows tap-to-select while still enabling drag-to-reorder.
-        // All touch-drag state is INDEX-based (like now-playing): playlists
-        // support duplicate songs, and uuid->index resolution always found the
-        // FIRST copy - wrong row highlights, wrong reorders, and drags starting
-        // from unselected duplicates of a selected row.
-        handleSelectionTouchStart(index, e) {
-            const touch = e.touches[0];
-            this._selectionTouchStartX = touch.clientX;
-            this._selectionTouchStartY = touch.clientY;
-            this._selectionDragActive = false;
-            this._touchDropIndex = null;
-
-            // A touch that starts on the selection checkbox is a selection
-            // tap, never a grab: finger wobble during the tap used to
-            // activate a GROUP REORDER (dropping the whole selection on a
-            // neighbouring row), eat the click, and remap the selection -
-            // "checkbox taps select random items and the list jumps around".
-            const onCheckbox = !!(e.target && e.target.closest
-                && e.target.closest('.selection-checkbox'));
-
-            // Only fully-selected rows act as grab handles in selection mode.
-            // Touching an unselected row must scroll (or tap-select) - never
-            // start a drag (leave _touchDragIndex unset so touchmove no-ops
-            // and the browser keeps the scroll gesture).
-            if (!onCheckbox && this.state.selectedIndices.has(index)) {
-                this._touchDragIndex = index;
-                this._touchGroupDrag = true;
-                this._touchDraggedIndices = [...this.state.selectedIndices].sort((a, b) => a - b);
-            } else {
-                this._touchDragIndex = null;
-                this._touchGroupDrag = false;
-                this._touchDraggedIndices = null;
-            }
-        },
-
-        // Touch drag on the drag handle (mobile)
-        handleHandleTouchStart(index, e) {
-            e.stopPropagation();
-            e.preventDefault();
-            this._touchDragIndex = index;
-            this._touchDropIndex = null;
-            this._selectionDragActive = true; // Mark as active drag
-
-            // Check if touching a selected item - enable group drag
-            if (this.state.selectionMode && this.state.selectedIndices.has(index)) {
-                this._touchGroupDrag = true;
-                this._touchDraggedIndices = [...this.state.selectedIndices].sort((a, b) => a - b);
-                // Add group-dragging class to all selected items
-                this._touchDraggedIndices.forEach(i => {
-                    const item = this.querySelector(`.song-item[data-index="${i}"]`);
-                    if (item) item.classList.add('group-dragging');
-                });
-            } else {
-                this._touchGroupDrag = false;
-                this._touchDraggedIndices = null;
-            }
-
-            // Add dragging class to the source item
-            const sourceItem = this.querySelector(`.song-item[data-index="${index}"]`);
-            if (sourceItem) {
-                sourceItem.classList.add('dragging');
-            }
-        },
-
-        handleHandleTouchMove(e) {
-            if (this._touchDragIndex == null) return;
-
-            const touch = e.touches[0];
-
-            // In selection mode, only activate drag after sufficient movement.
-            // 16px (not 10) so ordinary tap wobble on a selected row's body
-            // doesn't get promoted into a group reorder.
-            if (this.state.selectionMode && !this._selectionDragActive) {
-                const dx = Math.abs(touch.clientX - this._selectionTouchStartX);
-                const dy = Math.abs(touch.clientY - this._selectionTouchStartY);
-                if (dx < 16 && dy < 16) return; // Not enough movement yet
-
-                // Activate drag mode
-                this._selectionDragActive = true;
-
-                // Add dragging class to source item
-                const sourceItem = this.querySelector(`.song-item[data-index="${this._touchDragIndex}"]`);
-                if (sourceItem) sourceItem.classList.add('dragging');
-
-                // Add group-dragging class if group drag
-                if (this._touchGroupDrag && this._touchDraggedIndices) {
-                    this._touchDraggedIndices.forEach(i => {
-                        const item = this.querySelector(`.song-item[data-index="${i}"]`);
-                        if (item) item.classList.add('group-dragging');
-                    });
-                }
-            }
-
-            e.stopPropagation();
-            e.preventDefault();
-
-            // Clear previous drag-over classes (query fresh from DOM)
-            this.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
-
-            // Reset drop target - will be set if over valid target
-            this._touchDropIndex = null;
-
-            // Find which item we're over
-            const elemUnder = document.elementFromPoint(touch.clientX, touch.clientY);
-            if (elemUnder) {
-                const songItem = elemUnder.closest('.song-item');
-                if (songItem && songItem.dataset.index !== undefined && !songItem.classList.contains('dragging')) {
-                    const overIndex = parseInt(songItem.dataset.index, 10);
-                    if (!Number.isNaN(overIndex) && overIndex !== this._touchDragIndex) {
-                        songItem.classList.add('drag-over');
-                        this._touchDropIndex = overIndex;
-                    }
-                }
-            }
-        },
-
-        async handleHandleTouchEnd(e) {
-            // In selection mode, if drag wasn't activated, let click handler handle selection
-            const wasDragActive = this._selectionDragActive;
-            if (this.state.selectionMode && !wasDragActive) {
-                // Reset state without preventing default - click will handle selection
-                this._touchDragIndex = null;
-                this._touchDropIndex = null;
-                this._touchGroupDrag = false;
-                this._touchDraggedIndices = null;
-                this._selectionDragActive = false;
-                return;
-            }
-
-            e.stopPropagation();
-            e.preventDefault();
-
-            // Clear all drag classes (query fresh from DOM, not cached elements)
-            this.querySelectorAll('.dragging').forEach(el => el.classList.remove('dragging'));
-            this.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
-            this.querySelectorAll('.group-dragging').forEach(el => el.classList.remove('group-dragging'));
-
-            // Perform the reorder if we have valid indices
-            if (this._touchDragIndex != null && this._touchDropIndex != null
-                && this._touchDragIndex !== this._touchDropIndex) {
-                const fromIndex = this._touchDragIndex;
-                const toIndex = this._touchDropIndex;
-                {
-                    if (this._touchGroupDrag && this._touchDraggedIndices && this._touchDraggedIndices.length > 1) {
-                        // Group drag: move all selected items
-                        const sortedIndices = [...this._touchDraggedIndices].sort((a, b) => a - b);
-
-                        // Calculate where items will end up (same logic as reorderPlaylistSongsBatch)
-                        let adjustedTarget = toIndex;
-                        for (const idx of sortedIndices) {
-                            if (idx < toIndex) adjustedTarget--;
-                        }
-                        adjustedTarget = Math.max(0, adjustedTarget);
-
-                        // New positions: adjustedTarget, adjustedTarget+1, adjustedTarget+2, ...
-                        const newSet = new Set();
-                        for (let i = 0; i < sortedIndices.length; i++) {
-                            newSet.add(adjustedTarget + i);
-                        }
-
-                        await this.reorderPlaylistSongsBatch(this._touchDraggedIndices, toIndex);
-
-                        // Update selection to new positions
-                        this.state.selectedIndices = newSet;
-                        this.state.playlistVersion++;
-                    } else {
-                        await this.reorderPlaylistSongs(fromIndex, toIndex);
-                    }
-                }
-            }
-
-            this._touchDragIndex = null;
-            this._touchDropIndex = null;
-            this._touchGroupDrag = false;
-            this._touchDraggedIndices = null;
-            this._selectionDragActive = false;
-        },
-
-        // Touch long press for context menu (mobile)
-        handleTouchStart(song, e) {
-            if (this._longPressTimer) {
-                clearTimeout(this._longPressTimer);
-            }
-
-            const touch = e.touches[0];
-            this._touchStartX = touch.clientX;
-            this._touchStartY = touch.clientY;
-
-            this._longPressTimer = setTimeout(() => {
-                showSongContextMenu(song, this._touchStartX, this._touchStartY);
-                this._longPressTriggered = true;
-            }, 500);
-        },
-
-        handleTouchMove(e) {
-            if (!this._longPressTimer) return;
-
-            const touch = e.touches[0];
-            const dx = Math.abs(touch.clientX - this._touchStartX);
-            const dy = Math.abs(touch.clientY - this._touchStartY);
-
-            if (dx > 10 || dy > 10) {
-                clearTimeout(this._longPressTimer);
-                this._longPressTimer = null;
-            }
-        },
-
-        handleTouchEnd(e) {
-            if (this._longPressTimer) {
-                clearTimeout(this._longPressTimer);
-                this._longPressTimer = null;
-            }
-            if (this._longPressTriggered) {
-                e.preventDefault();
-                this._longPressTriggered = false;
-            }
-        },
-
         toggleAddSongs() {
             this.state.showAddSongs = !this.state.showAddSongs;
             if (!this.state.showAddSongs) {
@@ -1478,6 +1158,7 @@ export default defineComponent('playlists-page', {
             const playlistSongs = this.state.playlistSongs;
             const selectionMode = this.state.selectionMode;
             const isSelected = this.isSelected(index);
+            const g = this._g;
 
             // Placeholder for unloaded items
             if (!song) {
@@ -1495,25 +1176,24 @@ export default defineComponent('playlists-page', {
                 <div class="song-item ${selectionMode ? 'selectable' : ''} ${isSelected ? 'selected' : ''} ${this.isUnavailableOffline(song) ? 'unavailable' : ''}"
                      data-uuid="${song.uuid}"
                      data-index="${index}"
-                     draggable="${view !== 'shared' && !this.isTouchDevice()}"
-                     on-click="${(e) => selectionMode ? this.toggleSelection(index, e) : this.handleSongClick(song)}"
-                     on-contextmenu="${(e) => this.handleSongContextMenu(song, e)}"
-                     on-touchstart-passive="${(e) => selectionMode ? this.handleSelectionTouchStart(index, e) : this.handleTouchStart(song, e)}"
-                     on-touchmove="${(e) => selectionMode ? this.handleHandleTouchMove(e) : this.handleTouchMove(e)}"
-                     on-touchend="${(e) => selectionMode ? this.handleHandleTouchEnd(e) : this.handleTouchEnd(e)}"
-                     on-dragstart="${(e) => { if (!this.isTouchDevice()) this.handlePlaylistDragStart(index, e); }}"
-                     on-dragend="handlePlaylistDragEnd"
-                     on-dragover="${(e) => this.handlePlaylistDragOver(index, e)}"
-                     on-dragenter="${(e) => this.handlePlaylistDragEnter(index, e)}"
-                     on-dragleave="handlePlaylistDragLeave"
-                     on-drop="${(e) => this.handlePlaylistDrop(index, e)}">
+                     draggable="${view !== 'shared' && !g.isTouchDevice()}"
+                     on-click="${(e) => g.click(index, e)}"
+                     on-contextmenu="${(e) => g.contextMenu(index, e)}"
+                     on-touchstart-passive="${(e) => selectionMode ? g.rowTouchStart(index, e) : g.touchStart(index, e)}"
+                     on-touchmove="${(e) => selectionMode ? g.handleTouchMove(e) : g.touchMove(e)}"
+                     on-touchend="${(e) => selectionMode ? g.handleTouchEnd(e) : g.touchEnd(index, e)}"
+                     on-dragstart="${(e) => g.dragStart(index, e)}"
+                     on-dragend="${(e) => g.dragEnd(e)}"
+                     on-dragover="${(e) => g.dragOver(index, e)}"
+                     on-dragleave="${(e) => g.dragLeave(e)}"
+                     on-drop="${(e) => g.drop(index, e)}">
                     ${when(view !== 'shared' && selectionMode, () => html`
                         <input type="checkbox" class="selection-checkbox" checked="${isSelected}" on-click="${(e) => this.toggleSelection(index, e)}">
                     `, () => when(view !== 'shared', html`
                         <span class="drag-handle" title="Drag to reorder"
-                              on-touchstart="${(e) => this.handleHandleTouchStart(index, e)}"
-                              on-touchmove="${(e) => this.handleHandleTouchMove(e)}"
-                              on-touchend="${(e) => this.handleHandleTouchEnd(e)}">⋮⋮</span>
+                              on-touchstart="${(e) => g.handleTouchStart(index, e)}"
+                              on-touchmove="${(e) => g.handleTouchMove(e)}"
+                              on-touchend="${(e) => g.handleTouchEnd(e)}">⋮⋮</span>
                     `))}
                     <span class="song-num">${index + 1}</span>
                     <div class="song-info">

@@ -78,6 +78,29 @@ export interface RowGestureOptions {
   onReorder?(fromIndices: number[], gap: number): void;
   /** Selection adapter; enables group drag when a selected row is dragged. */
   selection?: GestureSelection;
+  /**
+   * A row-body touch (via `rowTouchStart`) whose `e.target` matches this
+   * selector (tested with `closest`) never arms a drag - e.g.
+   * `'.selection-checkbox'` keeps a checkbox tap a pure selection tap.
+   */
+  excludeSelector?: string;
+  /**
+   * Predicate gating which rows arm a *row-body* touch drag (`rowTouchStart`);
+   * rows that fail it scroll/tap instead. Does not affect the drag-handle path.
+   */
+  canDrag?(index: number): boolean;
+  /**
+   * Movement in px a row-body touch drag must exceed before promoting from a
+   * tap to a drag (default 0 = immediate activation).
+   */
+  activationThreshold?: number;
+  /**
+   * Touch-drag drop targeting: 'geometry' (default, fixed-itemHeight math) or
+   * 'pointer' (hovered row via elementFromPoint IS the insertion gap).
+   */
+  touchTarget?: 'geometry' | 'pointer';
+  /** Row class for resolving the hovered row via closest() in 'pointer' mode. */
+  rowClass?: string;
   /** Indicator class names (default { before: 'drag-over', after: 'drag-over-below' }). */
   indicator?: GestureIndicator;
   /** Long-press hold duration in ms (default 500). */
@@ -105,6 +128,12 @@ export interface RowGestureController {
 
   /** PASSIVE-SAFE (never preventDefaults): arm long-press. Bind -passive. */
   touchStart(index: number, e: Event): void;
+  /**
+   * PASSIVE-SAFE (never preventDefaults): arm a delayed-activation row-body
+   * drag (respects excludeSelector / canDrag / activationThreshold). Bind
+   * -passive. Shares handleTouchMove / handleTouchEnd with the handle path.
+   */
+  rowTouchStart(index: number, e: Event): void;
   /** PASSIVE-SAFE (never preventDefaults): cancel long-press past slop. Bind -passive. */
   touchMove(e: Event): void;
   /** MAY preventDefault (ghost-tap suppression). Fires onTap for a clean tap. */
