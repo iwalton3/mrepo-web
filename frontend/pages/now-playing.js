@@ -15,7 +15,7 @@ import { createWindowing } from 'vdx/windowing.js';
 import { player, playerStore } from '../stores/player-store.js';
 import { playlists as playlistsApi } from '../offline/offline-api.js';
 import * as offlineApi from '../offline/offline-api.js';
-import offlineStore from '../offline/offline-store.js';
+import offlineStore, { shouldUseOffline } from '../offline/offline-store.js';
 import eqPresetsStore from '../stores/eq-presets-store.js';
 import { showSongContextMenu, navigateToArtist, navigateToAlbum, navigateToCategory, navigateToGenre, navigateToFolder } from '../components/song-context-menu.js';
 import '../components/scroll-to-top.js';
@@ -597,21 +597,7 @@ export default defineComponent('now-playing-page', {
             }
         },
 
-        async handleStartRadio() {
-            await player.startScaFromQueue();
-            // Queue may grow - recalculate visible range
-            requestAnimationFrame(() => this._win.refresh());
-        },
-
-        async handleStopRadio() {
-            await player.stopSca();
-        },
-
-        async handleToggleAiRadio() {
-            await player.toggleAiRadio();
-        },
-
-        // Extend queue with AI - Dialog methods
+        // Extend queue with AI
         showExtendQueueDialog() {
             this.state.showExtendDialog = true;
             this.state.extendError = null;
@@ -626,12 +612,12 @@ export default defineComponent('now-playing-page', {
             this.state.extendError = null;
 
             try {
-                const isTempQueue = player.tempQueueMode;
+                const isTempQueue = this.stores.player.tempQueueMode;
                 let addedCount = 0;
 
                 if (isTempQueue) {
                     // Temp queue mode: generate locally using seeds from local queue
-                    const queue = player.queue;
+                    const queue = this.stores.player.queue;
                     if (queue.length === 0) {
                         this.state.extendError = 'Queue is empty';
                         return;
@@ -642,9 +628,9 @@ export default defineComponent('now-playing-page', {
                     const seedUuids = queue.slice(-seedCount).map(s => s.uuid);
                     const existingUuids = new Set(queue.map(s => s.uuid));
 
-                    // Generate similar songs
+                    // Generate similar songs (AI adapter, normalized -> { items })
                     const result = await offlineApi.ai.generatePlaylist(seedUuids, {
-                        size: this.state.extendCount + existingUuids.size,
+                        size: this.state.extendCount + existingUuids.size, // Request extra to filter dupes
                         diversity: this.state.extendDiversity
                     });
 
@@ -654,7 +640,7 @@ export default defineComponent('now-playing-page', {
                     }
 
                     // Filter out songs already in queue
-                    const newUuids = (result.songs || [])
+                    const newUuids = (result.items || [])
                         .filter(item => !existingUuids.has(item.uuid))
                         .slice(0, this.state.extendCount)
                         .map(item => item.uuid);
@@ -710,6 +696,20 @@ export default defineComponent('now-playing-page', {
             } finally {
                 this.state.isExtending = false;
             }
+        },
+
+        async handleStartRadio() {
+            await player.startScaFromQueue();
+            // Queue may grow - recalculate visible range
+            requestAnimationFrame(() => this._win.refresh());
+        },
+
+        async handleStopRadio() {
+            await player.stopSca();
+        },
+
+        async handleToggleAiRadio() {
+            await player.toggleAiRadio();
         },
 
         async handleToggleTempQueue() {
@@ -1562,9 +1562,11 @@ export default defineComponent('now-playing-page', {
         const scaEnabled = this.stores.player.scaEnabled;
         const queueIndex = this.stores.player.queueIndex;
         const eqEnabled = this.stores.player.eqEnabled;
+        // Read queueVersion directly to ensure reactivity tracking for untracked queue array
+        void this.stores.player.queueVersion;
         const { showSaveDialog, playlistName, isSaving, saveError, showEQMenu, showVolumePopup, showJumpToCurrent, jumpDirection } = this.state;
 
-        // Get visible queue (filtered when offline)
+        // Get visible queue (filtered when offline) - uses queueVersion for cache invalidation
         const visibleQueue = this.getVisibleQueue();
         const visibleQueueLength = visibleQueue.length;
         // Raw (unfiltered) queue count and initial-load flag for the empty-state gating.
@@ -1632,11 +1634,10 @@ export default defineComponent('now-playing-page', {
                     `;
                 })}
 
-                <!-- Queue as main content -->
+                <!-- Scroll wrapper ALWAYS exists so scroll handler stays attached -->
+                <div class="queue-scroll-wrapper ${visibleQueueLength === 0 ? 'hidden' : ''}" ref="queueScrollWrapper">
                 ${when(visibleQueueLength > 0, () => html`
-                    <!-- Scroll wrapper for queue -->
-                    <div class="queue-scroll-wrapper" ref="queueScrollWrapper">
-                        <!-- Queue Header -->
+                    <!-- Queue Header -->
                         <div class="queue-header">
                             <h3>📋 <span class="queue-title">${this.stores.player.tempQueueMode ? 'Temp Queue' : 'Queue'}</span><span class="queue-title-short">${this.stores.player.tempQueueMode ? 'Temp' : 'Queue'}</span> (${visibleQueueLength})</h3>
                             <div class="queue-actions">
@@ -1646,27 +1647,8 @@ export default defineComponent('now-playing-page', {
                                     ♻️<span class="btn-label">${this.stores.player.tempQueueMode ? 'Exit Temp' : 'Temp'}</span>
                                 </button>
                                 ${when(scaEnabled,
-                                    () => html`
-                                        <button class="queue-action-btn stop-radio" on-click="handleStopRadio" title="Stop Radio">⏹<span class="btn-label">Stop Radio</span></button>
-                                        ${when(this.stores.player.aiRadioAvailable, () => html`
-                                            <button
-                                                class="queue-action-btn ai-toggle ${this.stores.player.aiRadioEnabled ? 'active' : ''}"
-                                                on-click="handleToggleAiRadio"
-                                                title="${this.stores.player.aiRadioEnabled ? 'AI Radio: ON (uses similarity)' : 'AI Radio: OFF (random selection)'}">
-                                                🤖<span class="btn-label">${this.stores.player.aiRadioEnabled ? 'AI' : 'AI Off'}</span>
-                                            </button>
-                                        `)}
-                                    `,
-                                    () => html`
-                                        <button class="queue-action-btn" on-click="handleStartRadio" title="Start Radio">📻<span class="btn-label">Radio</span></button>
-                                        ${when(this.stores.player.aiRadioAvailable, () => html`
-                                            <button class="queue-action-btn"
-                                                    on-click="showExtendQueueDialog"
-                                                    title="Extend queue with similar songs using AI">
-                                                ✨<span class="btn-label">Extend</span>
-                                            </button>
-                                        `)}
-                                    `
+                                    () => html`<button class="queue-action-btn stop-radio" on-click="handleStopRadio" title="Stop Radio">⏹<span class="btn-label">Stop Radio</span></button>${when(this.stores.player.aiRadioAvailable, () => html`<button class="queue-action-btn ai-toggle ${this.stores.player.aiRadioEnabled ? 'active' : ''}" on-click="handleToggleAiRadio" title="${this.stores.player.aiRadioEnabled ? 'AI Radio: ON (uses similarity)' : 'AI Radio: OFF (random selection)'}">🤖<span class="btn-label">${this.stores.player.aiRadioEnabled ? 'AI' : 'AI Off'}</span></button>`)}`,
+                                    () => html`<button class="queue-action-btn" on-click="handleStartRadio" title="Start Radio">📻<span class="btn-label">Radio</span></button>`
                                 )}
                                 <div class="sort-dropdown">
                                     <button class="queue-action-btn" on-click="toggleSortMenu" title="Sort Queue" disabled="${this.state.isSorting}">
@@ -1686,6 +1668,11 @@ export default defineComponent('now-playing-page', {
                                     `)}
                                 </div>
                                 <button class="queue-action-btn" on-click="handleShowSaveDialog" title="Save as Playlist">💾<span class="btn-label">Save</span></button>
+                                ${when(this.stores.player.aiRadioAvailable, () => html`
+                                <button class="queue-action-btn extend" on-click="showExtendQueueDialog"
+                                        title="${shouldUseOffline() ? 'Requires online' : 'Extend queue with similar songs using AI'}"
+                                        disabled="${shouldUseOffline()}">✨<span class="btn-label">Extend</span></button>
+                                `)}
                                 <button class="queue-action-btn clear" on-click="handleClearQueue" title="Clear Queue">🗑<span class="btn-label">Clear</span></button>
                                 <button class="queue-action-btn select ${this.state.selectionMode ? 'active' : ''}" on-click="toggleSelectionMode" title="${this.state.selectionMode ? 'Exit selection mode' : 'Select multiple items'}">
                                     ☑<span class="btn-label">${this.state.selectionMode ? 'Done' : 'Select'}</span>
@@ -1754,39 +1741,38 @@ export default defineComponent('now-playing-page', {
                                 </svg>
                             </button>
                         `)}
-                    </div>
+                `)}
+                </div><!-- end queue-scroll-wrapper -->
 
-                    <!-- Selection Action Bar -->
-                    ${when(this.state.selectionMode && this.state.selectedIndices.size > 0, () => html`
-                        <div class="selection-bar">
-                            <span class="selection-count">${this.state.selectedIndices.size} selected</span>
-                            <div class="selection-actions">
-                                <button class="selection-btn" on-click="selectAll">All</button>
-                                <button class="selection-btn" on-click="clearSelection">Clear</button>
-                                <button class="selection-btn" on-click="${() => { this.state.showAddToPlaylist = true; }}">Add to Playlist</button>
-                                <button class="selection-btn danger" on-click="handleDeleteSelected">Delete</button>
-                            </div>
+                <!-- Selection Action Bar (outside scroll wrapper so it's always visible) -->
+                ${when(this.state.selectionMode && this.state.selectedIndices.size > 0, () => html`
+                    <div class="selection-bar">
+                        <span class="selection-count">${this.state.selectedIndices.size} selected</span>
+                        <div class="selection-actions">
+                            <button class="selection-btn" on-click="selectAll">All</button>
+                            <button class="selection-btn" on-click="clearSelection">Clear</button>
+                            <button class="selection-btn" on-click="${() => { this.state.showAddToPlaylist = true; }}">Add to Playlist</button>
+                            <button class="selection-btn danger" on-click="handleDeleteSelected">Delete</button>
                         </div>
-                    `)}
+                    </div>
+                `)}
 
-                    <!-- Bottom Control Bar -->
+                <!-- Bottom Control Bar (outside scroll wrapper so it's always visible) -->
+                ${when(visibleQueueLength > 0, () => html`
                     <div class="bottom-bar">
                         <!-- Row 1: Progress (isolated to prevent queue re-renders on time updates) -->
-                        ${contain(() => {
-                            const currentTime = this.stores.player.currentTime;
-                            const duration = this.stores.player.duration;
-                            return html`
+                        ${contain(() => html`
                             <div class="progress-row">
-                                <span class="time">${this.formatTime(currentTime)}</span>
+                                <span class="time">${this.formatTime(this.stores.player.currentTime)}</span>
                                 ${when(this.stores.player.currentSong?.seekable !== false && this.stores.player.currentSong?.seekable !== 0,
                                     () => html`<div class="seek-wrapper" on-click="${(e) => this.handleSeekWrapperClick(e)}">
-                                        <input type="range" class="seek-slider" min="0" max="${duration || 100}" step="1" value="${currentTime}" on-input="handleSeek">
+                                        <input type="range" class="seek-slider" min="0" max="${this.stores.player.duration || 100}" step="1" value="${this.stores.player.currentTime}" on-input="handleSeek">
                                     </div>`,
-                                    () => html`<div class="progress-bar"><div class="progress-fill" style="width: ${duration ? (currentTime / duration * 100) : 0}%"></div></div>`
+                                    () => html`<div class="progress-bar"><div class="progress-fill" style="width: ${this.stores.player.duration ? (this.stores.player.currentTime / this.stores.player.duration * 100) : 0}%"></div></div>`
                                 )}
-                                <span class="time">${this.formatTime(duration)}</span>
-                            </div>`;
-                        })}
+                                <span class="time">${this.formatTime(this.stores.player.duration)}</span>
+                            </div>
+                        `)}
 
                         <!-- Row 2: Controls -->
                         <div class="controls-row">
@@ -1911,26 +1897,6 @@ export default defineComponent('now-playing-page', {
                     </div>
                 `)}
 
-                <!-- Add to Playlist Dialog -->
-                ${when(this.state.showAddToPlaylist, () => html`
-                    <div class="dialog-overlay" on-click="handleCloseAddToPlaylist">
-                        <div class="dialog" on-click="${(e) => e.stopPropagation()}">
-                            <h3>Add to Playlist</h3>
-                            <div class="playlist-list">
-                                ${each(this.state.userPlaylists, playlist => html`
-                                    <button class="playlist-item" on-click="${() => this.addToPlaylist(playlist.id)}" disabled="${this.state.addingToPlaylist}">
-                                        <span class="playlist-icon">${playlist.name === FAVORITES_PLAYLIST_NAME ? '❤️' : '📋'}</span>
-                                        <span class="playlist-name">${playlist.name}</span>
-                                    </button>
-                                `)}
-                            </div>
-                            <div class="dialog-actions">
-                                <cl-button severity="secondary" on-click="handleCloseAddToPlaylist">Cancel</cl-button>
-                            </div>
-                        </div>
-                    </div>
-                `)}
-
                 <!-- Extend Queue with AI Dialog -->
                 ${when(this.state.showExtendDialog, () => html`
                     <div class="dialog-overlay" on-click="closeExtendDialog">
@@ -1960,6 +1926,26 @@ export default defineComponent('now-playing-page', {
                                 <cl-button severity="secondary" on-click="closeExtendDialog">Cancel</cl-button>
                                 <cl-button severity="primary" on-click="handleExtendQueue"
                                            loading="${this.state.isExtending}">Extend Queue</cl-button>
+                            </div>
+                        </div>
+                    </div>
+                `)}
+
+                <!-- Add to Playlist Dialog -->
+                ${when(this.state.showAddToPlaylist, () => html`
+                    <div class="dialog-overlay" on-click="handleCloseAddToPlaylist">
+                        <div class="dialog" on-click="${(e) => e.stopPropagation()}">
+                            <h3>Add to Playlist</h3>
+                            <div class="playlist-list">
+                                ${each(this.state.userPlaylists, playlist => html`
+                                    <button class="playlist-item" on-click="${() => this.addToPlaylist(playlist.id)}" disabled="${this.state.addingToPlaylist}">
+                                        <span class="playlist-icon">${playlist.name === FAVORITES_PLAYLIST_NAME ? '❤️' : '📋'}</span>
+                                        <span class="playlist-name">${playlist.name}</span>
+                                    </button>
+                                `)}
+                            </div>
+                            <div class="dialog-actions">
+                                <cl-button severity="secondary" on-click="handleCloseAddToPlaylist">Cancel</cl-button>
                             </div>
                         </div>
                     </div>
@@ -2003,6 +1989,10 @@ export default defineComponent('now-playing-page', {
             overflow-y: auto;
             overflow-x: hidden;
             position: relative;
+        }
+
+        .queue-scroll-wrapper.hidden {
+            display: none;
         }
 
         /* Empty State */
@@ -2064,15 +2054,6 @@ export default defineComponent('now-playing-page', {
             display: none;
         }
 
-        @media (max-width: 849px) {
-            .queue-header .queue-title {
-                display: none;
-            }
-            .queue-header .queue-title-short {
-                display: inline;
-            }
-        }
-
         .queue-actions {
             display: flex;
             gap: 0.5rem;
@@ -2089,8 +2070,13 @@ export default defineComponent('now-playing-page', {
             transition: all 0.15s;
         }
 
-        .queue-action-btn:hover {
+        .queue-action-btn:hover:not(:disabled) {
             background: var(--surface-300, #404040);
+        }
+
+        .queue-action-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
         }
 
         .queue-action-btn.clear:hover {
@@ -2108,6 +2094,16 @@ export default defineComponent('now-playing-page', {
             color: white;
         }
 
+        .queue-action-btn.temp-queue.active {
+            background: var(--warning-100, #422006);
+            color: var(--warning-500, #f59e0b);
+        }
+
+        .queue-action-btn.temp-queue.active:hover {
+            background: var(--warning-500, #f59e0b);
+            color: black;
+        }
+
         .queue-action-btn.ai-toggle {
             background: var(--surface-300, #404040);
             color: var(--text-secondary, #a0a0a0);
@@ -2123,23 +2119,13 @@ export default defineComponent('now-playing-page', {
             color: var(--primary-300, #93c5fd);
         }
 
-        .queue-action-btn.temp-queue.active {
-            background: var(--warning-100, #422006);
-            color: var(--warning-500, #f59e0b);
-        }
-
-        .queue-action-btn.temp-queue.active:hover {
-            background: var(--warning-500, #f59e0b);
-            color: black;
-        }
-
         /* Button labels - hidden on mobile, shown on desktop */
         .btn-label {
             display: none;
             margin-left: 0.25rem;
         }
 
-        @media (min-width: 768px) {
+        @media (min-width: 850px) {
             .btn-label {
                 display: inline;
             }
@@ -2958,6 +2944,16 @@ export default defineComponent('now-playing-page', {
         }
 
         /* Mobile */
+        @media (max-width: 849px) {
+            /* Show short header title on mobile (not song titles) */
+            .queue-header .queue-title {
+                display: none;
+            }
+            .queue-header .queue-title-short {
+                display: inline;
+            }
+        }
+
         @media (max-width: 767px) {
             .queue-item {
                 user-select: none;

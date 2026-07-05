@@ -8,6 +8,7 @@
  */
 
 import * as api from '../api/music-api.js';
+import { profile } from '#profile';
 import * as offlineDb from './offline-db.js';
 import offlineStore, {
     shouldUseOffline,
@@ -1958,8 +1959,10 @@ export const auth = {
     // These require network - not available offline
     login: api.auth.login,
     logout: api.auth.logout,
-    register: api.auth.register,
-    changePassword: api.auth.changePassword
+    // register/changePassword are deployment-specific (public password auth);
+    // routed through profile.auth - null on the site-auth (private) build.
+    register: profile.auth.register,
+    changePassword: profile.auth.changePassword
 };
 
 // =============================================================================
@@ -2244,7 +2247,7 @@ export const browse = {
 // Re-export unchanged APIs
 // =============================================================================
 
-// Songs API (offline-aware for byPath and byFilter)
+// Songs API (offline-aware for byPath, byFilter, and get with include_vfs)
 export const songs = {
     // Pass through most methods
     list: api.songs.list,
@@ -2255,9 +2258,9 @@ export const songs = {
     ftsRanked: api.songs.ftsRanked,
     getBulk: api.songs.getBulk,
 
-    // Get song by UUID
-    async get(uuid) {
-        return api.songs.get(uuid);
+    // Get with optional include_vfs parameter
+    async get(uuid, options = {}) {
+        return api.songs.get(uuid, options);
     },
 
     // Offline-aware byPath - returns cached songs when offline
@@ -2323,7 +2326,12 @@ export const songs = {
 export const radio = api.radio;
 export const sca = api.sca;
 export const tags = api.tags;
-export const ai = api.ai;
+// AI-search + VFS surfaces live behind the profile seam (ai_* vs clap_*; VFS
+// present only where the backend supports it). Re-exported here so pages keep
+// importing them from offline-api. `ai` is the normalized adapter; `vfs` is
+// null on deployments without VFS support.
+export const ai = profile.ai;
+export const vfs = profile.vfs;
 export const getStreamUrl = api.getStreamUrl;
 
 // =============================================================================

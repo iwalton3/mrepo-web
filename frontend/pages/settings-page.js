@@ -9,6 +9,7 @@
 
 import { defineComponent, html, when } from 'vdx/framework.js';
 import { preferences, auth, ai } from '../offline/offline-api.js';
+import { profile } from '#profile';
 import player from '../stores/player-store.js';
 import offlineStore, { forceReloadWithUpdate, requestCacheStatus } from '../offline/offline-store.js';
 import 'vdxui/button/button.js';
@@ -104,10 +105,10 @@ export default defineComponent('settings-page', {
             console.error('Auth check failed:', e);
         }
 
-        // Check AI status
+        // Check AI status (normalized adapter -> { available })
         try {
             const aiStatus = await ai.status();
-            this.state.aiEnabled = aiStatus.enabled && aiStatus.status === 'ok';
+            this.state.aiEnabled = aiStatus.available;
         } catch (e) {
             console.error('AI status check failed:', e);
             this.state.aiEnabled = false;
@@ -386,7 +387,7 @@ export default defineComponent('settings-page', {
 
                 ${when(!isAuthenticated, html`
                     <div class="auth-prompt">
-                        <p>Please <router-link to="/login/">log in</router-link> to save your preferences</p>
+                        <p>Please <a href="${profile.auth.loginUrl}">log in</a> to save your preferences</p>
                     </div>
                 `, html`
                     <div class="user-info">

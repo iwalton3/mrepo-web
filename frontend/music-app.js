@@ -9,10 +9,13 @@ import { enableRouting, getRouter } from 'vdx/router.js';
 import { auth, playlists as playlistsApi } from './offline/offline-api.js';
 import { player, playerStore } from './stores/player-store.js';
 import { initializeOfflineStore } from './offline/offline-store.js';
+import { profile } from '#profile';
 import 'vdxui/layout/shell.js';
 import 'vdxui/overlay/toast.js';
 
-// Import pages (lazy loaded)
+// Import pages (lazy loaded). Deployment-specific pages (login, admin) are NOT
+// referenced here - their lazy imports live in profile.auth.extraRoutes so the
+// private build never statically or dynamically imports those public-only files.
 const loadNowPlaying = () => import('./pages/now-playing.js');
 const loadVisualizer = () => import('./pages/visualizer-page.js');
 const loadBrowse = () => import('./pages/browse-page.js');
@@ -23,8 +26,6 @@ const loadHistory = () => import('./pages/history-page.js');
 const loadSettings = () => import('./pages/settings-page.js');
 const loadEQ = () => import('./pages/eq-page.js');
 const loadLoopSong = () => import('./pages/loopsong-page.js');
-const loadLogin = () => import('./pages/login-page.js');
-const loadAdmin = () => import('./pages/admin-page.js');
 const loadNotFound = () => import('./pages/not-found-page.js');
 
 // Import mini player
@@ -128,28 +129,34 @@ export default defineComponent('music-app', {
             if (!this._isMounted) return;
             this.state.authenticated = result.authenticated;
             this.state.user = result.user;
-            // capabilities can be 'admin', 'admin,user', or array ['admin', 'user']
-            const caps = result.capabilities;
-            this.state.isAdmin = Array.isArray(caps)
-                ? caps.includes('admin')
-                : (caps && caps.includes('admin'));
 
-            // If setup is required (no users exist), redirect to login/setup
-            if (result.setupRequired) {
-                window.location.hash = '/login/';
-            }
+            // Admin surface is a deployment capability (profile.auth.hasAdmin).
+            // On builds without it (site auth), skip capability parsing, the
+            // setup redirect, and the admin menu entry entirely.
+            if (profile.auth.hasAdmin) {
+                // capabilities can be 'admin', 'admin,user', or array ['admin', 'user']
+                const caps = result.capabilities;
+                this.state.isAdmin = Array.isArray(caps)
+                    ? caps.includes('admin')
+                    : (caps && caps.includes('admin'));
 
-            // Add admin menu item if user is admin (insert before Settings)
-            if (this.state.isAdmin) {
-                const items = [...this.state.menuItems];
-                const settingsIndex = items.findIndex(i => i.key === 'settings');
-                items.splice(settingsIndex, 0, {
-                    key: 'admin',
-                    label: 'Admin',
-                    icon: '🔧',
-                    route: '/admin/'
-                });
-                this.state.menuItems = items;
+                // If setup is required (no users exist), redirect to login/setup
+                if (result.setupRequired) {
+                    window.location.hash = '/login/';
+                }
+
+                // Add admin menu item if user is admin (insert before Settings)
+                if (this.state.isAdmin) {
+                    const items = [...this.state.menuItems];
+                    const settingsIndex = items.findIndex(i => i.key === 'settings');
+                    items.splice(settingsIndex, 0, {
+                        key: 'admin',
+                        label: 'Admin',
+                        icon: '🔧',
+                        route: '/admin/'
+                    });
+                    this.state.menuItems = items;
+                }
             }
 
             // If authenticated, cache favorites by loading playlists
@@ -238,14 +245,10 @@ export default defineComponent('music-app', {
                     component: 'eq-page',
                     load: loadEQ
                 },
-                '/login/': {
-                    component: 'login-page',
-                    load: loadLogin
-                },
-                '/admin/': {
-                    component: 'admin-page',
-                    load: loadAdmin
-                },
+                // Deployment-specific routes (e.g. /login/ + /admin/ on the
+                // public build). Empty object on builds without them, so the
+                // public-only page files are never imported here.
+                ...(profile.auth.extraRoutes || {}),
                 '/loopsong/:uuid/': {
                     component: 'loopsong-page',
                     load: loadLoopSong
@@ -326,7 +329,7 @@ export default defineComponent('music-app', {
                 <div slot="topbar" class="topbar-content">
                     ${when(this.state.authenticated,
                         html`<span class="user-badge">${this.state.user}</span>`,
-                        html`<a href="#/login/" class="login-link">Login</a>`
+                        html`<a href="${profile.auth.loginUrl}" class="login-link">Login</a>`
                     )}
                 </div>
 

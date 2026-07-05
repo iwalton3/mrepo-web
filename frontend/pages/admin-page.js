@@ -2,7 +2,9 @@
  * Admin page for user and system management.
  */
 import { defineComponent, html, when, each } from 'vdx/framework.js';
-import { admin, aiAdmin } from '../api/music-api.js';
+import { profile } from '#profile';
+
+const { admin, aiAdmin } = profile;
 
 export default defineComponent('admin-page', {
     props: {

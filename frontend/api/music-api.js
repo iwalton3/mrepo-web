@@ -1,13 +1,13 @@
 /**
  * Music Player API Client
  *
- * Communicates with the mrepo backend API.
+ * Communicates with the backend music API. The transport endpoint and stream
+ * URLs come from the per-deployment `#profile` seam so this client stays
+ * byte-identical across the public and private builds; the deployment-specific
+ * method groups (AI search, VFS, admin, auth extras) live behind `#profile`.
  */
 
-// Get config from injected globals or defaults
-const config = window.MREPO_CONFIG || {};
-const API_BASE = config.apiBase || '/api/';
-const STREAM_BASE = config.streamBase || '/stream/';
+import { profile } from '#profile';
 
 /**
  * Check if work offline mode is enabled.
@@ -20,13 +20,13 @@ function isWorkOfflineMode() {
 /**
  * Make an API call to the backend.
  */
-async function apiCall(method, args = {}, kwargs = {}) {
+export async function apiCall(method, args = {}, kwargs = {}) {
     // Block all API calls in work offline mode
     if (isWorkOfflineMode()) {
         throw new Error('Network blocked: Work Offline mode is enabled');
     }
 
-    const response = await fetch(API_BASE, {
+    const response = await fetch(profile.endpoints.apiBase, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -69,18 +69,26 @@ export const songs = {
     /**
      * Get a single song by UUID.
      * @param {string} uuid - Song UUID
+     * @param {Object} options - Optional parameters
+     * @param {boolean} options.include_vfs - Include VFS virtual_file path
      */
-    async get(uuid) {
-        return apiCall('songs_get', { uuid });
+    async get(uuid, options = {}) {
+        // include_vfs (and other VFS-only params) are accepted only where the
+        // backend has VFS support; strip them elsewhere to avoid InvalidParameters.
+        return apiCall('songs_get', { uuid, ...(profile.vfs ? options : {}) });
     },
 
     /**
      * Get multiple songs by UUID.
      * @param {string[]} uuids - Array of song UUIDs
+     * @param {Object} options - Optional parameters
+     * @param {boolean} options.include_vfs - Include VFS virtual_file paths
      * @returns {Promise<Object[]>} Array of song objects
      */
-    async getBulk(uuids) {
-        return apiCall('songs_get_bulk', { uuids });
+    async getBulk(uuids, options = {}) {
+        // include_vfs (and other VFS-only params) are accepted only where the
+        // backend has VFS support; strip them elsewhere to avoid InvalidParameters.
+        return apiCall('songs_get_bulk', { uuids, ...(profile.vfs ? options : {}) });
     },
 
     /**
@@ -504,8 +512,8 @@ export const queue = {
     /**
      * Set the current playback position.
      * @param {number} index - Position in queue
-     * @param {string} [deviceId] - Device ID for conflict resolution
-     * @param {number} [seq] - Sequence number for ordering updates
+     * @param {string} [deviceId] - Unique device identifier
+     * @param {number} [seq] - Sequence number for this device (monotonically increasing)
      */
     async setIndex(index, deviceId = null, seq = null) {
         const params = { index };
@@ -589,7 +597,8 @@ export const sca = {
     },
 
     /**
-     * Populate queue using AI similarity (falls back to random if unavailable).
+     * Populate queue using AI (CLAP) similarity (falls back to classic SCA if
+     * unavailable). Backed by the radio_algorithm='clap' path server-side.
      * @param {number} [count=10] - Number of songs to add
      * @param {string} [seedUuid] - Optional seed song UUID
      * @param {number} [diversity=0.3] - Diversity factor (0-1)
@@ -612,19 +621,19 @@ export const sca = {
     /**
      * Get songs in SCA pool.
      */
-    async getPool() {
-        return apiCall('sca_get_pool');
+    async getPool({ cursor, limit = 100 } = {}) {
+        return apiCall('sca_get_pool', { cursor, limit });
     },
 
     /**
-     * Get SCA/radio status including AI availability.
+     * Get SCA/radio status including AI (CLAP) availability.
      */
     async status() {
         return apiCall('sca_status');
     },
 
     /**
-     * Set user preference for AI-powered radio.
+     * Set user preference for AI-powered radio (maps to radio_algorithm).
      * @param {boolean} enabled - Whether to use AI for radio
      */
     async setAiPreference(enabled) {
@@ -759,19 +768,19 @@ export const preferences = {
     /**
      * Update user preferences.
      */
-    async set({ volume, shuffle, repeatMode, radioEopp, darkMode,
+    async set({ volume, shuffle, repeatMode, radioEopp, radioAlgorithm, darkMode,
                 replayGainMode, replayGainPreamp, replayGainFallback,
-                radioAlgorithm, aiSearchMax, aiSearchDiversity, aiRadioQueueDiversity } = {}) {
+                aiSearchMax, aiSearchDiversity, aiRadioQueueDiversity } = {}) {
         return apiCall('preferences_set', {
             volume,
             shuffle,
             repeat_mode: repeatMode,
             radio_eopp: radioEopp,
+            radio_algorithm: radioAlgorithm,
             dark_mode: darkMode,
             replay_gain_mode: replayGainMode,
             replay_gain_preamp: replayGainPreamp,
             replay_gain_fallback: replayGainFallback,
-            radio_algorithm: radioAlgorithm,
             ai_search_max: aiSearchMax,
             ai_search_diversity: aiSearchDiversity,
             ai_radio_queue_diversity: aiRadioQueueDiversity
@@ -811,7 +820,12 @@ export const eqPresets = {
 };
 
 /**
- * Auth API (from general module)
+ * Auth API (from general module).
+ *
+ * checkUser/login/logout are the surface common to both backends. Deployment-
+ * specific auth (register, changePassword, admin) lives behind `#profile`
+ * (see profile.auth) - private (site-auth) leaves those null. login/logout are
+ * never called on the site-auth build (it uses profile.auth.loginUrl instead).
  */
 export const auth = {
     /**
@@ -833,113 +847,6 @@ export const auth = {
      */
     async logout() {
         return apiCall('auth_logout');
-    },
-
-    /**
-     * Register a new user (only during setup or if registration enabled).
-     */
-    async register(username, password) {
-        return apiCall('auth_register', { username, password });
-    },
-
-    /**
-     * Change current user's password.
-     */
-    async changePassword(currentPassword, newPassword) {
-        return apiCall('auth_change_password', {
-            current_password: currentPassword,
-            new_password: newPassword
-        });
-    }
-};
-
-/**
- * Admin API - User management (admin only)
- */
-export const admin = {
-    /**
-     * List all users.
-     */
-    async listUsers() {
-        return apiCall('users_list');
-    },
-
-    /**
-     * Create a new user.
-     */
-    async createUser(username, password, capabilities = 'user') {
-        return apiCall('users_create', { username, password, capabilities });
-    },
-
-    /**
-     * Update a user.
-     */
-    async updateUser(userId, { username, password, capabilities } = {}) {
-        return apiCall('users_update', { user_id: userId, username, password, capabilities });
-    },
-
-    /**
-     * Delete a user.
-     */
-    async deleteUser(userId) {
-        return apiCall('users_delete', { user_id: userId });
-    },
-
-    /**
-     * Start a music scan.
-     */
-    async startScan(paths = null, force = false) {
-        return apiCall('admin_start_scan', { paths, force });
-    },
-
-    /**
-     * Get scan status.
-     */
-    async getScanStatus() {
-        return apiCall('admin_scan_status');
-    },
-
-    /**
-     * Cancel a running scan.
-     */
-    async cancelScan() {
-        return apiCall('admin_cancel_scan');
-    },
-
-    /**
-     * Get library statistics.
-     */
-    async getStats() {
-        return apiCall('admin_get_stats');
-    },
-
-    /**
-     * Relocate file paths when music is moved.
-     * @param {string} oldPrefix - Old path prefix to replace
-     * @param {string} newPrefix - New path prefix
-     * @param {boolean} dryRun - If true, only count affected files
-     */
-    async relocatePaths(oldPrefix, newPrefix, dryRun = true) {
-        return apiCall('admin_relocate_paths', {
-            old_prefix: oldPrefix,
-            new_prefix: newPrefix,
-            dry_run: dryRun
-        });
-    },
-
-    /**
-     * Find songs whose files no longer exist.
-     * @param {number} limit - Max results to return
-     */
-    async findMissing(limit = 100) {
-        return apiCall('admin_find_missing', { limit });
-    },
-
-    /**
-     * Remove songs whose files no longer exist.
-     */
-    async removeMissing() {
-        return apiCall('admin_remove_missing');
     }
 };
 
@@ -988,156 +895,14 @@ export const sync = {
 };
 
 /**
- * AI Features API - Semantic search and similarity
- * These methods require AI features to be enabled on the server.
- */
-export const ai = {
-    /**
-     * Get AI service status.
-     * Returns whether AI is enabled and service health.
-     */
-    async status() {
-        return apiCall('ai_status');
-    },
-
-    /**
-     * Search songs using semantic text search.
-     * @param {string} query - Natural language search query
-     * @param {Object} options - Search options
-     * @param {number} [options.limit=50] - Maximum results
-     * @param {string[]} [options.filterUuids] - Limit to these song UUIDs
-     */
-    async searchText(query, { limit = 50, filterUuids } = {}) {
-        return apiCall('ai_search_text', {
-            query,
-            limit,
-            filter_uuids: filterUuids
-        });
-    },
-
-    /**
-     * Find songs similar to a given song.
-     * @param {string} uuid - Song UUID to find similar songs for
-     * @param {Object} options - Search options
-     * @param {number} [options.limit=20] - Maximum results
-     * @param {string[]} [options.filterUuids] - Limit to these song UUIDs
-     */
-    async findSimilar(uuid, { limit = 20, filterUuids } = {}) {
-        return apiCall('ai_search_similar', {
-            uuid,
-            k: limit,
-            filter_uuids: filterUuids
-        });
-    },
-
-    /**
-     * Generate a playlist of similar songs using MMR for diversity.
-     * @param {string[]} seedUuids - Seed song UUIDs
-     * @param {Object} options - Generation options
-     * @param {number} [options.count=20] - Number of songs to generate
-     * @param {number} [options.diversity=0.2] - Diversity factor (0-1)
-     * @param {string[]} [options.filterUuids] - Limit to these song UUIDs
-     */
-    async generatePlaylist(seedUuids, { size = 20, diversity = 0.2, filterUuids } = {}) {
-        return apiCall('ai_generate_playlist', {
-            seed_uuids: seedUuids,
-            size,
-            diversity,
-            filter_uuids: filterUuids
-        });
-    },
-
-    /**
-     * Extend the queue with similar songs.
-     * @param {number} count - Number of songs to add
-     * @param {number} [diversity=0.2] - Diversity factor (0-1)
-     */
-    async extendQueue(count = 10, diversity = 0.2) {
-        return apiCall('ai_extend_queue', { count, diversity });
-    },
-
-    /**
-     * Extend a playlist with similar songs.
-     * @param {number|string} playlistId - Playlist ID
-     * @param {number} count - Number of songs to add
-     * @param {number} [diversity=0.2] - Diversity factor (0-1)
-     */
-    async extendPlaylist(playlistId, count = 10, diversity = 0.2) {
-        return apiCall('ai_extend_playlist', {
-            playlist_id: playlistId,
-            count,
-            diversity
-        });
-    },
-
-    /**
-     * Check for potential duplicate songs based on audio similarity.
-     * @param {number} [threshold=0.95] - Similarity threshold (0-1)
-     * @param {number} [limit=100] - Maximum pairs to return
-     */
-    async checkDuplicates(threshold = 0.95, limit = 100) {
-        return apiCall('ai_check_duplicates', { threshold, limit });
-    }
-};
-
-/**
- * AI Admin API - AI service management (admin only)
- */
-export const aiAdmin = {
-    /**
-     * Get AI service status and analysis statistics.
-     */
-    async status() {
-        return apiCall('admin_ai_status');
-    },
-
-    /**
-     * Start AI analysis of unanalyzed songs.
-     * @param {boolean} [force=false] - Force restart if already running
-     */
-    async startAnalysis(force = false) {
-        return apiCall('admin_ai_start_analysis', { force });
-    },
-
-    /**
-     * Cancel a running AI analysis job.
-     * @param {number} [jobId] - Specific job ID, or null for any running job
-     */
-    async cancelAnalysis(jobId = null) {
-        return apiCall('admin_ai_cancel_analysis', { job_id: jobId });
-    },
-
-    /**
-     * Clear all AI embeddings to force re-analysis.
-     */
-    async clearEmbeddings() {
-        return apiCall('admin_ai_clear_embeddings');
-    }
-};
-
-/**
- * Formats that require transcoding via stream.cgi (tracker formats)
- */
-const TRANSCODE_FORMATS = new Set([
-    'mod', 'xm', 's3m', 'it', 'stm', 'med', 'mtm', 'ult', 'wow',
-    '669', 'far', 'okt', 'ptm', 'dmf', 'dsm', 'amf', 'gdm', 'imf',
-    'j2b', 'mdl', 'mt2', 'psm', 'umx'
-]);
-
-/**
- * Build stream URL for a song.
- * All streaming goes through the backend /stream/ endpoint.
+ * Build stream URL for a song. The per-deployment mapping (direct repo URL vs
+ * backend /stream/ endpoint, transcode handling) lives in profile.endpoints.
  *
  * @param {string} uuid - Song UUID
- * @param {string} [fileExt] - File extension (e.g., 'mp3', 'mod'). Optional, for cache-busting.
+ * @param {string} [fileExt] - File extension (e.g., 'mp3', 'mod'). Optional.
  */
 export function getStreamUrl(uuid, fileExt = null) {
-    // All streaming goes through backend now
-    if (fileExt) {
-        const ext = fileExt.toLowerCase().replace(/^\./, '');
-        return `${STREAM_BASE}${uuid}.${ext}`;
-    }
-    return `${STREAM_BASE}${uuid}`;
+    return profile.endpoints.audioUrl(uuid, fileExt);
 }
 
 export default {
@@ -1153,9 +918,6 @@ export default {
     preferences,
     eqPresets,
     auth,
-    admin,
     sync,
-    ai,
-    aiAdmin,
     getStreamUrl
 };

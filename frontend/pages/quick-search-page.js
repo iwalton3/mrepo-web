@@ -456,8 +456,8 @@ export default defineComponent('quick-search-page', {
                 if (this._similarSearchId !== thisSearchId) return;
                 this.state.similarSong = sourceSong;
 
-                // Search for similar songs using CLAP
-                const result = await ai.findSimilar(uuid, { limit: 200 });
+                // Search for similar songs via the AI adapter (normalized -> { items })
+                const result = await ai.findSimilar(uuid, 200);
                 if (this._similarSearchId !== thisSearchId) return;
 
                 if (result.error) {
@@ -467,8 +467,7 @@ export default defineComponent('quick-search-page', {
                     return;
                 }
 
-                // Result contains {results: [...songs with scores...]}
-                const similarSongs = result.results || [];
+                const similarSongs = result.items || [];
                 this.state.advancedResults = similarSongs;
                 this.state.advancedTotalCount = similarSongs.length;
 

@@ -7,8 +7,7 @@
  */
 
 import { defineComponent, html, when, each } from 'vdx/framework.js';
-import { playlists as playlistsApi, songs as songsApi, isFavorite, getFavoritesPlaylistId } from '../offline/offline-api.js';
-import { ai } from '../api/music-api.js';
+import { playlists as playlistsApi, songs as songsApi, isFavorite, getFavoritesPlaylistId, ai } from '../offline/offline-api.js';
 import { player } from '../stores/player-store.js';
 import offlineStore, { computeOfflineFilterSets } from '../offline/offline-store.js';
 import { downloadSong, deleteSong, canCacheOffline } from '../offline/offline-audio.js';
@@ -20,7 +19,7 @@ async function checkAiAvailable() {
     if (aiAvailable !== null) return aiAvailable;
     try {
         const status = await ai.status();
-        aiAvailable = status.enabled && status.status === 'ok';
+        aiAvailable = status.available;
     } catch {
         aiAvailable = false;
     }
