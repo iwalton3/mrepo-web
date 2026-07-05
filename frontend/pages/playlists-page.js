@@ -199,8 +199,9 @@ export default defineComponent('playlists-page', {
 
         // Selection mode methods
         toggleSelectionMode() {
+            // No playlistVersion bump: selection mode/state live in the
+            // memoEach key, so only rows whose key bits change re-render.
             this.state.selectionMode = !this.state.selectionMode;
-            this.state.playlistVersion++;  // Invalidate memoEach cache
             if (!this.state.selectionMode) {
                 this.clearSelection();
             }
@@ -231,7 +232,8 @@ export default defineComponent('playlists-page', {
             }
 
             this.state.selectedIndices = newSet;
-            this.state.playlistVersion++;  // Invalidate memoEach cache
+            // No version bump: the per-row selected bit in the memoEach key
+            // re-renders exactly the toggled row(s).
         },
 
         selectAll() {
@@ -241,13 +243,11 @@ export default defineComponent('playlists-page', {
                 if (songs[i]) newSet.add(i);
             }
             this.state.selectedIndices = newSet;
-            this.state.playlistVersion++;  // Invalidate memoEach cache
         },
 
         clearSelection() {
             this.state.selectedIndices = new Set();
             this._lastSelectedIndex = undefined;
-            this.state.playlistVersion++;  // Invalidate memoEach cache
         },
 
         async handleDeleteSelected() {
@@ -2050,8 +2050,17 @@ export default defineComponent('playlists-page', {
                                             // scroll jump around). The position (win.visibleStart +
                                             // idx) is scroll-stable, so plain scrolling still hits
                                             // the memo cache.
+                                            //
+                                            // Selection state is IN the key (mode + per-row selected
+                                            // bit) instead of a global version bump: a toggle then
+                                            // re-renders ONLY the toggled row. Tearing down every
+                                            // visible row per tap also made Chrome's scroll anchoring
+                                            // (Android) walk the view up by visible+buffer rows.
                                             const actualIndex = win.visibleStart + idx;
-                                            return `${song?.uuid ?? 'loading'}-${actualIndex}-${this.state.playlistVersion ?? 0}`;
+                                            const sel = this.state.selectionMode
+                                                ? (this.state.selectedIndices.has(actualIndex) ? 's' : 'u')
+                                                : 'n';
+                                            return `${song?.uuid ?? 'loading'}-${actualIndex}-${this.state.playlistVersion ?? 0}-${sel}`;
                                         }, { trustKey: true })}
                                     </div>
                                 </div>

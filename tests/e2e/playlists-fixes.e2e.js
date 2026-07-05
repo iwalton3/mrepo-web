@@ -204,6 +204,36 @@ const test = new TestHelper();
             'the checkbox tap toggled the selection off');
     });
 
+    await test.test('selection toggle replaces only the toggled row (scroll-anchor safety)', async () => {
+        const r = await test.page.evaluate(async () => {
+            const el = document.querySelector('playlists-page');
+            const raf = () => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
+            el.state.selectionMode = true;
+            await raf();
+            const rowEl = (i) => el.querySelector(`.song-item[data-index="${i}"]`);
+            const before0 = rowEl(0);
+            const before1 = rowEl(1);
+            const wrapper = document.querySelector('.router-wrapper');
+            const scrollBefore = wrapper.scrollTop;
+            el.toggleSelection(1, { stopPropagation() {} });
+            await raf();
+            return {
+                row0Same: rowEl(0) === before0,
+                row1Same: rowEl(1) === before1,
+                row1Selected: rowEl(1).classList.contains('selected'),
+                scrollDelta: wrapper.scrollTop - scrollBefore,
+                anchor: getComputedStyle(wrapper).overflowAnchor,
+            };
+        });
+        // Replacing EVERY row per toggle is what let Chrome's scroll anchoring
+        // (Android) walk the view up by visible+buffer rows.
+        await test.assert(r.row0Same, 'untouched rows keep their DOM nodes (memo cache hit)');
+        await test.assert(!r.row1Same, 'the toggled row is re-rendered');
+        await test.assert(r.row1Selected, 'toggled row shows selected');
+        await test.assertEqual(r.scrollDelta, 0, 'scroll position unchanged by the toggle');
+        await test.assertEqual(r.anchor, 'none', 'scroll container opts out of scroll anchoring');
+    });
+
     // Cleanup
     await test.apiCall('playlists_delete', { playlist_id: pid });
     await test.apiCall('queue_clear', {});

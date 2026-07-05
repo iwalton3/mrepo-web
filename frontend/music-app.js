@@ -416,6 +416,14 @@ export default defineComponent('music-app', {
             height: 100%;
             overflow: auto;
             background: var(--shell-bg, #0d0d0d);
+            /* This is the app's scroll container, and pages windowed with
+               createWindowing replace batches of rows inside it. Chrome's
+               scroll anchoring (notably on Android) compensates for replaced
+               anchor content by walking the scroll position up - a selection
+               toggle in a long playlist jumped the view up by
+               visible+buffer rows. Windowed content manages its own
+               positioning; anchoring must be off. */
+            overflow-anchor: none;
         }
 
         @media (max-width: 767px) {
