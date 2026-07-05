@@ -46,7 +46,10 @@ export async function apiCall(method, args = {}, kwargs = {}) {
 
     const data = await response.json();
     if (data.error) {
-        throw new Error(data.error);
+        // Public dispatch envelope: {error: <ExceptionName>, message: <human text>}.
+        // Private envelope carries the human text in `error` itself (no message
+        // field), so this fallback shows the right string on both backends.
+        throw new Error(data.message || data.error);
     }
 
     return data.result;

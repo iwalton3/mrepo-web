@@ -294,6 +294,17 @@ export default defineComponent('music-app', {
             }
         },
 
+        async handleLogout() {
+            try {
+                await auth.logout();
+            } catch (e) {
+                console.error('Logout failed:', e);
+            }
+            // Reload to reset all cached auth/user state
+            window.location.hash = '/';
+            window.location.reload();
+        },
+
         handleActiveItemChange(e) {
             const key = e.detail?.value;
             if (!key) return;
@@ -328,7 +339,9 @@ export default defineComponent('music-app', {
 
                 <div slot="topbar" class="topbar-content">
                     ${when(this.state.authenticated,
-                        html`<span class="user-badge">${this.state.user}</span>`,
+                        () => html`<span class="user-badge">${this.state.user}</span>${when(profile.auth.supportsLogout,
+                            html`<button class="logout-btn" on-click="handleLogout" title="Log out">Logout</button>`
+                        )}`,
                         html`<a href="${profile.auth.loginUrl}" class="login-link">Login</a>`
                     )}
                 </div>
@@ -376,6 +389,21 @@ export default defineComponent('music-app', {
 
         .login-link:hover {
             text-decoration: underline;
+        }
+
+        .logout-btn {
+            background: none;
+            border: 1px solid var(--surface-300, #404040);
+            color: var(--text-secondary, #a0a0a0);
+            padding: 0.25rem 0.75rem;
+            border-radius: 1rem;
+            font-size: 0.875rem;
+            cursor: pointer;
+        }
+
+        .logout-btn:hover {
+            color: var(--text-primary, #e0e0e0);
+            border-color: var(--text-secondary, #a0a0a0);
         }
 
         .sidebar-footer {

@@ -32,7 +32,7 @@ behind `profile.radio`).
   surface wired to `ai_*` on public / `clap_*` on private, results
   normalized to `{ items }`; `status().available` gates the AI UI),
   `auth` (frontend auth metadata: `loginUrl`, `hasAdmin`,
-  `supportsRegister`, `supportsChangePassword`, `register`/
+  `supportsLogout`, `supportsRegister`, `supportsChangePassword`, `register`/
   `changePassword` methods or null, and `extraRoutes` - the lazy imports
   of the public-only login/admin page files live HERE so the shared
   `music-app` never references them), `vfs` (folder-mapping adapter;

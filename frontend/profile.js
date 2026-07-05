@@ -119,6 +119,7 @@ export const profile = {
     auth: {
         loginUrl: '#/login/',
         hasAdmin: true,
+        supportsLogout: true,
         supportsRegister: true,
         supportsChangePassword: true,
         register(username, password) {

@@ -69,7 +69,10 @@ export default defineComponent('now-playing-page', {
             selectionVersion: 0,  // Incremented on selection changes to invalidate memoEach cache
             // Confirm dialog
             confirmDialog: { show: false, title: '', message: '', action: null },
-            // Extend queue with AI
+            // Extend queue with AI (aiEnabled = AI-search adapter status, NOT
+            // aiRadioAvailable - radio needs a live sca_status probe, search
+            // is gated by profile.ai like playlists/song-context-menu)
+            aiEnabled: false,
             showExtendDialog: false,
             extendCount: 10,
             extendDiversity: 0.3,
@@ -134,6 +137,12 @@ export default defineComponent('now-playing-page', {
         this._debouncedSetVolume = debounce((value) => {
             player.setVolume(value / 100);
         }, 50);
+
+        // AI-search availability gates the Extend button. Non-blocking so the
+        // queue renders without waiting on the probe.
+        offlineApi.ai.status().then((status) => {
+            if (this._isMounted) this.state.aiEnabled = status.available;
+        }).catch(() => {});
 
         // Wire the windowing scroll target BEFORE the awaits below: the queue
         // can finish loading first and trigger _tryInitialScroll's programmatic
@@ -1668,7 +1677,7 @@ export default defineComponent('now-playing-page', {
                                     `)}
                                 </div>
                                 <button class="queue-action-btn" on-click="handleShowSaveDialog" title="Save as Playlist">💾<span class="btn-label">Save</span></button>
-                                ${when(this.stores.player.aiRadioAvailable, () => html`
+                                ${when(this.state.aiEnabled, () => html`
                                 <button class="queue-action-btn extend" on-click="showExtendQueueDialog"
                                         title="${shouldUseOffline() ? 'Requires online' : 'Extend queue with similar songs using AI'}"
                                         disabled="${shouldUseOffline()}">✨<span class="btn-label">Extend</span></button>
