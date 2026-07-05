@@ -87,6 +87,15 @@ export default defineComponent('settings-page', {
             // AI status
             aiEnabled: false,
 
+            // Change password form (only rendered when the deployment's auth
+            // adapter supports it - profile.auth.supportsChangePassword)
+            pwCurrent: '',
+            pwNew: '',
+            pwConfirm: '',
+            pwError: null,
+            pwStatus: '',
+            pwSaving: false,
+
             isLoading: false,
             saveStatus: ''
         };
@@ -152,6 +161,33 @@ export default defineComponent('settings-page', {
                 console.error('Failed to load preferences:', e);
             } finally {
                 this.state.isLoading = false;
+            }
+        },
+
+        async handleChangePassword() {
+            this.state.pwError = null;
+            this.state.pwStatus = '';
+
+            if (this.state.pwNew !== this.state.pwConfirm) {
+                this.state.pwError = 'New passwords do not match';
+                return;
+            }
+            if (this.state.pwNew.length < 8) {
+                this.state.pwError = 'New password must be at least 8 characters';
+                return;
+            }
+
+            this.state.pwSaving = true;
+            try {
+                await auth.changePassword(this.state.pwCurrent, this.state.pwNew);
+                this.state.pwStatus = 'Password changed';
+                this.state.pwCurrent = '';
+                this.state.pwNew = '';
+                this.state.pwConfirm = '';
+            } catch (e) {
+                this.state.pwError = e.message || 'Failed to change password';
+            } finally {
+                this.state.pwSaving = false;
             }
         },
 
@@ -750,6 +786,43 @@ export default defineComponent('settings-page', {
 
                 `)}
 
+                ${when(isAuthenticated && profile.auth.supportsChangePassword, () => html`
+                    <div class="settings-section">
+                        <h2>Account</h2>
+                        <p class="section-help">
+                            Change the password for ${this.state.user}.
+                        </p>
+                        <form class="password-form" on-submit-prevent="handleChangePassword">
+                            <div class="password-field">
+                                <label for="pw-current">Current Password</label>
+                                <input type="password" id="pw-current" x-model="pwCurrent"
+                                       autocomplete="current-password" required />
+                            </div>
+                            <div class="password-field">
+                                <label for="pw-new">New Password</label>
+                                <input type="password" id="pw-new" x-model="pwNew"
+                                       autocomplete="new-password" required />
+                            </div>
+                            <div class="password-field">
+                                <label for="pw-confirm">Confirm New Password</label>
+                                <input type="password" id="pw-confirm" x-model="pwConfirm"
+                                       autocomplete="new-password" required />
+                            </div>
+                            ${when(this.state.pwError, () => html`
+                                <div class="password-error">${this.state.pwError}</div>
+                            `)}
+                            <div class="password-actions">
+                                <cl-button severity="secondary" loading="${this.state.pwSaving}">
+                                    Change Password
+                                </cl-button>
+                                ${when(this.state.pwStatus, () => html`
+                                    <span class="save-status">${this.state.pwStatus}</span>
+                                `)}
+                            </div>
+                        </form>
+                    </div>
+                `)}
+
                 <div class="settings-section">
                     <h2>Offline</h2>
                     <p class="section-help">
@@ -1025,6 +1098,50 @@ export default defineComponent('settings-page', {
         .save-status {
             font-size: 0.875rem;
             color: var(--success-500, #22c55e);
+        }
+
+        /* Account / Change Password */
+        .password-form {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            max-width: 360px;
+        }
+
+        .password-field {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .password-field label {
+            font-size: 0.875rem;
+            color: var(--text-secondary, #a0a0a0);
+        }
+
+        .password-field input {
+            background: var(--surface-100, #1a1a1a);
+            border: 1px solid var(--surface-300, #404040);
+            border-radius: 4px;
+            color: var(--text-primary, #e0e0e0);
+            padding: 0.5rem 0.75rem;
+            font-size: 0.875rem;
+        }
+
+        .password-field input:focus {
+            outline: none;
+            border-color: var(--primary-400, #42a5f5);
+        }
+
+        .password-error {
+            font-size: 0.875rem;
+            color: var(--danger-500, #ef4444);
+        }
+
+        .password-actions {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
         }
 
         /* Info Section */
