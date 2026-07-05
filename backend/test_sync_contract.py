@@ -353,5 +353,126 @@ class SyncContractTest(unittest.TestCase):
         self.assertEqual(row['active_device_id'], 'dev-a')
 
 
+class QueueReorderDragContractTest(unittest.TestCase):
+    """End-to-end contract guard for the drag -> store -> backend reorder chain.
+
+    Regression: a drag that moves an item DOWN BY ONE used to be a silent no-op
+    (and every downward move was off-by-one). now-playing.js handleDrop converts
+    the drop gap to a target index with (gap > from ? gap - 1 : gap); the store's
+    reorderQueue then computed toPos from queue[toIndex - 1] for downward moves,
+    applying the post-removal shift a SECOND time. For move-down-by-one that
+    collapsed to reorder(p, p), which the backend (correctly) treats as a no-op.
+
+    The fix passes toIndex through directly (toPos = queue[toIndex].position), so
+    the REMOTE path lands on the exact same queue as the temp-queue local splice
+    (newQueue.splice(fromIndex, 1); splice(toIndex, 0, moved)) -- the behaviour
+    the task calls canonical and "works everywhere". These tests replicate the
+    (fixed) frontend math and assert the backend agrees with that splice.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+        self._tmp.close()
+        self.db_path = self._tmp.name
+        self.conn = _make_conn(self.db_path)
+        db_mod._run_migrations(self.conn)
+        self.songs = [f'song-{i}' for i in range(6)]
+        self.conn.executemany(
+            "INSERT INTO songs (uuid, file, title) VALUES (?, ?, ?)",
+            [(u, f'/music/{u}.flac', u) for u in self.songs])
+        for m in _PATCH_MODULES:
+            m.get_db = lambda c=self.conn: c
+
+    def tearDown(self):
+        self.conn.close()
+        Path(self.db_path).unlink(missing_ok=True)
+
+    def _seed(self, uuids):
+        queue_mod.queue_clear(details=DETAILS)
+        r = queue_mod.queue_add(uuids, None, details=DETAILS)
+        self.assertFalse(r.get('error'), f'seed failed: {r}')
+
+    def _uuids(self):
+        rows = self.conn.execute(
+            "SELECT song_uuid, position FROM user_queue WHERE user_id = ? ORDER BY position",
+            (USER,)).fetchall()
+        self.assertEqual([r['position'] for r in rows], list(range(len(rows))),
+                         'positions must stay contiguous from 0')
+        return [r['song_uuid'] for r in rows]
+
+    @staticmethod
+    def _local_splice(queue, from_index, to_index):
+        """temp-queue mode ground truth (player-store.js REMOTE-disabled path)."""
+        nq = list(queue)
+        moved = nq.pop(from_index)
+        nq.insert(to_index, moved)
+        return nq
+
+    @staticmethod
+    def _store_reorder_args(queue, from_index, to_index):
+        """player-store.js reorderQueue REMOTE block, POST-FIX.
+
+        const fromPos = queue[fromIndex].position ?? fromIndex;
+        const toPos   = queue[toIndex]?.position ?? toIndex;
+        """
+        from_pos = queue[from_index]['position']
+        to_pos = queue[to_index]['position'] if 0 <= to_index < len(queue) else to_index
+        return from_pos, to_pos
+
+    def _drag(self, from_index, to_index):
+        """Drive the fixed store math through the real backend queue_reorder and
+        assert the result equals the local-splice ground truth."""
+        self._seed(self.songs[:5])
+        snapshot = [{'uuid': u, 'position': i} for i, u in enumerate(self.songs[:5])]
+        expected = [x['uuid'] for x in self._local_splice(snapshot, from_index, to_index)]
+        from_pos, to_pos = self._store_reorder_args(snapshot, from_index, to_index)
+        r = queue_mod.queue_reorder(from_pos, to_pos, details=DETAILS)
+        self.assertFalse(r.get('error'), f'reorder failed: {r}')
+        self.assertEqual(self._uuids(), expected,
+                         f'drag {from_index}->{to_index} sent reorder({from_pos},{to_pos})')
+
+    def test_move_down_by_one_actually_moves(self):
+        # The exact bug: item at index 1 dropped just below the following item.
+        # handleDrop: gap = 3 -> to = 2. Pre-fix this sent reorder(1, 1) = no-op.
+        self._drag(1, 2)
+
+    def test_move_up_by_one(self):
+        self._drag(3, 2)
+
+    def test_move_down_by_two(self):
+        # Pre-fix this landed one slot short (off-by-one), not a no-op.
+        self._drag(0, 2)
+
+    def test_move_up_by_two(self):
+        self._drag(4, 2)
+
+    def test_move_down_to_end(self):
+        self._drag(0, 4)
+
+    def test_move_up_to_front(self):
+        self._drag(4, 0)
+
+    def test_all_index_pairs_match_local_splice(self):
+        # Exhaustive: every REMOTE reorder must match the temp-queue splice.
+        for f in range(5):
+            for t in range(5):
+                if f == t:
+                    continue  # store early-returns on fromIndex === toIndex
+                with self.subTest(frm=f, to=t):
+                    self._drag(f, t)
+
+    def test_batch_move_down_by_one_unaffected(self):
+        # Batch path passes the raw drop gap (handleDrop line 990: target = gap,
+        # NOT gap - 1) and the backend applies the single adjustment, so it was
+        # never double-shifted. Guard that it stays correct.
+        self._seed(self.songs[:5])
+        # Drag item at index 1 below the following item: gap = 3 (batch target).
+        r = queue_mod.queue_reorder_batch([1], 3, details=DETAILS)
+        self.assertFalse(r.get('error'), f'batch reorder failed: {r}')
+        self.assertEqual(
+            self._uuids(),
+            [self.songs[0], self.songs[2], self.songs[1], self.songs[3], self.songs[4]])
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

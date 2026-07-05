@@ -5304,11 +5304,16 @@ class AudioController {
             return;
         }
 
-        // Get positions (server uses position field, not array index)
+        // Get positions (server uses position field, not array index).
+        // toIndex is the final destination index, identical to the temp-queue
+        // splice semantics (newQueue.splice(fromIndex,1); splice(toIndex,0,moved)).
+        // The backend performs remove-then-insert (pop(from_pos)/insert(to_pos)),
+        // so the target index is passed through directly. Do NOT subtract one for
+        // downward moves: handleDrop already applied the post-removal shift
+        // (gap > from ? gap - 1 : gap), and double-adjusting collapses a
+        // move-down-by-one to reorder(p, p), which every backend treats as a no-op.
         const fromPos = queue[fromIndex].position ?? fromIndex;
-        // When moving down, adjust target position for the index shift after removal
-        const targetIndex = fromIndex < toIndex ? toIndex - 1 : toIndex;
-        const toPos = queue[targetIndex]?.position ?? targetIndex;
+        const toPos = queue[toIndex]?.position ?? toIndex;
 
         try {
             await queueApi.reorder(fromPos, toPos);
