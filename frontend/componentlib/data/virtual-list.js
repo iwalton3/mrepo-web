@@ -371,6 +371,12 @@ export default defineComponent('cl-virtual-list', {
         :host {
             display: block;
             position: relative;
+            /* Windowed rows are replaced as the view scrolls/re-keys; browser
+               scroll anchoring must not compensate for that churn (it walks
+               the scroll position - worst on Android Chrome). The windowing
+               controller also sets this on its scroll target; this covers the
+               component's own subtree for any ancestor scroller. */
+            overflow-anchor: none;
         }
 
         /* Self-scroll mode - component has its own scrollbar */
