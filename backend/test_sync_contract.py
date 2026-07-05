@@ -474,6 +474,61 @@ class QueueReorderDragContractTest(unittest.TestCase):
             [self.songs[0], self.songs[2], self.songs[1], self.songs[3], self.songs[4]])
 
 
+class RadioDuplicatesContractTest(unittest.TestCase):
+    """Radio start must not crash on duplicate playlist/queue entries.
+
+    Playlists (PK (playlist_id, position)) and the queue support the same song
+    appearing more than once, but sca_song_pool/sca_original_seeds are keyed on
+    (user_id, song_uuid). sca_start_from_playlist/queue dedupe order-preserving
+    before the pool copy - the plain INSERTs used to raise IntegrityError and
+    radio failed to start entirely. The private backend mirrors this contract.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+        self._tmp.close()
+        self.db_path = self._tmp.name
+        self.conn = _make_conn(self.db_path)
+        db_mod._run_migrations(self.conn)
+        self.songs = [f'song-{i}' for i in range(4)]
+        self.conn.executemany(
+            "INSERT INTO songs (uuid, file, title) VALUES (?, ?, ?)",
+            [(u, f'/music/{u}.flac', u) for u in self.songs])
+        from backend.api import radio as radio_mod
+        self.radio = radio_mod
+        for m in _PATCH_MODULES + [radio_mod]:
+            m.get_db = lambda c=self.conn: c
+
+    def tearDown(self):
+        self.conn.close()
+        Path(self.db_path).unlink(missing_ok=True)
+
+    def _pool_uuids(self):
+        rows = self.conn.execute(
+            "SELECT song_uuid FROM sca_song_pool WHERE user_id = ?", (USER,)).fetchall()
+        return sorted(r['song_uuid'] for r in rows)
+
+    def test_start_from_playlist_with_duplicates(self):
+        created = playlists_mod.playlists_create('dups', details=DETAILS)
+        pid = created['id']
+        # A playlist with song-0 twice (positions are the PK, uuids repeat)
+        entries = [self.songs[0], self.songs[1], self.songs[0], self.songs[2]]
+        self.conn.executemany(
+            "INSERT INTO playlist_songs (playlist_id, song_uuid, position) VALUES (?, ?, ?)",
+            [(pid, u, i) for i, u in enumerate(entries)])
+
+        r = self.radio.sca_start_from_playlist(pid, details=DETAILS)
+        self.assertTrue(r.get('success'), f'radio must start despite duplicates: {r}')
+        self.assertEqual(r['poolSize'], 3, 'pool size is the DISTINCT song count')
+        self.assertEqual(self._pool_uuids(), sorted(entries[:2] + [self.songs[2]]))
+
+    def test_start_from_queue_with_duplicates(self):
+        queue_mod.queue_add([self.songs[0], self.songs[1], self.songs[0]], None, details=DETAILS)
+        r = self.radio.sca_start_from_queue(details=DETAILS)
+        self.assertTrue(r.get('success'), f'radio must start despite duplicates: {r}')
+        self.assertEqual(self._pool_uuids(), sorted([self.songs[0], self.songs[1]]))
+
+
 class ShareTokenContractTest(unittest.TestCase):
     """Least-privilege contract for share links (playlists_get_songs_by_token).
 

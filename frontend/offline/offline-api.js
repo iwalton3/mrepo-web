@@ -731,6 +731,21 @@ export const queue = {
 
             return { success: true, queued: true, id: tempId, name, ...pendingPlaylist };
         }
+        // Online, temp-queue mode: the server queue still holds the synced
+        // main queue (the temp queue is local-only), so queue_save_as_playlist
+        // would snapshot the WRONG queue. Compose the playlist client-side
+        // from the live temp queue instead.
+        if (playerStore.state.tempQueueMode) {
+            const uuids = (playerStore.state.queue || []).map(s => s?.uuid).filter(Boolean);
+            const created = await playlists.create(name, description, isPublic);
+            if (created.error) return created;
+            if (uuids.length) {
+                await playlists.addSongsBatch(created.id, uuids);
+            }
+            notifyPlaylistsChanged();
+            return { ...created, name: created.name || name, song_count: uuids.length };
+        }
+
         // Online - create and notify
         const result = await api.queue.saveAsPlaylist(name, description, isPublic);
         notifyPlaylistsChanged();

@@ -487,9 +487,12 @@ def sca_start_from_queue(details=None):
     cur = conn.cursor()
     user_id = details['user_id']
 
-    # Get queue songs first (before clearing)
+    # Get queue songs first (before clearing). The queue may contain the same
+    # song more than once; the pool/seed tables are keyed on (user_id,
+    # song_uuid), so dedupe (order-preserving) or the INSERTs below raise and
+    # radio fails to start.
     cur.execute("SELECT song_uuid FROM user_queue WHERE user_id = ? ORDER BY position", (user_id,))
-    queue_uuids = [row['song_uuid'] for row in cur.fetchall()]
+    queue_uuids = list(dict.fromkeys(row['song_uuid'] for row in cur.fetchall()))
     queue_size = len(queue_uuids)
 
     if not queue_uuids:
@@ -591,9 +594,11 @@ def sca_start_from_playlist(playlist_id, details=None):
     if str(playlist['user_id']) != str(user_id) and not playlist['is_public']:
         raise ValueError('Access denied')
 
-    # Get playlist songs
+    # Get playlist songs. Playlists support duplicate entries; the pool/seed
+    # tables are keyed on (user_id, song_uuid), so dedupe (order-preserving)
+    # or the INSERTs below raise and radio fails to start.
     cur.execute("SELECT song_uuid FROM playlist_songs WHERE playlist_id = ? ORDER BY position", (playlist_id,))
-    playlist_uuids = [row['song_uuid'] for row in cur.fetchall()]
+    playlist_uuids = list(dict.fromkeys(row['song_uuid'] for row in cur.fetchall()))
     playlist_size = len(playlist_uuids)
 
     if not playlist_uuids:

@@ -1186,44 +1186,45 @@ export default defineComponent('playlists-page', {
             this._draggedIndices = null;
         },
 
-        // Helper to find current index of a song by UUID
-        _findSongIndex(uuid) {
-            return this.state.playlistSongs.findIndex(s => s.uuid === uuid);
-        },
-
         // Touch drag on whole item in selection mode (mobile)
         // Differs from handleHandleTouchStart: doesn't preventDefault immediately,
-        // allows tap-to-select while still enabling drag-to-reorder
-        handleSelectionTouchStart(uuid, e) {
+        // allows tap-to-select while still enabling drag-to-reorder.
+        // All touch-drag state is INDEX-based (like now-playing): playlists
+        // support duplicate songs, and uuid->index resolution always found the
+        // FIRST copy - wrong row highlights, wrong reorders, and drags starting
+        // from unselected duplicates of a selected row.
+        handleSelectionTouchStart(index, e) {
             const touch = e.touches[0];
             this._selectionTouchStartX = touch.clientX;
             this._selectionTouchStartY = touch.clientY;
             this._selectionDragActive = false;
-            this._touchDragUuid = uuid;
-            this._touchDropUuid = null;
+            this._touchDropIndex = null;
 
-            // Check if touching a selected item - enable group drag
-            const touchedIndex = this._findSongIndex(uuid);
-            if (this.state.selectedIndices.has(touchedIndex)) {
+            // Only fully-selected rows act as grab handles in selection mode.
+            // Touching an unselected row must scroll (or tap-select) - never
+            // start a drag (leave _touchDragIndex unset so touchmove no-ops
+            // and the browser keeps the scroll gesture).
+            if (this.state.selectedIndices.has(index)) {
+                this._touchDragIndex = index;
                 this._touchGroupDrag = true;
                 this._touchDraggedIndices = [...this.state.selectedIndices].sort((a, b) => a - b);
             } else {
+                this._touchDragIndex = null;
                 this._touchGroupDrag = false;
                 this._touchDraggedIndices = null;
             }
         },
 
         // Touch drag on the drag handle (mobile)
-        handleHandleTouchStart(uuid, e) {
+        handleHandleTouchStart(index, e) {
             e.stopPropagation();
             e.preventDefault();
-            this._touchDragUuid = uuid;
-            this._touchDropUuid = null;
+            this._touchDragIndex = index;
+            this._touchDropIndex = null;
             this._selectionDragActive = true; // Mark as active drag
 
             // Check if touching a selected item - enable group drag
-            const touchedIndex = this._findSongIndex(uuid);
-            if (this.state.selectionMode && this.state.selectedIndices.has(touchedIndex)) {
+            if (this.state.selectionMode && this.state.selectedIndices.has(index)) {
                 this._touchGroupDrag = true;
                 this._touchDraggedIndices = [...this.state.selectedIndices].sort((a, b) => a - b);
                 // Add group-dragging class to all selected items
@@ -1237,14 +1238,14 @@ export default defineComponent('playlists-page', {
             }
 
             // Add dragging class to the source item
-            const sourceItem = this.querySelector(`.song-item[data-uuid="${uuid}"]`);
+            const sourceItem = this.querySelector(`.song-item[data-index="${index}"]`);
             if (sourceItem) {
                 sourceItem.classList.add('dragging');
             }
         },
 
         handleHandleTouchMove(e) {
-            if (!this._touchDragUuid) return;
+            if (this._touchDragIndex == null) return;
 
             const touch = e.touches[0];
 
@@ -1258,7 +1259,7 @@ export default defineComponent('playlists-page', {
                 this._selectionDragActive = true;
 
                 // Add dragging class to source item
-                const sourceItem = this.querySelector(`.song-item[data-uuid="${this._touchDragUuid}"]`);
+                const sourceItem = this.querySelector(`.song-item[data-index="${this._touchDragIndex}"]`);
                 if (sourceItem) sourceItem.classList.add('dragging');
 
                 // Add group-dragging class if group drag
@@ -1277,17 +1278,17 @@ export default defineComponent('playlists-page', {
             this.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
 
             // Reset drop target - will be set if over valid target
-            this._touchDropUuid = null;
+            this._touchDropIndex = null;
 
             // Find which item we're over
             const elemUnder = document.elementFromPoint(touch.clientX, touch.clientY);
             if (elemUnder) {
                 const songItem = elemUnder.closest('.song-item');
-                if (songItem && songItem.dataset.uuid && !songItem.classList.contains('dragging')) {
-                    const uuid = songItem.dataset.uuid;
-                    if (uuid !== this._touchDragUuid) {
+                if (songItem && songItem.dataset.index !== undefined && !songItem.classList.contains('dragging')) {
+                    const overIndex = parseInt(songItem.dataset.index, 10);
+                    if (!Number.isNaN(overIndex) && overIndex !== this._touchDragIndex) {
                         songItem.classList.add('drag-over');
-                        this._touchDropUuid = uuid;
+                        this._touchDropIndex = overIndex;
                     }
                 }
             }
@@ -1298,8 +1299,8 @@ export default defineComponent('playlists-page', {
             const wasDragActive = this._selectionDragActive;
             if (this.state.selectionMode && !wasDragActive) {
                 // Reset state without preventing default - click will handle selection
-                this._touchDragUuid = null;
-                this._touchDropUuid = null;
+                this._touchDragIndex = null;
+                this._touchDropIndex = null;
                 this._touchGroupDrag = false;
                 this._touchDraggedIndices = null;
                 this._selectionDragActive = false;
@@ -1314,12 +1315,12 @@ export default defineComponent('playlists-page', {
             this.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
             this.querySelectorAll('.group-dragging').forEach(el => el.classList.remove('group-dragging'));
 
-            // Perform the reorder if we have valid UUIDs
-            if (this._touchDragUuid && this._touchDropUuid && this._touchDragUuid !== this._touchDropUuid) {
-                // Look up current indices from UUIDs
-                const fromIndex = this._findSongIndex(this._touchDragUuid);
-                const toIndex = this._findSongIndex(this._touchDropUuid);
-                if (fromIndex !== -1 && toIndex !== -1) {
+            // Perform the reorder if we have valid indices
+            if (this._touchDragIndex != null && this._touchDropIndex != null
+                && this._touchDragIndex !== this._touchDropIndex) {
+                const fromIndex = this._touchDragIndex;
+                const toIndex = this._touchDropIndex;
+                {
                     if (this._touchGroupDrag && this._touchDraggedIndices && this._touchDraggedIndices.length > 1) {
                         // Group drag: move all selected items
                         const sortedIndices = [...this._touchDraggedIndices].sort((a, b) => a - b);
@@ -1348,8 +1349,8 @@ export default defineComponent('playlists-page', {
                 }
             }
 
-            this._touchDragUuid = null;
-            this._touchDropUuid = null;
+            this._touchDragIndex = null;
+            this._touchDropIndex = null;
             this._touchGroupDrag = false;
             this._touchDraggedIndices = null;
             this._selectionDragActive = false;
@@ -1473,7 +1474,7 @@ export default defineComponent('playlists-page', {
                      draggable="${view !== 'shared' && !this.isTouchDevice()}"
                      on-click="${(e) => selectionMode ? this.toggleSelection(index, e) : this.handleSongClick(song)}"
                      on-contextmenu="${(e) => this.handleSongContextMenu(song, e)}"
-                     on-touchstart-passive="${(e) => selectionMode ? this.handleSelectionTouchStart(song.uuid, e) : this.handleTouchStart(song, e)}"
+                     on-touchstart-passive="${(e) => selectionMode ? this.handleSelectionTouchStart(index, e) : this.handleTouchStart(song, e)}"
                      on-touchmove="${(e) => selectionMode ? this.handleHandleTouchMove(e) : this.handleTouchMove(e)}"
                      on-touchend="${(e) => selectionMode ? this.handleHandleTouchEnd(e) : this.handleTouchEnd(e)}"
                      on-dragstart="${(e) => { if (!this.isTouchDevice()) this.handlePlaylistDragStart(index, e); }}"
@@ -1486,7 +1487,7 @@ export default defineComponent('playlists-page', {
                         <input type="checkbox" class="selection-checkbox" checked="${isSelected}" on-click="${(e) => this.toggleSelection(index, e)}">
                     `, () => when(view !== 'shared', html`
                         <span class="drag-handle" title="Drag to reorder"
-                              on-touchstart="${(e) => this.handleHandleTouchStart(song.uuid, e)}"
+                              on-touchstart="${(e) => this.handleHandleTouchStart(index, e)}"
                               on-touchmove="${(e) => this.handleHandleTouchMove(e)}"
                               on-touchend="${(e) => this.handleHandleTouchEnd(e)}">⋮⋮</span>
                     `))}
@@ -2032,7 +2033,16 @@ export default defineComponent('playlists-page', {
                                         ${memoEach(playlistSongs.slice(win.visibleStart, win.visibleEnd), (song, idx) => {
                                             const actualIndex = win.visibleStart + idx;
                                             return this.renderSongItem(song, actualIndex);
-                                        }, (song, idx) => `${song?.uuid ?? `loading-${idx}`}-${this.state.playlistVersion ?? 0}`, { trustKey: true })}
+                                        }, (song, idx) => {
+                                            // Key by uuid AND playlist position: playlists support
+                                            // duplicate songs, and a uuid-only key gives duplicate
+                                            // rows the same identity (DOM reuse chaos: selection and
+                                            // scroll jump around). The position (win.visibleStart +
+                                            // idx) is scroll-stable, so plain scrolling still hits
+                                            // the memo cache.
+                                            const actualIndex = win.visibleStart + idx;
+                                            return `${song?.uuid ?? 'loading'}-${actualIndex}-${this.state.playlistVersion ?? 0}`;
+                                        }, { trustKey: true })}
                                     </div>
                                 </div>
                             `;
