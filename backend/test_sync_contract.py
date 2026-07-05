@@ -474,5 +474,77 @@ class QueueReorderDragContractTest(unittest.TestCase):
             [self.songs[0], self.songs[2], self.songs[1], self.songs[3], self.songs[4]])
 
 
+class ShareTokenContractTest(unittest.TestCase):
+    """Least-privilege contract for share links (playlists_get_songs_by_token).
+
+    The unguessable share token is the capability: it grants anonymous read
+    access to exactly the playlist it was minted for, and nothing else. The
+    user-scoped playlists_get_songs stays require='user' (enforced at the
+    dispatch layer; here we pin the shapes and the token semantics). The
+    private backend (swapi_apps/music.py) mirrors this contract.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+        self._tmp.close()
+        self.db_path = self._tmp.name
+        self.conn = _make_conn(self.db_path)
+        db_mod._run_migrations(self.conn)
+        self.songs = [f'song-{i}' for i in range(4)]
+        self.conn.executemany(
+            "INSERT INTO songs (uuid, file, title) VALUES (?, ?, ?)",
+            [(u, f'/music/{u}.flac', u) for u in self.songs])
+        for m in _PATCH_MODULES:
+            m.get_db = lambda c=self.conn: c
+        created = playlists_mod.playlists_create('shared', details=DETAILS)
+        self.playlist_id = created['id']
+        playlists_mod.playlists_add_songs(self.playlist_id, self.songs, details=DETAILS)
+        self.token = playlists_mod.playlists_share(self.playlist_id, details=DETAILS)['share_token']
+
+    def tearDown(self):
+        self.conn.close()
+        Path(self.db_path).unlink(missing_ok=True)
+
+    def test_valid_token_returns_all_songs_without_user_context(self):
+        # No details/user argument at all - the token is the only credential.
+        r = playlists_mod.playlists_get_songs_by_token(self.token)
+        self.assertEqual([i['uuid'] for i in r['items']], self.songs)
+        self.assertEqual(r['totalCount'], len(self.songs))
+        self.assertFalse(r['hasMore'])
+
+    def test_token_pagination_matches_get_songs_shape(self):
+        r1 = playlists_mod.playlists_get_songs_by_token(self.token, limit=3)
+        self.assertEqual(len(r1['items']), 3)
+        self.assertTrue(r1['hasMore'])
+        r2 = playlists_mod.playlists_get_songs_by_token(self.token, cursor=r1['nextCursor'])
+        self.assertEqual([i['uuid'] for i in r2['items']], self.songs[3:])
+        self.assertEqual(set(r1.keys()), set(r2.keys()))
+        # Same envelope keys as the authenticated endpoint.
+        auth = playlists_mod.playlists_get_songs(self.playlist_id, details=DETAILS)
+        self.assertEqual(set(r1.keys()), set(auth.keys()))
+
+    def test_unknown_and_empty_tokens_are_generic_not_found(self):
+        with self.assertRaises(ValueError):
+            playlists_mod.playlists_get_songs_by_token('no-such-token')
+        with self.assertRaises(ValueError):
+            playlists_mod.playlists_get_songs_by_token('')
+        with self.assertRaises(ValueError):
+            playlists_mod.playlists_get_songs_by_token(None)
+
+    def test_unshared_playlist_is_unreachable_by_token(self):
+        # A second, unshared playlist must not be reachable via any token -
+        # including the first playlist's (token maps to exactly one playlist).
+        other = playlists_mod.playlists_create('unshared', details=DETAILS)
+        playlists_mod.playlists_add_songs(other['id'], self.songs[:1], details=DETAILS)
+        r = playlists_mod.playlists_get_songs_by_token(self.token)
+        self.assertEqual(r['totalCount'], len(self.songs), 'token must resolve its own playlist only')
+
+    def test_by_token_metadata_has_no_owner_identity(self):
+        meta = playlists_mod.playlists_by_token(self.token)
+        self.assertNotIn('user_id', meta)
+        self.assertEqual(meta['name'], 'shared')
+        self.assertEqual(meta['song_count'], len(self.songs))
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

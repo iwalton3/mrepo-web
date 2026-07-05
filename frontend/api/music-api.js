@@ -381,6 +381,16 @@ export const playlists = {
     },
 
     /**
+     * Get a shared playlist's songs by share token (no auth - the token is
+     * the capability; same pagination shape as getSongs).
+     */
+    async getSongsByToken(shareToken, { cursor, offset, limit = 100 } = {}) {
+        return apiCall('playlists_get_songs_by_token', {
+            share_token: shareToken, cursor, offset, limit
+        });
+    },
+
+    /**
      * Clone a playlist.
      */
     async clone(playlistId, newName = null) {

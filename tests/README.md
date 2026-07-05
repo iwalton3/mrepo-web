@@ -112,28 +112,24 @@ All 19 legacy suites run green under the harness. Adaptations made:
 - **`navigation.test.js`** — the unknown-route test looked for the text
   "Not Found"; the 404 page actually reads "Page not found". Assertion widened
   to accept `<not-found-page>` or a case-insensitive match (the fallback works).
-- **`browse.test.js`** — "No console errors during browse interactions" is
-  **skipped with a TODO** because it catches a genuine product bug (below).
+- **`browse.test.js`** — "No console errors during browse interactions" was
+  initially skipped because it caught a genuine product bug (below); the bug is
+  fixed and the test is a live regression pin again.
 
-## Known product bugs found (not patched — product code was off-limits)
+## Product bugs found by this suite (both FIXED 2026-07-05)
 
-1. **Browse "Files" tab console error.** Switching away from the **Artists** tab
-   logs `Failed to load items: Cannot read properties of undefined (reading
-   'items')`. In `frontend/pages/browse-page.js` `_applyTarget()` calls
-   `this._win.refresh()` and force-sets `hasMore = true` **before** updating
-   `viewMode`/`level`; the windowing `onRange → _maybeLoadMore → loadMore` then
-   runs `loadItems()` with the stale `level === 'artists'`, which has no case in
-   `loadItems()`'s switch, so `result` is undefined. Deterministic and
-   fixture-independent. Skipped: `browse.test.js` "No console errors during
-   browse interactions".
+1. **Browse "Files" tab console error** (fixed in `_applyTarget()`): the
+   windowing refresh used to run BEFORE `viewMode`/`level` were updated, so
+   `loadMore` dispatched on the stale level and threw. `_applyTarget()` now sets
+   the target view's mode state first. Pinned by `browse.test.js` "No console
+   errors during browse interactions".
 
-2. **Share links don't show songs to logged-out viewers.** A **valid** share
-   link opened in a logged-out context cannot load the playlist's songs because
-   `playlists_get_songs` is `require='user'`; `loadSharedPlaylist()` catches the
-   `NotAuthenticated` and shows the misleading message "This shared playlist
-   link is invalid or has expired." The public metadata (name, song count via
-   the public `playlists_by_token`) does render. Documented via a skipped test in
-   `share-links.e2e.js`; the working public-metadata path is asserted.
+2. **Share links didn't show songs to logged-out viewers** (fixed): songs now
+   load via `playlists_get_songs_by_token` — a public, token-scoped endpoint
+   where the unguessable token is the capability (it grants exactly the one
+   playlist it was minted for; `playlists_get_songs` still requires auth; the
+   public by-token metadata no longer exposes the owner `user_id`). Pinned by
+   `share-links.e2e.js` including least-privilege assertions.
 
 ## Environment notes
 

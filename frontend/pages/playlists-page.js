@@ -519,8 +519,14 @@ export default defineComponent('playlists-page', {
                 }
                 this.state.currentPlaylist = playlist;
 
-                const result = await playlistsApi.getSongs(playlist.id, { limit: 100 });
+                // Token-scoped songs endpoint: the share view is typically
+                // anonymous, and getSongs requires a logged-in user.
+                const result = await playlistsApi.getSongsByToken(token, { limit: 100 });
                 if (this._detailRequestId !== requestId) return;  // Stale
+                if (result.error) {
+                    this.state.detailError = 'This shared playlist link is invalid or has expired.';
+                    return;
+                }
                 const totalCount = result.totalCount || result.items.length;
 
                 // Create sparse array
@@ -538,7 +544,7 @@ export default defineComponent('playlists-page', {
                 requestAnimationFrame(() => this._win.refresh());
 
                 if (result.hasMore) {
-                    this._loadRemainingInBackground(playlist.id, result.nextCursor);
+                    this._loadRemainingInBackground(playlist.id, result.nextCursor, token);
                 }
             } catch (e) {
                 if (this._detailRequestId !== requestId) return;  // Stale
@@ -1627,17 +1633,20 @@ export default defineComponent('playlists-page', {
             }
         },
 
-        async _loadRemainingInBackground(playlistId, cursor) {
-            // Load remaining items in background with larger batches
+        async _loadRemainingInBackground(playlistId, cursor, shareToken = null) {
+            // Load remaining items in background with larger batches. In the
+            // shared (anonymous) view the token-scoped endpoint is used -
+            // getSongs requires a logged-in user.
             let currentCursor = cursor;
             let offset = this.state.playlistSongs.filter(s => s !== null).length;
 
             while (currentCursor) {
                 try {
-                    const result = await playlistsApi.getSongs(playlistId, {
-                        cursor: currentCursor,
-                        limit: 500  // Larger batches for background loading
-                    });
+                    const opts = { cursor: currentCursor, limit: 500 };  // Larger batches for background loading
+                    const result = shareToken
+                        ? await playlistsApi.getSongsByToken(shareToken, opts)
+                        : await playlistsApi.getSongs(playlistId, opts);
+                    if (result.error) break;
 
                     // Update sparse array
                     const songs = [...this.state.playlistSongs];

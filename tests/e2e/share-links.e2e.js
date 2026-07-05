@@ -2,13 +2,11 @@
  * share-links.e2e.js — create a playlist share link and open it in a fresh
  * logged-out browser context.
  *
- * FINDING (product bug, see tests/README.md): the public share metadata works
- * (playlists_by_token is public and the name renders anonymously), but the
- * shared playlist's SONGS do not load for a logged-out viewer because
- * playlists_get_songs is require='user'. The UI then shows the misleading
- * message "This shared playlist link is invalid or has expired." for a link
- * that is actually valid. The "songs render anonymously" assertion is therefore
- * skipped with a TODO rather than failing the suite.
+ * Songs load anonymously via playlists_get_songs_by_token (the unguessable
+ * token is the capability). Least-privilege pins below: the token endpoint
+ * only answers for its own playlist, the user-scoped playlists_get_songs
+ * still requires auth, and the public by-token metadata carries no owner
+ * identity.
  */
 
 const TestHelper = require('../test-helper');
@@ -43,6 +41,32 @@ const test = new TestHelper();
         await test.assert(anon.success, 'playlists_by_token should be public: ' + JSON.stringify(anon));
         await test.assertEqual(anon.result.name, plName, 'shared playlist name should resolve');
         await test.assertEqual(anon.result.song_count, uuids.length, 'shared song_count should resolve');
+        await test.assert(!('user_id' in anon.result),
+            'public by-token metadata must not expose the owner user_id');
+    });
+
+    await test.test('token-scoped songs endpoint: least-privilege pins', async () => {
+        // The token grants exactly its own playlist's songs, anonymously.
+        const songs = await env.apiCall(BASE, 'playlists_get_songs_by_token', { share_token: token });
+        await test.assert(songs.success, 'valid token should return songs: ' + JSON.stringify(songs));
+        await test.assertEqual(songs.result.items.length, uuids.length, 'all shared songs returned');
+        await test.assertEqual(songs.result.totalCount, uuids.length, 'totalCount matches');
+
+        // A bogus token grants nothing (and does not distinguish "exists but
+        // unshared" from "does not exist").
+        const bogus = await env.apiCall(BASE, 'playlists_get_songs_by_token', { share_token: 'not-a-real-token' });
+        await test.assert(!bogus.success, 'bogus token must be rejected');
+        await test.assert(/not found/i.test(bogus.message || ''), 'rejection is a generic not-found');
+
+        // An empty token must not match anything.
+        const empty = await env.apiCall(BASE, 'playlists_get_songs_by_token', { share_token: '' });
+        await test.assert(!empty.success, 'empty token must be rejected');
+
+        // The user-scoped endpoint is UNCHANGED: still requires auth even for
+        // the very playlist that has a share token.
+        const direct = await env.apiCall(BASE, 'playlists_get_songs', { playlist_id: playlistId });
+        await test.assert(!direct.success && direct.error === 'NotAuthenticated',
+            'playlists_get_songs must still require a logged-in user: ' + JSON.stringify(direct));
     });
 
     // Fresh logged-out browser context (a different device with no session).
@@ -75,17 +99,22 @@ const test = new TestHelper();
                 'invalid share link should not crash: ' + JSON.stringify(anonPage.__pageErrors));
         });
 
-        // TODO(product-bug): SKIPPED — a VALID share link opened logged-out does
-        // not render the playlist's songs, because playlists_get_songs is
-        // require='user'. loadSharedPlaylist() then catches NotAuthenticated and
-        // sets detailError = "This shared playlist link is invalid or has
-        // expired." — a misleading message for a valid link. Make
-        // playlists_get_songs resolvable via a share token (public) to fix.
-        if (false) // eslint-disable-line no-constant-condition
         await test.test('shared playlist songs render for anonymous viewers', async () => {
+            // Navigate back to the VALID link (the previous test left the page
+            // on the invalid-token route).
+            await anonPage.goto(BASE + '/#/share/' + token + '/', { waitUntil: 'networkidle2' });
+            await anonPage.reload({ waitUntil: 'networkidle2' });
+            await anonPage.waitForFunction((n) => document.body.textContent.includes(n),
+                { timeout: 10000 }, plName);
+            await anonPage.waitForFunction(() =>
+                document.querySelectorAll('.playlist-song, .song-row, [data-uuid]').length > 0,
+                { timeout: 10000 });
             const rows = await anonPage.evaluate(() =>
                 document.querySelectorAll('.playlist-song, .song-row, [data-uuid]').length);
             await test.assertGreaterThan(rows, 0, 'anonymous viewer should see the shared songs');
+            const misleading = await anonPage.evaluate(() =>
+                /invalid or has expired/i.test(document.body.textContent));
+            await test.assert(!misleading, 'valid link must not show the invalid/expired message');
         });
     } finally {
         await anonPage.close();

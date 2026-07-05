@@ -1781,6 +1781,8 @@ export const playlists = {
     update: api.playlists.update,
     share: api.playlists.share,
     byToken: api.playlists.byToken,
+    // Share views are online-only, like byToken; no offline cache layer.
+    getSongsByToken: api.playlists.getSongsByToken,
     clone: api.playlists.clone
 };
 

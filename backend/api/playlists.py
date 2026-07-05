@@ -183,26 +183,9 @@ def playlists_delete(playlist_id, details=None, _conn=None):
         raise
 
 
-@api_method('playlists_get_songs', require='user')
-def playlists_get_songs(playlist_id, cursor=None, offset=None, limit=100, details=None):
-    """Get songs in a playlist with pagination."""
-    conn = get_db()
-    cur = conn.cursor()
-    user_id = details['user_id']
-
+def _playlist_songs_page(cur, playlist_id, cursor, offset, limit):
+    """Fetch one page of a playlist's songs. Access must be checked by the caller."""
     limit = min(int(limit), 500)
-
-    # Check access (owner or public)
-    cur.execute("""
-        SELECT id, user_id, is_public FROM playlists WHERE id = ?
-    """, (playlist_id,))
-    playlist = cur.fetchone()
-
-    if not playlist:
-        raise ValueError('Playlist not found')
-    # Compare as strings since user_id column is TEXT
-    if str(playlist['user_id']) != str(user_id) and not playlist['is_public']:
-        raise ValueError('Access denied')
 
     # Get total count
     cur.execute("""
@@ -242,6 +225,55 @@ def playlists_get_songs(playlist_id, cursor=None, offset=None, limit=100, detail
         'totalCount': total_count,
         'offset': start_offset
     }
+
+
+@api_method('playlists_get_songs', require='user')
+def playlists_get_songs(playlist_id, cursor=None, offset=None, limit=100, details=None):
+    """Get songs in a playlist with pagination."""
+    conn = get_db()
+    cur = conn.cursor()
+    user_id = details['user_id']
+
+    # Check access (owner or public)
+    cur.execute("""
+        SELECT id, user_id, is_public FROM playlists WHERE id = ?
+    """, (playlist_id,))
+    playlist = cur.fetchone()
+
+    if not playlist:
+        raise ValueError('Playlist not found')
+    # Compare as strings since user_id column is TEXT
+    if str(playlist['user_id']) != str(user_id) and not playlist['is_public']:
+        raise ValueError('Access denied')
+
+    return _playlist_songs_page(cur, playlist_id, cursor, offset, limit)
+
+
+@api_method('playlists_get_songs_by_token', require=None, public=True)
+def playlists_get_songs_by_token(share_token, cursor=None, offset=None, limit=100):
+    """Get songs of a shared playlist by its share token (public access).
+
+    Least-privilege by construction: the unguessable share token is the
+    capability, and it grants read access to exactly the playlist it was
+    minted for - no user context, no playlist_id parameter to confuse,
+    no other playlists, no writes. Playback needs no extra grant: the
+    /stream/<uuid> route is already public.
+    """
+    if not share_token:
+        raise ValueError('Playlist not found')
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id FROM playlists WHERE share_token = ?
+    """, (share_token,))
+    playlist = cur.fetchone()
+
+    if not playlist:
+        raise ValueError('Playlist not found')
+
+    return _playlist_songs_page(cur, playlist['id'], cursor, offset, limit)
 
 
 @api_method('playlists_add_song', require='user')
@@ -563,8 +595,10 @@ def playlists_by_token(share_token):
     conn = get_db()
     cur = conn.cursor()
 
+    # Deliberately no p.user_id: this is an unauthenticated endpoint and
+    # the share view never uses the owner identity.
     cur.execute("""
-        SELECT p.id, p.name, p.description, p.user_id, p.is_public, p.created_at,
+        SELECT p.id, p.name, p.description, p.is_public, p.created_at,
                COUNT(ps.song_uuid) as song_count
         FROM playlists p
         LEFT JOIN playlist_songs ps ON p.id = ps.playlist_id

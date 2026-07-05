@@ -213,6 +213,43 @@ export default defineComponent('browse-page', {
             this._appliedRoute = this._serializeTarget(target);
             this._routeEpoch = (this._routeEpoch || 0) + 1;
 
+            // Set the target view's mode state BEFORE resetting list state:
+            // resetting hasMore and refreshing the window below can fire the
+            // windowing onRange -> loadMore path synchronously, and that path
+            // must dispatch on the NEW viewMode/level - with the old one it
+            // reads an undefined loader result and throws.
+            let loader;
+            if (target.mode === 'filepath') {
+                this.state.viewMode = 'filepath';
+                this.state.currentPath = target.path;
+                loader = () => this.loadFilePath();
+            } else if (target.mode === 'genres') {
+                this.state.viewMode = 'genres';
+                this.state.level = 'genre';
+                this.state.currentCategory = null;
+                this.state.currentGenre = null;
+                this.state.currentArtist = null;
+                this.state.currentAlbum = null;
+                loader = () => this.loadAllGenres();
+            } else if (target.mode === 'artists') {
+                this.state.viewMode = 'artists';
+                this.state.level = 'artists';
+                this.state.currentCategory = null;
+                this.state.currentGenre = null;
+                this.state.currentArtist = null;
+                this.state.currentAlbum = null;
+                loader = () => this.loadArtists();
+            } else {
+                // Hierarchy
+                this.state.viewMode = 'hierarchy';
+                this.state.currentCategory = target.category;
+                this.state.currentGenre = target.genre;
+                this.state.currentArtist = target.artist;
+                this.state.currentAlbum = target.album;
+                this.state.level = this._deriveHierarchyLevel(target);
+                loader = () => this.loadItems();
+            }
+
             // Reset shared list state for the fresh view.
             this.state.filterText = '';
             this.state.items = [];
@@ -223,43 +260,7 @@ export default defineComponent('browse-page', {
             // called below refreshes again once new items land).
             this._win.refresh();
 
-            if (target.mode === 'filepath') {
-                this.state.viewMode = 'filepath';
-                this.state.currentPath = target.path;
-                this.loadFilePath();
-                return;
-            }
-
-            if (target.mode === 'genres') {
-                this.state.viewMode = 'genres';
-                this.state.level = 'genre';
-                this.state.currentCategory = null;
-                this.state.currentGenre = null;
-                this.state.currentArtist = null;
-                this.state.currentAlbum = null;
-                this.loadAllGenres();
-                return;
-            }
-
-            if (target.mode === 'artists') {
-                this.state.viewMode = 'artists';
-                this.state.level = 'artists';
-                this.state.currentCategory = null;
-                this.state.currentGenre = null;
-                this.state.currentArtist = null;
-                this.state.currentAlbum = null;
-                this.loadArtists();
-                return;
-            }
-
-            // Hierarchy
-            this.state.viewMode = 'hierarchy';
-            this.state.currentCategory = target.category;
-            this.state.currentGenre = target.genre;
-            this.state.currentArtist = target.artist;
-            this.state.currentAlbum = target.album;
-            this.state.level = this._deriveHierarchyLevel(target);
-            this.loadItems();
+            loader();
         },
 
         // Convert [All X] special values to null for API calls
@@ -543,8 +544,11 @@ export default defineComponent('browse-page', {
         async loadMore() {
             if (!this.state.hasMore || this.state.isLoading) return;
 
-            // filepath mode uses background loading, not loadMore
-            if (this.state.viewMode === 'filepath') {
+            // Only hierarchy mode paginates through loadMore/loadItems.
+            // filepath and artists background-load their remainder themselves,
+            // and genres loads in one shot - dispatching loadItems() for those
+            // modes hits a level its switch doesn't handle (undefined result).
+            if (this.state.viewMode !== 'hierarchy') {
                 return;
             }
 
