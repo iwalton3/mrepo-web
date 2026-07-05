@@ -153,12 +153,6 @@ export default defineComponent('cl-input-password', {
             return 'var(--success-color, #28a745)';
         },
 
-        getStrengthClass() {
-            if (this.state.strength <= 33) return 'weak';
-            if (this.state.strength <= 66) return 'medium';
-            return 'strong';
-        },
-
         getFeedback() {
             if (!this.state.internalValue || !this.props.showStrength || !this.props.feedback) {
                 return [];
@@ -184,6 +178,14 @@ export default defineComponent('cl-input-password', {
             }
 
             return feedback.slice(0, 2); // Show max 2 suggestions
+        }
+    },
+
+    computed: {
+        strengthClass() {
+            if (this.state.strength <= 33) return 'weak';
+            if (this.state.strength <= 66) return 'medium';
+            return 'strong';
         }
     },
 
@@ -226,11 +228,11 @@ export default defineComponent('cl-input-password', {
                     <div class="strength-meter">
                         <div class="strength-bar">
                             <div
-                                class="strength-fill ${this.getStrengthClass()}"
+                                class="strength-fill ${this.strengthClass}"
                                 style="width: ${this.state.strength}%;">
                             </div>
                         </div>
-                        <span class="strength-label ${this.getStrengthClass()}">
+                        <span class="strength-label ${this.strengthClass}">
                             ${this.state.strengthLabel}
                         </span>
                     </div>

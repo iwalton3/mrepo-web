@@ -78,7 +78,7 @@ export default defineComponent('cl-dropdown', {
             this.state.showPanel = true;
             this.state.filterValue = '';
             // Set active index to currently selected option
-            const options = this.getFilteredOptions();
+            const options = this.filteredOptions;
             const selectedIndex = options.findIndex(opt => this.isSelected(opt));
             this.state.activeIndex = selectedIndex >= 0 ? selectedIndex : 0;
 
@@ -101,32 +101,6 @@ export default defineComponent('cl-dropdown', {
         handleFilterInput(e) {
             this.state.filterValue = e.target.value;
             this.state.activeIndex = 0; // Reset to first option when filtering
-        },
-
-        getFilteredOptions() {
-            if (!this.props.filter || !this.state.filterValue) {
-                return this.props.options || [];
-            }
-
-            const filter = this.state.filterValue.toLowerCase();
-            return (this.props.options || []).filter(option => {
-                const label = typeof option === 'object' ? option[this.props.optionlabel] : option;
-                return String(label).toLowerCase().includes(filter);
-            });
-        },
-
-        getSelectedLabel() {
-            if (this.props.value == null) {
-                return this.props.placeholder;
-            }
-
-            const option = (this.props.options || []).find(opt => {
-                const value = typeof opt === 'object' ? opt[this.props.optionvalue] : opt;
-                return value === this.props.value;
-            });
-
-            if (!option) return this.props.placeholder;
-            return typeof option === 'object' ? option[this.props.optionlabel] : option;
         },
 
         getOptionLabel(option) {
@@ -155,7 +129,7 @@ export default defineComponent('cl-dropdown', {
          * Handle keyboard navigation
          */
         handleKeyDown(e) {
-            const options = this.getFilteredOptions();
+            const options = this.filteredOptions;
 
             switch (e.key) {
                 case 'ArrowDown':
@@ -231,7 +205,7 @@ export default defineComponent('cl-dropdown', {
             this.state.typeaheadBuffer += char.toLowerCase();
 
             // Find matching option
-            const options = this.getFilteredOptions();
+            const options = this.filteredOptions;
             const matchIndex = options.findIndex(opt => {
                 const label = this.getOptionLabel(opt);
                 return String(label).toLowerCase().startsWith(this.state.typeaheadBuffer);
@@ -265,9 +239,37 @@ export default defineComponent('cl-dropdown', {
         }
     },
 
+    computed: {
+        filteredOptions() {
+            if (!this.props.filter || !this.state.filterValue) {
+                return this.props.options || [];
+            }
+
+            const filter = this.state.filterValue.toLowerCase();
+            return (this.props.options || []).filter(option => {
+                const label = typeof option === 'object' ? option[this.props.optionlabel] : option;
+                return String(label).toLowerCase().includes(filter);
+            });
+        },
+
+        selectedLabel() {
+            if (this.props.value == null) {
+                return this.props.placeholder;
+            }
+
+            const option = (this.props.options || []).find(opt => {
+                const value = typeof opt === 'object' ? opt[this.props.optionvalue] : opt;
+                return value === this.props.value;
+            });
+
+            if (!option) return this.props.placeholder;
+            return typeof option === 'object' ? option[this.props.optionlabel] : option;
+        }
+    },
+
     template() {
-        const filteredOptions = this.getFilteredOptions();
-        const selectedLabel = this.getSelectedLabel();
+        const filteredOptions = this.filteredOptions;
+        const selectedLabel = this.selectedLabel;
         const hasValue = this.props.value != null;
         const listboxId = `${this.state.dropdownId}-listbox`;
         const labelId = `${this.state.dropdownId}-label`;

@@ -9,8 +9,9 @@
  * - Volume control
  */
 
-import { defineComponent, html, when, each, memoEach, contain, flushSync } from '../lib/framework.js';
+import { defineComponent, html, when, each, memoEach, contain } from '../lib/framework.js';
 import { debounce, rafThrottle } from '../lib/utils.js';
+import { createWindowing } from '../lib/windowing.js';
 import { player, playerStore } from '../stores/player-store.js';
 import { playlists as playlistsApi } from '../offline/offline-api.js';
 import * as offlineApi from '../offline/offline-api.js';
@@ -28,6 +29,19 @@ export default defineComponent('now-playing-page', {
     stores: { player: playerStore, offline: offlineStore, eqPresets: eqPresetsStore },
 
     data() {
+        // Windowed rendering for the queue list. Created in data() so the
+        // controller's window state exists for the first render. The scroll
+        // container (the .queue-scroll-wrapper) is wired in via
+        // setScrollContainer() from mounted() once the ref resolves; here we
+        // only supply the row height, buffers, item count, and the inner list
+        // container to measure (it sits below the 48px sticky header).
+        this._win = createWindowing(this, {
+            itemHeight: 48,
+            buffer: 40,
+            overscan: 30,
+            count: () => this.getVisibleQueue().length,
+            measureElement: () => this.refs.queueContainer
+        });
         return {
             showSaveDialog: false,
             playlistName: '',
@@ -37,9 +51,6 @@ export default defineComponent('now-playing-page', {
             userPlaylists: [],
             showAddToPlaylist: false,
             addingToPlaylist: false,
-            // Windowed rendering for queue
-            visibleStart: 0,
-            visibleEnd: 100, // Start with larger default
             // Queue sorting
             isSorting: false,
             showSortMenu: false,
@@ -124,13 +135,18 @@ export default defineComponent('now-playing-page', {
             player.setVolume(value / 100);
         }, 50);
 
+        // Wire the windowing scroll target BEFORE the awaits below: the queue
+        // can finish loading first and trigger _tryInitialScroll's programmatic
+        // scroll, which must not land while the controller is unwired (the
+        // blank-queue-until-scroll race). refresh() also re-measures now, but
+        // early wiring closes the race entirely.
+        this._setupScrollListener();
+
         await this.loadPlaylists();
         if (!this._isMounted) return;  // Unmounted during load - stop before DOM work
         // Load EQ presets for quick switching dropdown
         await eqPresetsStore.loadPresets();
         if (!this._isMounted) return;  // Unmounted during load - stop before DOM work
-
-        this._setupScrollListener();
 
         // Initial scroll to current song - either now if queue is loaded, or when it loads
         this._tryInitialScroll();
@@ -143,7 +159,13 @@ export default defineComponent('now-playing-page', {
             this._shell.style.removeProperty('--shell-content-padding-bottom');
         }
 
-        // Clean up scroll listener
+        // Tear down the windowing controller (owns its own passive scroll +
+        // resize listeners for range math)
+        if (this._win) {
+            this._win.destroy();
+        }
+
+        // Clean up the jump-to-current visibility scroll listener
         if (this._scrollHandler && this._scrollTarget) {
             if (this._scrollTarget === window) {
                 window.removeEventListener('scroll', this._scrollHandler, true);
@@ -178,47 +200,26 @@ export default defineComponent('now-playing-page', {
             // Note: queueIndex is NOT included - it doesn't affect queue content
             const cacheKey = `${queueVersion}-${isOffline}`;
 
-            // Return cached result if inputs haven't changed
+            // Return cached result if inputs haven't changed. This memo guards a
+            // genuinely hot path: count() calls this every scroll frame (via the
+            // windowing controller), so an O(n) rebuild over a queue of thousands
+            // per frame is worth avoiding. The key fields (queueVersion, offline)
+            // are the reactive signals that actually change the queue content.
             if (this._visibleQueueKey === cacheKey && this._visibleQueueCache) {
                 return this._visibleQueueCache;
             }
 
-            // Create stable wrapper objects that persist across renders
-            // This is critical for memoEach cache hits (it checks item === cachedItem)
-            if (!this._wrapperCache) {
-                this._wrapperCache = new Map();
-            }
-
-            // Clear wrappers for items no longer in queue
-            const currentUuids = new Set(queue.map(item => item.uuid));
-            for (const uuid of this._wrapperCache.keys()) {
-                if (!currentUuids.has(uuid)) {
-                    this._wrapperCache.delete(uuid);
-                }
-            }
-
+            // Fresh { item, index } wrappers each rebuild. memoEach uses
+            // { trustKey: true }, so item-reference identity is irrelevant and no
+            // stable-wrapper cache is needed.
             let result;
             if (!isOffline) {
                 // Online - show all items with their indices
-                result = queue.map((item, index) => {
-                    let wrapper = this._wrapperCache.get(item.uuid);
-                    if (!wrapper || wrapper.item !== item || wrapper.index !== index) {
-                        wrapper = { item, index };
-                        this._wrapperCache.set(item.uuid, wrapper);
-                    }
-                    return wrapper;
-                });
+                result = queue.map((item, index) => ({ item, index }));
             } else {
                 // Offline - only show items with metadata (have title)
                 result = queue
-                    .map((item, index) => {
-                        let wrapper = this._wrapperCache.get(item.uuid);
-                        if (!wrapper || wrapper.item !== item || wrapper.index !== index) {
-                            wrapper = { item, index };
-                            this._wrapperCache.set(item.uuid, wrapper);
-                        }
-                        return wrapper;
-                    })
+                    .map((item, index) => ({ item, index }))
                     .filter(({ item }) => item.title);
             }
 
@@ -599,7 +600,7 @@ export default defineComponent('now-playing-page', {
         async handleStartRadio() {
             await player.startScaFromQueue();
             // Queue may grow - recalculate visible range
-            requestAnimationFrame(() => this._updateVisibleRange());
+            requestAnimationFrame(() => this._win.refresh());
         },
 
         async handleStopRadio() {
@@ -689,8 +690,9 @@ export default defineComponent('now-playing-page', {
                 }
 
                 // Force visible range recalculation after queue grows
+                // (the untracked queue array grew; refresh() re-clamps the window)
                 requestAnimationFrame(() => {
-                    this._updateVisibleRange();
+                    this._win.refresh();
                 });
 
                 this.state.showExtendDialog = false;
@@ -713,7 +715,7 @@ export default defineComponent('now-playing-page', {
         async handleToggleTempQueue() {
             await player.toggleTempQueueMode();
             // Queue size changes - recalculate visible range
-            requestAnimationFrame(() => this._updateVisibleRange());
+            requestAnimationFrame(() => this._win.refresh());
         },
 
         async loadPlaylists() {
@@ -872,6 +874,7 @@ export default defineComponent('now-playing-page', {
 
         handleDragStart(index, e) {
             this._dragIndex = index;
+            this._dropGap = null;
             e.dataTransfer.effectAllowed = 'move';
             e.dataTransfer.setData('text/plain', index);
             e.currentTarget.classList.add('dragging');
@@ -893,25 +896,60 @@ export default defineComponent('now-playing-page', {
 
         handleDragEnd(e) {
             e.currentTarget.classList.remove('dragging');
-            // Clear all drag-over and group-dragging classes
-            this.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+            // Clear all drag indicator and group-dragging classes
+            this.querySelectorAll('.drag-over, .drag-over-below').forEach(el => el.classList.remove('drag-over', 'drag-over-below'));
             this.querySelectorAll('.group-dragging').forEach(el => el.classList.remove('group-dragging'));
             this._dragIndex = null;
+            this._dropGap = null;
             this._groupDrag = false;
             this._draggedIndices = null;
+        },
+
+        /**
+         * Pointer-midpoint insertion gap for a dragover/drop on row `index`:
+         * upper half = insert before this row (gap = index), lower half =
+         * insert after (gap = index + 1). Using the pointer's position within
+         * the row (instead of just which row got the event) tolerates sub-row
+         * content drift under the cursor from drag-autoscroll, which used to
+         * land drops one position further down. Returns null when geometry is
+         * unavailable (caller falls back to legacy drop-row semantics).
+         */
+        _computeDropGap(index, e) {
+            const row = e.currentTarget;
+            if (!row || typeof e.clientY !== 'number') return null;
+            const rect = row.getBoundingClientRect();
+            if (!rect || !(rect.height > 0)) return null;
+            return (e.clientY - rect.top) > rect.height / 2 ? index + 1 : index;
         },
 
         handleDragOver(index, e) {
             e.preventDefault();
             e.dataTransfer.dropEffect = 'move';
-            // Handle drag-over state here instead of dragEnter/Leave for consistency
-            if (this._dragIndex !== null && this._dragIndex !== index) {
-                const queueItem = e.currentTarget;
-                if (!queueItem.classList.contains('drag-over')) {
-                    // Clear previous drag-over and set new one
-                    this.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
-                    queueItem.classList.add('drag-over');
-                }
+            if (this._dragIndex === null) return;
+
+            const gap = this._computeDropGap(index, e);
+            if (gap === null) return;
+            this._dropGap = gap;
+
+            // No indicator when the drop would be a no-op: for single drags,
+            // a gap adjacent to the dragged row; for group drags, hovering the
+            // dragged row itself (parity with the previous behavior)
+            const isNoop = this._groupDrag
+                ? index === this._dragIndex
+                : (gap === this._dragIndex || gap === this._dragIndex + 1);
+            if (isNoop) {
+                this.querySelectorAll('.drag-over, .drag-over-below').forEach(el => el.classList.remove('drag-over', 'drag-over-below'));
+                return;
+            }
+
+            // Indicator edge matches the insertion gap: top border for
+            // "before this row", bottom border for "after this row"
+            const cls = gap === index ? 'drag-over' : 'drag-over-below';
+            const queueItem = e.currentTarget;
+            if (!queueItem.classList.contains(cls)) {
+                // Clear previous indicator and set the new one
+                this.querySelectorAll('.drag-over, .drag-over-below').forEach(el => el.classList.remove('drag-over', 'drag-over-below'));
+                queueItem.classList.add(cls);
             }
         },
 
@@ -923,44 +961,65 @@ export default defineComponent('now-playing-page', {
             // Only remove if leaving the container entirely
             const relatedTarget = e.relatedTarget;
             if (!relatedTarget || !e.currentTarget.contains(relatedTarget)) {
-                e.currentTarget.classList.remove('drag-over');
+                e.currentTarget.classList.remove('drag-over', 'drag-over-below');
             }
         },
 
         handleDrop(index, e) {
             e.preventDefault();
-            // Clear all drag-over and group-dragging classes
-            this.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+            // Clear all drag indicator and group-dragging classes
+            this.querySelectorAll('.drag-over, .drag-over-below').forEach(el => el.classList.remove('drag-over', 'drag-over-below'));
             this.querySelectorAll('.group-dragging').forEach(el => el.classList.remove('group-dragging'));
 
-            if (this._dragIndex !== null && this._dragIndex !== index) {
-                this._trackQueueInteraction();  // Prevent jump-to-current after reorder
+            // Insertion gap from the drop event's own geometry (freshest
+            // pointer info); fall back to the last dragover's gap, then to
+            // legacy drop-row semantics when no gap was ever computed.
+            const dropGap = this._computeDropGap(index, e);
+            const gap = dropGap !== null ? dropGap : this._dropGap;
+            this._dropGap = null;
 
+            if (this._dragIndex !== null) {
                 if (this._groupDrag && this._draggedIndices && this._draggedIndices.length > 1) {
-                    // Group drag: move all selected items
-                    const sortedIndices = [...this._draggedIndices].sort((a, b) => a - b);
+                    // Group drag: move all selected items. Self-drop guard
+                    // (dropping on the dragged row) stays a no-op as before.
+                    if (index !== this._dragIndex) {
+                        this._trackQueueInteraction();  // Prevent jump-to-current after reorder
+                        const queueLen = this.stores.player.queue.length;
+                        // reorderQueueBatch requires toIndex < queue.length, so a
+                        // gap below the last row clamps to the last row
+                        const target = gap !== null ? Math.min(gap, queueLen - 1) : index;
+                        const sortedIndices = [...this._draggedIndices].sort((a, b) => a - b);
 
-                    // Calculate where items will end up (same logic as reorderQueueBatch)
-                    let adjustedTarget = index;
-                    for (const idx of sortedIndices) {
-                        if (idx < index) adjustedTarget--;
+                        // Calculate where items will end up (same logic as reorderQueueBatch)
+                        let adjustedTarget = target;
+                        for (const idx of sortedIndices) {
+                            if (idx < target) adjustedTarget--;
+                        }
+                        adjustedTarget = Math.max(0, Math.min(adjustedTarget, queueLen - sortedIndices.length));
+
+                        // New positions: adjustedTarget, adjustedTarget+1, adjustedTarget+2, ...
+                        const newSet = new Set();
+                        for (let i = 0; i < sortedIndices.length; i++) {
+                            newSet.add(adjustedTarget + i);
+                        }
+
+                        player.reorderQueueBatch(this._draggedIndices, target);
+
+                        // Update selection to new positions
+                        this.state.selectedIndices = newSet;
+                        this.state.selectionVersion++;
                     }
-                    adjustedTarget = Math.max(0, adjustedTarget);
-
-                    // New positions: adjustedTarget, adjustedTarget+1, adjustedTarget+2, ...
-                    const newSet = new Set();
-                    for (let i = 0; i < sortedIndices.length; i++) {
-                        newSet.add(adjustedTarget + i);
-                    }
-
-                    player.reorderQueueBatch(this._draggedIndices, index);
-
-                    // Update selection to new positions
-                    this.state.selectedIndices = newSet;
-                    this.state.selectionVersion++;
                 } else {
-                    // Single item drag
-                    player.reorderQueue(this._dragIndex, index);
+                    // Single item drag. Translate the gap onto reorderQueue's
+                    // remove-then-insert semantics: when moving down, the
+                    // removal shifts the insertion point left by one. A gap
+                    // adjacent to the dragged row resolves to === from (no-op).
+                    const from = this._dragIndex;
+                    const to = gap !== null ? (gap > from ? gap - 1 : gap) : index;
+                    if (to !== from) {
+                        this._trackQueueInteraction();  // Prevent jump-to-current after reorder
+                        player.reorderQueue(from, to);
+                    }
                 }
             }
 
@@ -1177,96 +1236,30 @@ export default defineComponent('now-playing-page', {
         },
 
         _setupScrollListener() {
-            // Clean up previous listener
-            if (this._scrollHandler && this._scrollTarget) {
-                this._scrollTarget.removeEventListener('scroll', this._scrollHandler);
-            }
+            // The windowing controller (this._win) owns the range math and its
+            // own passive scroll/resize listeners. Here we (a) hand it the real
+            // scroll container once the ref resolves, and (b) attach a separate
+            // lightweight listener that keeps the jump-to-current button in sync
+            // as the user scrolls within the buffered window (the controller only
+            // fires onRange when the rendered range changes, which is too coarse
+            // for the button). Falls back to window capture if the wrapper is
+            // somehow absent, matching the prior behavior.
+            this._scrollHandler = rafThrottle(() => this._checkCurrentSongVisibility());
 
-            // Use rafThrottle to limit scroll handler to once per animation frame
-            this._scrollHandler = rafThrottle(() => this._updateVisibleRange());
-
-            // Try to get the scroll wrapper, fall back to window
             requestAnimationFrame(() => {
+                if (!this._isMounted) return;
                 const scrollWrapper = this.refs.queueScrollWrapper;
+                this._win.setScrollContainer(scrollWrapper || 'window');
+
                 if (scrollWrapper) {
                     this._scrollTarget = scrollWrapper;
-                    scrollWrapper.addEventListener('scroll', this._scrollHandler);
+                    scrollWrapper.addEventListener('scroll', this._scrollHandler, { passive: true });
                 } else {
                     this._scrollTarget = window;
                     window.addEventListener('scroll', this._scrollHandler, true);
                 }
-                this._updateVisibleRange();
+                this._checkCurrentSongVisibility();
             });
-        },
-
-        _updateVisibleRange() {
-            const container = this.refs.queueContainer;
-            const scrollWrapper = this.refs.queueScrollWrapper;
-            if (!container || !scrollWrapper) return;
-
-            const itemHeight = 48; // Must match CSS
-            const baseBuffer = 40; // Increased from 20 for smoother scrolling
-            const velocityBuffer = 30; // Extra items in scroll direction
-            const headerHeight = 48; // Height of sticky queue header
-            const minVisibleItems = 50; // Minimum items to render
-
-            // Get scroll position from the scroll wrapper
-            const scrollTop = scrollWrapper.scrollTop;
-            // Account for sticky header
-            const scrollIntoContainer = Math.max(0, scrollTop - headerHeight);
-            // Visible height is the scroll wrapper's client height minus header
-            const visibleHeight = Math.max(500, scrollWrapper.clientHeight - headerHeight);
-
-            // Track scroll velocity for predictive buffering
-            const now = performance.now();
-            const scrollY = scrollTop;
-            let scrollDirection = 0; // -1 = up, 0 = stationary, 1 = down
-
-            if (this._lastScrollY !== undefined && this._lastScrollTime !== undefined) {
-                const timeDelta = now - this._lastScrollTime;
-                if (timeDelta > 0 && timeDelta < 200) { // Only if recent scroll
-                    const scrollDelta = scrollY - this._lastScrollY;
-                    const velocity = Math.abs(scrollDelta / timeDelta);
-                    // Only apply velocity buffer if scrolling fast (> 0.5px/ms)
-                    if (velocity > 0.5) {
-                        scrollDirection = scrollDelta > 0 ? 1 : -1;
-                    }
-                }
-            }
-            this._lastScrollY = scrollY;
-            this._lastScrollTime = now;
-
-            // Calculate buffer with velocity-based overscan
-            const bufferAbove = baseBuffer + (scrollDirection < 0 ? velocityBuffer : 0);
-            const bufferBelow = baseBuffer + (scrollDirection > 0 ? velocityBuffer : 0);
-
-            const queueLength = this.getVisibleQueue().length;
-            let startIndex = Math.max(0, Math.floor(scrollIntoContainer / itemHeight) - bufferAbove);
-            let endIndex = Math.min(
-                queueLength,
-                Math.ceil((scrollIntoContainer + visibleHeight) / itemHeight) + bufferBelow
-            );
-
-            // Ensure minimum number of visible items
-            if (endIndex - startIndex < minVisibleItems) {
-                endIndex = Math.min(queueLength, startIndex + minVisibleItems);
-            }
-
-            // Bottom locking: ensure visibleStart doesn't cause content to extend past container
-            const renderCount = endIndex - startIndex;
-            const maxVisibleStart = Math.max(0, queueLength - renderCount);
-            startIndex = Math.min(startIndex, maxVisibleStart);
-
-            if (startIndex !== this.state.visibleStart || endIndex !== this.state.visibleEnd) {
-                // Use flushSync to ensure translateY and item slice update atomically
-                flushSync(() => {
-                    this.state.visibleStart = startIndex;
-                    this.state.visibleEnd = endIndex;
-                });
-            }
-
-            // Check if current song is in view and update jump button visibility
-            this._checkCurrentSongVisibility();
         },
 
         /**
@@ -1345,7 +1338,8 @@ export default defineComponent('now-playing-page', {
                 // Scroll to the current song, then update visible range for the new position
                 this._scrollToCurrentSong(false);
                 // Force immediate update of visible range after instant scroll
-                this._updateVisibleRange();
+                this._win.refresh();
+                this._checkCurrentSongVisibility();
             });
         },
 
@@ -1570,7 +1564,6 @@ export default defineComponent('now-playing-page', {
         const rawQueueLength = this.stores.player.queue.length;
         const queueLoaded = this.stores.player.queueLoaded;
         const itemHeight = 48;
-        const { visibleStart, visibleEnd } = this.state;
 
         return html`
             <div class="now-playing">
@@ -1694,8 +1687,8 @@ export default defineComponent('now-playing-page', {
                         <!-- Queue List -->
                         <div class="queue-container" ref="queueContainer"
                              style="height: ${visibleQueueLength * itemHeight}px; position: relative;">
-                        <div class="queue-list" style="position: absolute; top: 0; left: 0; right: 0; transform: translateY(${visibleStart * itemHeight}px);">
-                            ${memoEach(this.getVisibleQueue().slice(this.state.visibleStart, this.state.visibleEnd), ({ item, index }) => {
+                        <div class="queue-list" style="position: absolute; top: 0; left: 0; right: 0; transform: translateY(${this._win.offsetY}px);">
+                            ${memoEach(this.getVisibleQueue().slice(this._win.visibleStart, this._win.visibleEnd), ({ item, index }) => {
                                 // Use stable 'index' from wrapper (real queue position)
                                 // NOT displayIdx which changes on scroll
                                 const isSelected = this.isSelected(index);
@@ -1706,7 +1699,7 @@ export default defineComponent('now-playing-page', {
                                      draggable="${!this.isTouchDevice()}"
                                      on-click="${(e) => selectionMode ? this.toggleSelection(index, e) : this.handleQueueItemClick(index)}"
                                      on-contextmenu="${(e) => this.handleQueueContextMenu(item, e)}"
-                                     on-touchstart="${(e) => selectionMode ? this.handleSelectionTouchStart(index, e) : this.handleTouchStart(item, e)}"
+                                     on-touchstart-passive="${(e) => selectionMode ? this.handleSelectionTouchStart(index, e) : this.handleTouchStart(item, e)}"
                                      on-touchmove="${(e) => selectionMode ? this.handleHandleTouchMove(e) : this.handleTouchMove(e)}"
                                      on-touchend="${(e) => selectionMode ? this.handleHandleTouchEnd(e) : this.handleTouchEnd(e)}"
                                      on-dragstart="${(e) => { if (!this.isTouchDevice()) { this._trackQueueInteraction(); this.handleDragStart(index, e); } }}"
@@ -2332,6 +2325,11 @@ export default defineComponent('now-playing-page', {
         .queue-item.drag-over {
             border-top: 2px solid var(--primary-500, #0066cc);
             margin-top: -2px;
+        }
+
+        .queue-item.drag-over-below {
+            border-bottom: 2px solid var(--primary-500, #0066cc);
+            margin-bottom: -2px;
         }
 
         /* Selection mode styles */

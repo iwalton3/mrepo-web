@@ -205,8 +205,9 @@ export interface ComponentOptions<
   styles?: string;
 
   /**
-   * External stores to subscribe to.
-   * Component automatically subscribes on mount and unsubscribes on unmount.
+   * External stores to wire up.
+   * `this.stores.name` becomes a direct reference to the store's reactive
+   * state - reads are tracked fine-grained and cleanup is automatic.
    * Pass Store objects here - they are automatically unwrapped for `this.stores` access.
    *
    * @example
@@ -222,6 +223,22 @@ export interface ComponentOptions<
    * });
    */
   stores?: St;
+
+  /**
+   * Computed properties - lazy, cached values that recompute when their
+   * reactive dependencies change. Exposed as plain instance properties
+   * (read `this.total`, not `this.total()`). Plain functions only
+   * (no `get` accessors). Disposed automatically on unmount.
+   *
+   * @example
+   * computed: {
+   *   total() { return this.state.items.reduce((s, i) => s + i.price, 0); }
+   * },
+   * template() {
+   *   return html`<p>Total: ${this.total}</p>`;
+   * }
+   */
+  computed?: Record<string, (this: ComponentInstance<P, S, St>) => any>;
 
   /**
    * Lifecycle hook called after component is added to DOM.

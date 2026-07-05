@@ -94,7 +94,7 @@ export default defineComponent('cl-multiselect', {
         },
 
         handleKeyDown(e) {
-            const options = this.getFilteredOptions();
+            const options = this.filteredOptions;
 
             switch (e.key) {
                 case 'ArrowDown':
@@ -192,18 +192,6 @@ export default defineComponent('cl-multiselect', {
             this.state.filterValue = e.target.value;
         },
 
-        getFilteredOptions() {
-            if (!this.props.filter || !this.state.filterValue) {
-                return this.props.options || [];
-            }
-
-            const filter = this.state.filterValue.toLowerCase();
-            return (this.props.options || []).filter(option => {
-                const label = this.getOptionLabel(option);
-                return String(label).toLowerCase().includes(filter);
-            });
-        },
-
         getOptionLabel(option) {
             return typeof option === 'object' ? option[this.props.optionlabel] : option;
         },
@@ -216,9 +204,23 @@ export default defineComponent('cl-multiselect', {
             const value = this.getOptionValue(option);
             const currentValue = this.props.value || [];
             return currentValue.includes(value);
+        }
+    },
+
+    computed: {
+        filteredOptions() {
+            if (!this.props.filter || !this.state.filterValue) {
+                return this.props.options || [];
+            }
+
+            const filter = this.state.filterValue.toLowerCase();
+            return (this.props.options || []).filter(option => {
+                const label = this.getOptionLabel(option);
+                return String(label).toLowerCase().includes(filter);
+            });
         },
 
-        getSelectedOptions() {
+        selectedOptions() {
             const currentValue = this.props.value || [];
             return currentValue.map(val => {
                 const option = (this.props.options || []).find(opt => {
@@ -230,8 +232,8 @@ export default defineComponent('cl-multiselect', {
     },
 
     template() {
-        const filteredOptions = this.getFilteredOptions();
-        const selectedOptions = this.getSelectedOptions();
+        const filteredOptions = this.filteredOptions;
+        const selectedOptions = this.selectedOptions;
         const hasSelection = selectedOptions.length > 0;
         const listboxId = `${this.state.multiselectId}-listbox`;
         const labelId = `${this.state.multiselectId}-label`;

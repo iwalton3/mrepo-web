@@ -88,7 +88,7 @@ export default defineComponent('cl-input-search', {
         },
 
         handleKeyDown(e) {
-            const suggestions = this.getFilteredSuggestions();
+            const suggestions = this.filteredSuggestions;
 
             if (e.key === 'ArrowDown') {
                 e.preventDefault();
@@ -125,7 +125,7 @@ export default defineComponent('cl-input-search', {
 
         handleFocus() {
             if (this.state.internalValue.length >= this.props.minChars &&
-                this.getFilteredSuggestions().length > 0) {
+                this.filteredSuggestions.length > 0) {
                 this.state.showSuggestions = true;
             }
         },
@@ -170,7 +170,13 @@ export default defineComponent('cl-input-search', {
             }));
         },
 
-        getFilteredSuggestions() {
+        getSuggestionText(suggestion) {
+            return typeof suggestion === 'object' ? suggestion.label || suggestion.value : suggestion;
+        }
+    },
+
+    computed: {
+        filteredSuggestions() {
             if (!this.props.suggestions || !this.state.internalValue) {
                 return this.props.suggestions || [];
             }
@@ -180,15 +186,11 @@ export default defineComponent('cl-input-search', {
                 const text = typeof s === 'object' ? (s.label || s.value || '') : s;
                 return text.toLowerCase().includes(query);
             });
-        },
-
-        getSuggestionText(suggestion) {
-            return typeof suggestion === 'object' ? suggestion.label || suggestion.value : suggestion;
         }
     },
 
     template() {
-        const suggestions = this.getFilteredSuggestions();
+        const suggestions = this.filteredSuggestions;
         const hasValue = this.state.internalValue && this.state.internalValue.length > 0;
 
         return html`

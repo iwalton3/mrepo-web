@@ -23,8 +23,11 @@ export default defineComponent('cl-checkbox', {
             }
         },
 
+    },
+
+    computed: {
         // Get the actual checked state (supports both 'checked' and 'value' props for x-model)
-        getCheckedState() {
+        checkedState() {
             // x-model sets 'value' prop, manual usage sets 'checked' prop
             // If value is a boolean, use it; otherwise use checked
             if (typeof this.props.value === 'boolean') {
@@ -35,7 +38,7 @@ export default defineComponent('cl-checkbox', {
     },
 
     template() {
-        const isChecked = this.getCheckedState();
+        const isChecked = this.checkedState;
 
         return html`
             <div class="cl-checkbox-wrapper">

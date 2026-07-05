@@ -5,7 +5,7 @@
  */
 
 import { defineComponent, html, when, each } from './lib/framework.js';
-import { enableRouting } from './lib/router.js';
+import { enableRouting, getRouter } from './lib/router.js';
 import { auth, playlists as playlistsApi } from './offline/offline-api.js';
 import { player, playerStore } from './stores/player-store.js';
 import { initializeOfflineStore } from './offline/offline-store.js';
@@ -170,6 +170,14 @@ export default defineComponent('music-app', {
             const outlet = this.querySelector('router-outlet');
             if (!outlet) {
                 console.error('music-app: <router-outlet> not found - routing not initialized, app will render blank. Check the template markup.');
+                return;
+            }
+
+            // enableRouting warns on a second call; if the shell ever
+            // remounts, reattach the outlet to the existing router instead
+            const existing = getRouter();
+            if (existing) {
+                existing.setOutlet(outlet);
                 return;
             }
 

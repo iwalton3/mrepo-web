@@ -5,7 +5,7 @@ Zero-dependency reactive web framework. No build step required.
 ## Component Pattern
 
 ```javascript
-import { defineComponent, html, when, each } from './lib/framework.js';
+import { defineComponent, html, when, each } from 'vdx/lib/framework.js';
 
 export default defineComponent('my-component', {
     props: { title: 'Default' },          // Observed attributes
@@ -18,10 +18,14 @@ export default defineComponent('my-component', {
         increment() { this.state.count++; }
     },
 
+    computed: {                           // Lazy cached values, auto-disposed
+        doubled() { return this.state.count * 2; }
+    },
+
     template() {
         return html`
             <h1>${this.props.title}</h1>
-            <p>Count: ${this.state.count}</p>
+            <p>Count: ${this.state.count} (doubled: ${this.doubled})</p>
             <button on-click="increment">+1</button>
         `;
     },
@@ -94,6 +98,12 @@ Objects, arrays, and functions pass automatically:
 </child-component>
 ```
 
+In static HTML (outside templates), camelCase props are set via kebab-case attributes:
+```html
+<unit-converter from-unit="liters" initial-value="10"></unit-converter>
+<!-- from-unit="..." sets this.props.fromUnit (always a string) -->
+```
+
 ## Children & Slots
 
 ```javascript
@@ -161,12 +171,20 @@ return html`<p>${count}</p>`;  // contain(() => count) has no dependencies!
 // ✅ GOOD - Reactive access inside template
 return html`<p>${this.state.count}</p>`;  // contain(() => this.state.count) works
 
-// ✅ GOOD - Use getter methods for computed values
-methods: {
-    get doubled() { return this.state.count * 2; }
+// ✅ GOOD - Use the computed: option (lazy, cached, auto-disposed; read as a property)
+computed: {
+    doubled() { return this.state.count * 2; }
 },
 template() {
-    return html`<p>${this.doubled}</p>`;  // Getter called inside contain()
+    return html`<p>${this.doubled}</p>`;  // Tracked inside contain()
+}
+
+// ✅ ALSO GOOD - Plain methods (NOT get accessors - they break method binding)
+methods: {
+    doubled() { return this.state.count * 2; }
+},
+template() {
+    return html`<p>${this.doubled()}</p>`;  // Called inside contain()
 }
 ```
 
@@ -182,13 +200,13 @@ ${when(this.stores.auth.isAdmin, () => html`<admin-panel></admin-panel>`)}
 
 **Optional: untracked() to skip proxying entirely:**
 ```javascript
-import { untracked } from './lib/framework.js';
+import { untracked } from 'vdx/lib/framework.js';
 data() { return { songs: untracked([]) }; }  // Items aren't reactive
 ```
 
 **Immediate DOM updates:**
 ```javascript
-import { flushSync } from './lib/framework.js';
+import { flushSync } from 'vdx/lib/framework.js';
 flushSync(() => { this.state.showInput = true; });
 this.refs.input.focus();
 ```
@@ -213,11 +231,17 @@ defineComponent('my-component', {
 ## Router
 
 ```javascript
-import { enableRouting } from './lib/router.js';
+import { enableRouting } from 'vdx/lib/router.js';
 
+// A second enableRouting call warns and merges routes into the existing router
 enableRouting(outlet, {
     '/': { component: 'home-page' },
-    '/users/:id/': { component: 'user-page' },  // params in this.props.params
+    '/users/:id/': { component: 'user-page' },   // params in this.props.params
+    '/files/:path*/': { component: 'file-page' }, // wildcard: multi-segment param
+    '/admin/': { component: 'admin-page', require: 'admin' }  // fails closed
+}, {
+    // Routes with `require` are DENIED unless this approves
+    checkCapability: (required) => auth.state.capabilities.includes(required)
 });
 
 // Navigation
@@ -237,7 +261,7 @@ defineComponent('my-component', {
 
 ## Component Library (cl-*)
 
-Common components from `./componentlib/`:
+Common components from `vdx/componentlib/`:
 
 ```javascript
 // Buttons
@@ -246,7 +270,7 @@ Common components from `./componentlib/`:
 
 // Form inputs
 <cl-input-text x-model="name" label="Name"></cl-input-text>
-<cl-select-box options="${options}" x-model="selected"></cl-select-box>
+<cl-input-number x-model="age" label="Age"></cl-input-number>
 <cl-checkbox x-model="agreed" label="I agree"></cl-checkbox>
 
 // Dialogs
@@ -288,6 +312,8 @@ template() {
 **Note:** `when()` and `each()` do NOT create boundaries by default - they work like regular JavaScript.
 
 **The rule:** If a template has both high-frequency updates AND expensive content (large lists, complex rendering), use `contain()` or move content to child components.
+
+For virtual scrolling, memoEach invalidation strategies (composite keys, deps, version counters), and 60fps non-reactive islands, see [docs/performance.md](docs/performance.md).
 
 ## Build-Time Optimizer
 

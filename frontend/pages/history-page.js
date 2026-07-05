@@ -9,8 +9,9 @@
  * - Batch add to queue/playlist
  */
 
-import { defineComponent, html, when, each, memoEach, untracked, flushSync } from '../lib/framework.js';
-import { rafThrottle, notify } from '../lib/utils.js';
+import { defineComponent, html, when, each, memoEach, untracked } from '../lib/framework.js';
+import { notify } from '../lib/utils.js';
+import { createWindowing } from '../lib/windowing.js';
 import { history as historyApi, playlists as playlistsApi, auth, shouldUseOffline } from '../offline/offline-api.js';
 import { player } from '../stores/player-store.js';
 import { showSongContextMenu, navigateToArtist, navigateToAlbum } from '../components/song-context-menu.js';
@@ -26,6 +27,17 @@ export default defineComponent('history-page', {
     },
 
     data() {
+        // Windowing controller owns the visible-range state and scroll/resize
+        // plumbing. Created in data() so its state exists for the first render.
+        // History scrolls the window; measured against the sparse-array spacer.
+        this._win = createWindowing(this, {
+            itemHeight: 52,
+            buffer: 40,
+            count: () => this.state.historyItems.length,
+            scrollContainer: 'window',
+            measureElement: () => this.refs.historyContainer
+        });
+
         return {
             // View mode
             viewMode: 'chronological',  // 'chronological' | 'grouped'
@@ -35,10 +47,6 @@ export default defineComponent('history-page', {
             totalCount: 0,
             isLoading: false,
             isAuthenticated: false,
-
-            // Windowed rendering
-            visibleStart: 0,
-            visibleEnd: 50,
 
             // Filters
             datePreset: 'all',  // '7d', '30d', '90d', '1y', 'all', 'custom'
@@ -76,9 +84,7 @@ export default defineComponent('history-page', {
     },
 
     unmounted() {
-        if (this._scrollHandler) {
-            window.removeEventListener('scroll', this._scrollHandler, true);
-        }
+        this._win.destroy();
     },
 
     methods: {
@@ -120,8 +126,6 @@ export default defineComponent('history-page', {
             }
 
             this.state.isLoading = true;
-            this.state.visibleStart = 0;
-            this.state.visibleEnd = 50;
 
             try {
                 const { startDate, endDate } = this.getDateRange();
@@ -147,7 +151,8 @@ export default defineComponent('history-page', {
                 this.state.historyItems = items;
                 this.state.totalCount = totalCount;
 
-                this._setupScrollListener();
+                // Recompute the window once the new list has rendered
+                requestAnimationFrame(() => this._win.refresh());
 
                 if (result.hasMore) {
                     this._loadRemainingInBackground(100);
@@ -169,56 +174,6 @@ export default defineComponent('history-page', {
                 }
             } catch (e) {
                 console.error('Failed to load playlists:', e);
-            }
-        },
-
-        _setupScrollListener() {
-            if (this._scrollHandler) {
-                window.removeEventListener('scroll', this._scrollHandler, true);
-            }
-
-            this._scrollHandler = rafThrottle(() => this._updateVisibleRange());
-            window.addEventListener('scroll', this._scrollHandler, true);
-
-            requestAnimationFrame(() => this._updateVisibleRange());
-        },
-
-        _updateVisibleRange() {
-            const container = this.refs.historyContainer;
-            if (!container) return;
-
-            const itemHeight = 52;
-            const buffer = 40;
-
-            const rect = container.getBoundingClientRect();
-            const viewportTop = Math.max(0, -rect.top);
-            const viewportBottom = viewportTop + window.innerHeight;
-
-            let startIndex = Math.max(0, Math.floor(viewportTop / itemHeight) - buffer);
-            let endIndex = Math.min(
-                this.state.totalCount,
-                Math.ceil(viewportBottom / itemHeight) + buffer
-            );
-
-            // Clamp to actual loaded items
-            const loadedCount = this.state.historyItems.length;
-            if (loadedCount > 0) {
-                startIndex = Math.min(startIndex, loadedCount - 1);
-                endIndex = Math.min(endIndex, loadedCount);
-            }
-            endIndex = Math.max(endIndex, startIndex + 1);
-
-            // Bottom locking: ensure visibleStart doesn't cause content to extend past container
-            const renderCount = endIndex - startIndex;
-            const maxVisibleStart = Math.max(0, loadedCount - renderCount);
-            startIndex = Math.min(startIndex, maxVisibleStart);
-
-            if (startIndex !== this.state.visibleStart || endIndex !== this.state.visibleEnd) {
-                // Use flushSync to ensure translateY and item slice update atomically
-                flushSync(() => {
-                    this.state.visibleStart = startIndex;
-                    this.state.visibleEnd = endIndex;
-                });
             }
         },
 
@@ -545,7 +500,7 @@ export default defineComponent('history-page', {
 
     template() {
         const { viewMode, historyItems, totalCount, isLoading, isAuthenticated,
-                visibleStart, visibleEnd, datePreset, customStartDate, customEndDate,
+                datePreset, customStartDate, customEndDate,
                 hideSkipped, showQueueMenu, showPlaylistDialog, playlists,
                 selectedPlaylistId, batchInProgress,
                 createNewPlaylist, newPlaylistName } = this.state;
@@ -645,18 +600,17 @@ export default defineComponent('history-page', {
                             ${when(totalCount === 0, html`
                                 <div class="empty">No play history found.</div>
                             `, () => {
-                                const itemHeight = 52;
-                                const visibleItems = historyItems.slice(visibleStart, visibleEnd);
+                                const win = this._win;
 
                                 return html`
                                     <div class="history-container" ref="historyContainer"
-                                         style="height: ${totalCount * itemHeight}px; position: relative;">
+                                         style="height: ${win.totalHeight}px; position: relative;">
                                         <div class="history-list"
-                                             style="position: absolute; top: 0; left: 0; right: 0; transform: translateY(${visibleStart * itemHeight}px);">
-                                            ${memoEach(visibleItems, (item, idx) => {
-                                                const actualIndex = visibleStart + idx;
+                                             style="position: absolute; top: 0; left: 0; right: 0; transform: translateY(${win.offsetY}px);">
+                                            ${memoEach(historyItems.slice(win.visibleStart, win.visibleEnd), (item, idx) => {
+                                                const actualIndex = win.visibleStart + idx;
                                                 return this.renderHistoryItem(item, actualIndex);
-                                            }, (item, idx) => `${item?.uuid ?? 'loading'}-${visibleStart + idx}`, { trustKey: true })}
+                                            }, (item, idx) => `${item?.uuid ?? 'loading'}-${win.visibleStart + idx}`, { trustKey: true })}
                                         </div>
                                     </div>
                                 `;

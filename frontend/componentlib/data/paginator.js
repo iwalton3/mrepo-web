@@ -12,16 +12,8 @@ export default defineComponent('cl-paginator', {
     },
 
     methods: {
-        totalPages() {
-            return Math.ceil(this.props.totalrecords / this.props.rows);
-        },
-
-        currentPage() {
-            return Math.floor(this.props.first / this.props.rows);
-        },
-
         changePage(page) {
-            if (page < 0 || page >= this.totalPages()) return;
+            if (page < 0 || page >= this.totalPages) return;
 
             const first = page * this.props.rows;
             this.emitChange(null, {
@@ -36,20 +28,30 @@ export default defineComponent('cl-paginator', {
         },
 
         goToLastPage() {
-            this.changePage(this.totalPages() - 1);
+            this.changePage(this.totalPages - 1);
         },
 
         goToPreviousPage() {
-            this.changePage(this.currentPage() - 1);
+            this.changePage(this.currentPage - 1);
         },
 
         goToNextPage() {
-            this.changePage(this.currentPage() + 1);
+            this.changePage(this.currentPage + 1);
+        }
+    },
+
+    computed: {
+        totalPages() {
+            return Math.ceil(this.props.totalrecords / this.props.rows);
         },
 
-        getPageNumbers() {
-            const current = this.currentPage();
-            const total = this.totalPages();
+        currentPage() {
+            return Math.floor(this.props.first / this.props.rows);
+        },
+
+        pageNumbers() {
+            const current = this.currentPage;
+            const total = this.totalPages;
             const linkSize = this.props.pagerlinksize;
 
             let start = Math.max(0, current - Math.floor(linkSize / 2));
@@ -70,9 +72,9 @@ export default defineComponent('cl-paginator', {
     },
 
     template() {
-        const pages = this.getPageNumbers();
-        const current = this.currentPage();
-        const total = this.totalPages();
+        const pages = this.pageNumbers;
+        const current = this.currentPage;
+        const total = this.totalPages;
         const start = this.props.first + 1;
         const end = Math.min(this.props.first + this.props.rows, this.props.totalrecords);
 

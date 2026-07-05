@@ -99,36 +99,6 @@ export default defineComponent('cl-datatable', {
             return selected.some(s => JSON.stringify(s) === JSON.stringify(row));
         },
 
-        getSortedData() {
-            const value = this.props.value;
-            let data = Array.isArray(value) ? [...value] : [];
-
-            if (this.state.sortBy) {
-                data.sort((a, b) => {
-                    const aVal = a[this.state.sortBy];
-                    const bVal = b[this.state.sortBy];
-
-                    if (aVal < bVal) return -1 * this.state.sortDirection;
-                    if (aVal > bVal) return 1 * this.state.sortDirection;
-                    return 0;
-                });
-            }
-
-            return data;
-        },
-
-        getPaginatedData() {
-            const data = this.getSortedData();
-
-            if (!this.props.paginator) {
-                return data;
-            }
-
-            const start = this.props.currentpage * this.props.rows;
-            const end = start + this.props.rows;
-            return data.slice(start, end);
-        },
-
         getCellValue(row, column) {
             if (column.body) {
                 return column.body(row);
@@ -179,8 +149,40 @@ export default defineComponent('cl-datatable', {
         }
     },
 
+    computed: {
+        sortedData() {
+            const value = this.props.value;
+            let data = Array.isArray(value) ? [...value] : [];
+
+            if (this.state.sortBy) {
+                data.sort((a, b) => {
+                    const aVal = a[this.state.sortBy];
+                    const bVal = b[this.state.sortBy];
+
+                    if (aVal < bVal) return -1 * this.state.sortDirection;
+                    if (aVal > bVal) return 1 * this.state.sortDirection;
+                    return 0;
+                });
+            }
+
+            return data;
+        },
+
+        paginatedData() {
+            const data = this.sortedData;
+
+            if (!this.props.paginator) {
+                return data;
+            }
+
+            const start = this.props.currentpage * this.props.rows;
+            const end = start + this.props.rows;
+            return data.slice(start, end);
+        }
+    },
+
     template() {
-        const data = this.getPaginatedData();
+        const data = this.paginatedData;
         const columns = this.props.columns || [];
         const hasSelection = this.props.selectionmode !== 'none';
         // Use role="grid" for interactive tables with selection

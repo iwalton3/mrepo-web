@@ -8,8 +8,8 @@
  * - Sharing functionality
  */
 
-import { defineComponent, html, when, each, memoEach, untracked, flushSync } from '../lib/framework.js';
-import { rafThrottle } from '../lib/utils.js';
+import { defineComponent, html, when, each, memoEach, untracked } from '../lib/framework.js';
+import { createWindowing } from '../lib/windowing.js';
 import { songs as songsApi, playlists as playlistsApi, auth, ai } from '../offline/offline-api.js';
 import offlineStore, { shouldShowOfflineWarnings, setDownloadProgress, computeOfflineFilterSets } from '../offline/offline-store.js';
 import { downloadSong, canCacheOffline } from '../offline/offline-audio.js';
@@ -27,6 +27,17 @@ export default defineComponent('playlists-page', {
     },
 
     data() {
+        // Windowing controller owns the visible-range state and scroll/resize
+        // plumbing. Created in data() so its state exists for the first render.
+        // The detail view scrolls the window; measured against the songs spacer.
+        this._win = createWindowing(this, {
+            itemHeight: 52,
+            buffer: 40,
+            count: () => this.state.playlistSongs.length,
+            scrollContainer: 'window',
+            measureElement: () => this.refs.songsContainer
+        });
+
         return {
             view: 'list',           // 'list', 'detail', 'shared'
             tab: 'my',              // 'my', 'public'
@@ -47,9 +58,6 @@ export default defineComponent('playlists-page', {
             cursor: null,
             hasMore: false,
             totalCount: 0,
-            // Windowed rendering
-            visibleStart: 0,
-            visibleEnd: 50,
             // Search state
             showAddSongs: false,
             searchQuery: '',
@@ -136,11 +144,9 @@ export default defineComponent('playlists-page', {
 
     unmounted() {
         this._isMounted = false;
+        this._win.destroy();
         if (this._intersectionObserver) {
             this._intersectionObserver.disconnect();
-        }
-        if (this._scrollHandler) {
-            window.removeEventListener('scroll', this._scrollHandler, true);
         }
         if (this._playlistsChangedHandler) {
             window.removeEventListener('playlists-changed', this._playlistsChangedHandler);
@@ -432,8 +438,6 @@ export default defineComponent('playlists-page', {
             this.state.isLoading = true;
             this.state.detailError = null;
             this.state.cursor = null;
-            this.state.visibleStart = 0;
-            this.state.visibleEnd = 50;
             // Clear selection when switching playlists
             this.state.selectionMode = false;
             this.state.selectedIndices = new Set();
@@ -477,8 +481,8 @@ export default defineComponent('playlists-page', {
                     this.state.currentPlaylist = { id, name: 'Playlist', song_count: totalCount };
                 }
 
-                // Setup scroll listener for windowed rendering
-                this._setupScrollListener();
+                // Recompute the window once the new list has rendered
+                requestAnimationFrame(() => this._win.refresh());
 
                 // Start background loading of remaining items
                 if (result.hasMore) {
@@ -499,8 +503,6 @@ export default defineComponent('playlists-page', {
             this.state.isLoading = true;
             this.state.detailError = null;
             this.state.cursor = null;
-            this.state.visibleStart = 0;
-            this.state.visibleEnd = 50;
             try {
                 const playlist = await playlistsApi.byToken(token);
                 if (this._detailRequestId !== requestId) return;  // Stale
@@ -525,7 +527,8 @@ export default defineComponent('playlists-page', {
                 this.state.cursor = result.nextCursor;
                 this.state.hasMore = result.hasMore;
 
-                this._setupScrollListener();
+                // Recompute the window once the new list has rendered
+                requestAnimationFrame(() => this._win.refresh());
 
                 if (result.hasMore) {
                     this._loadRemainingInBackground(playlist.id, result.nextCursor);
@@ -947,7 +950,10 @@ export default defineComponent('playlists-page', {
         async handlePlaylistMoveDown(index, e) {
             e.stopPropagation();
             if (index < this.state.playlistSongs.length - 1) {
-                await this.reorderPlaylistSongs(index, index + 1);
+                // reorderPlaylistSongs treats toIndex as a gap (insertIndex =
+                // to-1 when moving down), so moving down one row needs gap
+                // index+2 - (index, index+1) re-inserts in place (no-op)
+                await this.reorderPlaylistSongs(index, index + 2);
             }
         },
 
@@ -1029,6 +1035,7 @@ export default defineComponent('playlists-page', {
                 this._draggedIndices = [index];
             }
             this._dragIndex = index;
+            this._dropGap = null;
             e.dataTransfer.effectAllowed = 'move';
             e.dataTransfer.setData('text/plain', index);
             e.currentTarget.classList.add('dragging');
@@ -1036,25 +1043,59 @@ export default defineComponent('playlists-page', {
 
         handlePlaylistDragEnd(e) {
             e.currentTarget.classList.remove('dragging');
-            // Clear all drag-over and group-dragging classes
-            this.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+            // Clear all drag indicator and group-dragging classes
+            this.querySelectorAll('.drag-over, .drag-over-below').forEach(el => el.classList.remove('drag-over', 'drag-over-below'));
             this.querySelectorAll('.group-dragging').forEach(el => el.classList.remove('group-dragging'));
             this._dragIndex = null;
+            this._dropGap = null;
             this._groupDrag = false;
             this._draggedIndices = null;
+        },
+
+        /**
+         * Pointer-midpoint insertion gap for a dragover/drop on row `index`:
+         * upper half = insert before this row (gap = index), lower half =
+         * insert after (gap = index + 1). Tolerates sub-row content drift
+         * under the cursor from drag-autoscroll (the off-by-one drop bug).
+         * Returns null when geometry is unavailable (caller falls back to
+         * legacy drop-row semantics).
+         */
+        _computeDropGap(index, e) {
+            const row = e.currentTarget;
+            if (!row || typeof e.clientY !== 'number') return null;
+            const rect = row.getBoundingClientRect();
+            if (!rect || !(rect.height > 0)) return null;
+            return (e.clientY - rect.top) > rect.height / 2 ? index + 1 : index;
         },
 
         handlePlaylistDragOver(index, e) {
             e.preventDefault();
             e.dataTransfer.dropEffect = 'move';
-            // Handle drag-over state here instead of dragEnter/Leave for consistency
-            if (this._dragIndex !== null && this._dragIndex !== index) {
-                const songItem = e.currentTarget;
-                if (!songItem.classList.contains('drag-over')) {
-                    // Clear previous drag-over and set new one
-                    this.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
-                    songItem.classList.add('drag-over');
-                }
+            if (this._dragIndex === null) return;
+
+            const gap = this._computeDropGap(index, e);
+            if (gap === null) return;
+            this._dropGap = gap;
+
+            // No indicator when the drop would be a no-op: for single drags,
+            // a gap adjacent to the dragged row; for group drags, hovering the
+            // dragged row itself (parity with the previous behavior)
+            const isNoop = this._groupDrag
+                ? index === this._dragIndex
+                : (gap === this._dragIndex || gap === this._dragIndex + 1);
+            if (isNoop) {
+                this.querySelectorAll('.drag-over, .drag-over-below').forEach(el => el.classList.remove('drag-over', 'drag-over-below'));
+                return;
+            }
+
+            // Indicator edge matches the insertion gap: top border for
+            // "before this row", bottom border for "after this row"
+            const cls = gap === index ? 'drag-over' : 'drag-over-below';
+            const songItem = e.currentTarget;
+            if (!songItem.classList.contains(cls)) {
+                // Clear previous indicator and set the new one
+                this.querySelectorAll('.drag-over, .drag-over-below').forEach(el => el.classList.remove('drag-over', 'drag-over-below'));
+                songItem.classList.add(cls);
             }
         },
 
@@ -1066,41 +1107,65 @@ export default defineComponent('playlists-page', {
             // Only remove if leaving the container entirely
             const relatedTarget = e.relatedTarget;
             if (!relatedTarget || !e.currentTarget.contains(relatedTarget)) {
-                e.currentTarget.classList.remove('drag-over');
+                e.currentTarget.classList.remove('drag-over', 'drag-over-below');
             }
         },
 
         async handlePlaylistDrop(index, e) {
             e.preventDefault();
-            // Clear all drag-over and group-dragging classes
-            this.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+            // Clear all drag indicator and group-dragging classes
+            this.querySelectorAll('.drag-over, .drag-over-below').forEach(el => el.classList.remove('drag-over', 'drag-over-below'));
             this.querySelectorAll('.group-dragging').forEach(el => el.classList.remove('group-dragging'));
 
-            if (this._dragIndex !== null && this._dragIndex !== index) {
+            // Insertion gap from the drop event's own geometry (freshest
+            // pointer info); fall back to the last dragover's gap, then to
+            // legacy drop-row semantics when no gap was ever computed.
+            const dropGap = this._computeDropGap(index, e);
+            const gap = dropGap !== null ? dropGap : this._dropGap;
+            this._dropGap = null;
+
+            if (this._dragIndex !== null) {
                 if (this._groupDrag && this._draggedIndices && this._draggedIndices.length > 1) {
-                    // Group drag: move all selected items
-                    const sortedIndices = [...this._draggedIndices].sort((a, b) => a - b);
+                    // Group drag: move all selected items. Self-drop guard
+                    // (dropping on the dragged row) stays a no-op as before.
+                    if (index !== this._dragIndex) {
+                        const songsLen = this.state.playlistSongs.length;
+                        const target = gap !== null ? gap : index;
+                        const sortedIndices = [...this._draggedIndices].sort((a, b) => a - b);
 
-                    // Calculate where items will end up (same logic as reorderPlaylistSongsBatch)
-                    let adjustedTarget = index;
-                    for (const idx of sortedIndices) {
-                        if (idx < index) adjustedTarget--;
+                        // Calculate where items will end up (same logic as reorderPlaylistSongsBatch)
+                        let adjustedTarget = target;
+                        for (const idx of sortedIndices) {
+                            if (idx < target) adjustedTarget--;
+                        }
+                        adjustedTarget = Math.max(0, Math.min(adjustedTarget, songsLen - sortedIndices.length));
+
+                        // New positions: adjustedTarget, adjustedTarget+1, adjustedTarget+2, ...
+                        const newSet = new Set();
+                        for (let i = 0; i < sortedIndices.length; i++) {
+                            newSet.add(adjustedTarget + i);
+                        }
+
+                        await this.reorderPlaylistSongsBatch(this._draggedIndices, target);
+
+                        // Update selection to new positions
+                        this.state.selectedIndices = newSet;
+                        this.state.playlistVersion++;
                     }
-                    adjustedTarget = Math.max(0, adjustedTarget);
-
-                    // New positions: adjustedTarget, adjustedTarget+1, adjustedTarget+2, ...
-                    const newSet = new Set();
-                    for (let i = 0; i < sortedIndices.length; i++) {
-                        newSet.add(adjustedTarget + i);
-                    }
-
-                    await this.reorderPlaylistSongsBatch(this._draggedIndices, index);
-
-                    // Update selection to new positions
-                    this.state.selectedIndices = newSet;
-                    this.state.playlistVersion++;
                 } else {
-                    await this.reorderPlaylistSongs(this._dragIndex, index);
+                    // Single item drag. reorderPlaylistSongs' insertIndex math
+                    // (from < to ? to - 1 : to) makes `to = gap` land exactly in
+                    // the gap for both directions. Gaps adjacent to the dragged
+                    // row are no-ops - skip to avoid a pointless API call.
+                    const from = this._dragIndex;
+                    if (gap !== null) {
+                        if (gap !== from && gap !== from + 1) {
+                            await this.reorderPlaylistSongs(from, gap);
+                        }
+                    } else if (index !== from) {
+                        // Legacy fallback: no pointer geometry available
+                        await this.reorderPlaylistSongs(from, index);
+                    }
                 }
             }
             this._dragIndex = null;
@@ -1395,7 +1460,7 @@ export default defineComponent('playlists-page', {
                      draggable="${view !== 'shared' && !this.isTouchDevice()}"
                      on-click="${(e) => selectionMode ? this.toggleSelection(index, e) : this.handleSongClick(song)}"
                      on-contextmenu="${(e) => this.handleSongContextMenu(song, e)}"
-                     on-touchstart="${(e) => selectionMode ? this.handleSelectionTouchStart(song.uuid, e) : this.handleTouchStart(song, e)}"
+                     on-touchstart-passive="${(e) => selectionMode ? this.handleSelectionTouchStart(song.uuid, e) : this.handleTouchStart(song, e)}"
                      on-touchmove="${(e) => selectionMode ? this.handleHandleTouchMove(e) : this.handleTouchMove(e)}"
                      on-touchend="${(e) => selectionMode ? this.handleHandleTouchEnd(e) : this.handleTouchEnd(e)}"
                      on-dragstart="${(e) => { if (!this.isTouchDevice()) this.handlePlaylistDragStart(index, e); }}"
@@ -1439,59 +1504,6 @@ export default defineComponent('playlists-page', {
             `;
         },
 
-        _setupScrollListener() {
-            // Clean up old listener
-            if (this._scrollHandler) {
-                window.removeEventListener('scroll', this._scrollHandler, true);
-            }
-
-            // Use rafThrottle to limit scroll handler to once per animation frame
-            this._scrollHandler = rafThrottle(() => this._updateVisibleRange());
-            window.addEventListener('scroll', this._scrollHandler, true);
-
-            // Initial update
-            requestAnimationFrame(() => this._updateVisibleRange());
-        },
-
-        _updateVisibleRange() {
-            const container = this.refs.songsContainer;
-            if (!container) return;
-
-            const itemHeight = 52; // Must match CSS
-            const buffer = 40; // Extra items above/below viewport
-
-            const rect = container.getBoundingClientRect();
-            const viewportTop = Math.max(0, -rect.top);
-            const viewportBottom = viewportTop + window.innerHeight;
-
-            let startIndex = Math.max(0, Math.floor(viewportTop / itemHeight) - buffer);
-            let endIndex = Math.min(
-                this.state.totalCount,
-                Math.ceil(viewportBottom / itemHeight) + buffer
-            );
-
-            // Clamp to actual loaded items
-            const loadedCount = this.state.playlistSongs.length;
-            if (loadedCount > 0) {
-                startIndex = Math.min(startIndex, loadedCount - 1);
-                endIndex = Math.min(endIndex, loadedCount);
-            }
-            endIndex = Math.max(endIndex, startIndex + 1);
-
-            // Bottom locking: ensure visibleStart doesn't cause content to extend past container
-            const renderCount = endIndex - startIndex;
-            const maxVisibleStart = Math.max(0, loadedCount - renderCount);
-            startIndex = Math.min(startIndex, maxVisibleStart);
-
-            if (startIndex !== this.state.visibleStart || endIndex !== this.state.visibleEnd) {
-                // Use flushSync to ensure translateY and item slice update atomically
-                flushSync(() => {
-                    this.state.visibleStart = startIndex;
-                    this.state.visibleEnd = endIndex;
-                });
-            }
-        },
-
         async _loadRemainingInBackground(playlistId, cursor) {
             // Load remaining items in background with larger batches
             let currentCursor = cursor;
@@ -1526,7 +1538,6 @@ export default defineComponent('playlists-page', {
         const { view, tab, myPlaylists, publicPlaylists, currentPlaylist, playlistSongs,
                 isLoading, detailError, isAuthenticated, showCreateDialog, showShareDialog, shareToken,
                 newPlaylistName, newPlaylistDesc, newPlaylistPublic, hasMore, totalCount,
-                visibleStart, visibleEnd,
                 showAddSongs, searchQuery, searchResults, searchLoading,
                 isSorting, showSortMenu, aiEnabled } = this.state;
 
@@ -1803,16 +1814,14 @@ export default defineComponent('playlists-page', {
                         ${when(totalCount === 0, () => html`
                             <div class="empty">${this.getEmptyMessage(currentPlaylist)}</div>
                         `, () => {
-                            const itemHeight = 52;
-                            const visibleSongs = playlistSongs.slice(visibleStart, visibleEnd);
-                            const loadedCount = playlistSongs.filter(s => s !== null).length;
+                            const win = this._win;
 
                             return html`
                                 <div class="songs-container" ref="songsContainer"
-                                     style="height: ${totalCount * itemHeight}px; position: relative;">
-                                    <div class="songs-list" style="position: absolute; top: ${visibleStart * itemHeight}px; left: 0; right: 0;">
-                                        ${memoEach(visibleSongs, (song, idx) => {
-                                            const actualIndex = visibleStart + idx;
+                                     style="height: ${win.totalHeight}px; position: relative;">
+                                    <div class="songs-list" style="position: absolute; top: ${win.offsetY}px; left: 0; right: 0;">
+                                        ${memoEach(playlistSongs.slice(win.visibleStart, win.visibleEnd), (song, idx) => {
+                                            const actualIndex = win.visibleStart + idx;
                                             return this.renderSongItem(song, actualIndex);
                                         }, (song, idx) => `${song?.uuid ?? `loading-${idx}`}-${this.state.playlistVersion ?? 0}`, { trustKey: true })}
                                     </div>
@@ -2428,6 +2437,11 @@ export default defineComponent('playlists-page', {
         .song-item.drag-over {
             border-top: 2px solid var(--primary-500, #0066cc);
             margin-top: -2px;
+        }
+
+        .song-item.drag-over-below {
+            border-bottom: 2px solid var(--primary-500, #0066cc);
+            margin-bottom: -2px;
         }
 
         /* Selection mode styles */

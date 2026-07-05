@@ -174,21 +174,6 @@ export default defineComponent('cl-calendar', {
             return days;
         },
 
-        getMonths() {
-            return [
-                'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-            ];
-        },
-
-        getYears() {
-            const years = [];
-            for (let i = 0; i < 12; i++) {
-                years.push(this.state.yearRangeStart + i);
-            }
-            return years;
-        },
-
         isSelectedDate(date) {
             if (!date || !this.state.selectedDate) return false;
             const selected = new Date(this.state.selectedDate);
@@ -295,16 +280,6 @@ export default defineComponent('cl-calendar', {
             return null;
         },
 
-        getDateMask() {
-            // Convert date format to mask format
-            // MM/DD/YYYY -> 99/99/9999
-            const format = this.props.dateFormat || 'MM/DD/YYYY';
-            return format
-                .replace(/M/g, '9')
-                .replace(/D/g, '9')
-                .replace(/Y/g, '9');
-        },
-
         handleMaskInput(e) {
             // Stop the input event from bubbling to prevent x-model interference
             if (e && e.stopPropagation) {
@@ -390,9 +365,36 @@ export default defineComponent('cl-calendar', {
         getYear() {
             const viewDate = new Date(this.state.viewDate);
             return viewDate.getFullYear();
+        }
+    },
+
+    computed: {
+        months() {
+            return [
+                'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+            ];
         },
 
-        getYearRangeLabel() {
+        years() {
+            const years = [];
+            for (let i = 0; i < 12; i++) {
+                years.push(this.state.yearRangeStart + i);
+            }
+            return years;
+        },
+
+        dateMask() {
+            // Convert date format to mask format
+            // MM/DD/YYYY -> 99/99/9999
+            const format = this.props.dateFormat || 'MM/DD/YYYY';
+            return format
+                .replace(/M/g, '9')
+                .replace(/D/g, '9')
+                .replace(/Y/g, '9');
+        },
+
+        yearRangeLabel() {
             return `${this.state.yearRangeStart} - ${this.state.yearRangeStart + 11}`;
         }
     },
@@ -400,8 +402,8 @@ export default defineComponent('cl-calendar', {
     template() {
         const days = this.getDaysInMonth();
         const weekDays = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
-        const months = this.getMonths();
-        const years = this.getYears();
+        const months = this.months;
+        const years = this.years;
         return html`
             <div class="cl-calendar-wrapper">
                 ${when(this.props.label, html`
@@ -412,7 +414,7 @@ export default defineComponent('cl-calendar', {
                         <cl-input-mask
                             class="calendar-mask-input"
                             value="${this.state.inputValue}"
-                            mask="${this.getDateMask()}"
+                            mask="${this.dateMask}"
                             placeholder="${this.props.placeholder || this.props.dateFormat}"
                             disabled="${this.props.disabled}"
                             hideError="${true}"
@@ -515,7 +517,7 @@ export default defineComponent('cl-calendar', {
                         ${when(this.state.viewMode === 'years', html`
                             <div class="calendar-header">
                                 <button class="nav-btn" on-click="previousYearRange" title="Previous years">‹</button>
-                                <span class="year-range">${this.getYearRangeLabel()}</span>
+                                <span class="year-range">${this.yearRangeLabel}</span>
                                 <button class="nav-btn" on-click="nextYearRange" title="Next years">›</button>
                             </div>
                             <div class="year-grid">

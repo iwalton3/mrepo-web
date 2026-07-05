@@ -7,8 +7,8 @@
  * - Parent scrolling - tracks a parent scrollable container
  * - Window scrolling - tracks the window/document scroll
  */
-import { defineComponent, html, memoEach, when, flushSync } from '../../lib/framework.js';
-import { rafThrottle } from '../../lib/utils.js';
+import { defineComponent, html, memoEach, when } from '../../lib/framework.js';
+import { createWindowing } from '../../lib/windowing.js';
 
 export default defineComponent('cl-virtual-list', {
     props: {
@@ -27,11 +27,17 @@ export default defineComponent('cl-virtual-list', {
     },
 
     data() {
+        // Windowing controller owns the visible-range state and scroll/resize
+        // plumbing. Created in data() so its state exists for the first render;
+        // the scroll mode is applied in mounted() once props are parsed.
+        this._win = createWindowing(this, {
+            itemHeight: () => Number(this.props.itemHeight) || 50,
+            buffer: () => Number(this.props.bufferSize) || 10,
+            count: () => (this.props.items || []).length,
+            fallbackHeight: () => parseInt(this.props.height) || 400
+        });
+
         return {
-            scrollTop: 0,
-            containerHeight: 0,
-            visibleStart: 0,
-            visibleEnd: 0,
             internalSelectedKey: null  // Track selection by key for memoization compatibility
         };
     },
@@ -43,30 +49,20 @@ export default defineComponent('cl-virtual-list', {
         // Reflect scrollContainer prop to attribute for CSS styling
         this._updateScrollContainerAttribute();
 
-        // Set up scroll tracking based on scrollContainer prop
-        this._setupScrollTracking();
-
-        // Set up resize observer
-        this._resizeObserver = new ResizeObserver(() => {
-            this._updateDimensions();
-        });
-        this._resizeObserver.observe(this);
-
-        // Initial update
-        this._updateDimensions();
-        this._updateVisibleRange();
+        // (Re-)attach listeners/observers and apply the scroll mode from props
+        this._win.attach();
+        this._win.setScrollContainer(this.props.scrollContainer);
     },
 
     unmounted() {
-        this._cleanupScrollTracking();
-        if (this._resizeObserver) {
-            this._resizeObserver.disconnect();
-        }
+        // Keep the controller (and its state) for potential reconnection;
+        // just drop listeners and observers
+        this._win.detach();
     },
 
     propsChanged(prop, newValue, oldValue) {
-        if (prop === 'items') {
-            this._updateVisibleRange();
+        if (prop === 'items' || prop === 'itemHeight' || prop === 'bufferSize') {
+            this._win.refresh();
         }
         if (prop === 'selectedKey') {
             this.state.internalSelectedKey = newValue;
@@ -81,8 +77,7 @@ export default defineComponent('cl-virtual-list', {
         }
         if (prop === 'scrollContainer') {
             this._updateScrollContainerAttribute();
-            this._cleanupScrollTracking();
-            this._setupScrollTracking();
+            this._win.setScrollContainer(newValue);
         }
     },
 
@@ -121,158 +116,16 @@ export default defineComponent('cl-virtual-list', {
             }
         },
 
-        _setupScrollTracking() {
-            const container = this.props.scrollContainer;
-
-            // Create throttled scroll handler
-            this._scrollHandler = rafThrottle(() => this._handleScroll());
-
-            if (container === 'self') {
-                // Self-scrolling mode - listen on this element
-                this.addEventListener('scroll', this._scrollHandler);
-                this._scrollTarget = this;
-            } else if (container === 'window') {
-                // Window scroll mode
-                window.addEventListener('scroll', this._scrollHandler, true);
-                this._scrollTarget = window;
-            } else if (container === 'parent') {
-                // Find nearest scrollable parent
-                this._scrollTarget = this._findScrollableParent();
-                if (this._scrollTarget) {
-                    this._scrollTarget.addEventListener('scroll', this._scrollHandler);
-                } else {
-                    // Fall back to window if no scrollable parent found
-                    window.addEventListener('scroll', this._scrollHandler, true);
-                    this._scrollTarget = window;
-                }
-            } else {
-                // CSS selector
-                this._scrollTarget = document.querySelector(container);
-                if (this._scrollTarget) {
-                    this._scrollTarget.addEventListener('scroll', this._scrollHandler);
-                } else {
-                    console.warn(`cl-virtual-list: scrollContainer "${container}" not found, falling back to self`);
-                    this.addEventListener('scroll', this._scrollHandler);
-                    this._scrollTarget = this;
-                }
-            }
-        },
-
-        _cleanupScrollTracking() {
-            if (this._scrollHandler) {
-                if (this._scrollTarget === window) {
-                    window.removeEventListener('scroll', this._scrollHandler, true);
-                } else if (this._scrollTarget) {
-                    this._scrollTarget.removeEventListener('scroll', this._scrollHandler);
-                }
-                this._scrollHandler = null;
-                this._scrollTarget = null;
-            }
-        },
-
-        _findScrollableParent() {
-            let parent = this.parentElement;
-            while (parent) {
-                const style = getComputedStyle(parent);
-                const overflow = style.overflow + style.overflowY;
-                if (overflow.includes('auto') || overflow.includes('scroll')) {
-                    return parent;
-                }
-                parent = parent.parentElement;
-            }
-            return null;
-        },
-
-        _updateDimensions() {
-            const container = this.props.scrollContainer;
-            let newHeight;
-
-            if (container === 'self') {
-                newHeight = this.clientHeight || parseInt(this.props.height) || 400;
-            } else if (container === 'window' || this._scrollTarget === window) {
-                newHeight = window.innerHeight;
-            } else if (this._scrollTarget) {
-                newHeight = this._scrollTarget.clientHeight;
-            } else {
-                newHeight = window.innerHeight;
-            }
-
-            if (this.state.containerHeight !== newHeight) {
-                this.state.containerHeight = newHeight;
-                this._updateVisibleRange();
-            }
-        },
-
-        _handleScroll() {
-            const container = this.props.scrollContainer;
-
-            if (container === 'self') {
-                this.state.scrollTop = this.scrollTop;
-            } else if (container === 'window' || this._scrollTarget === window) {
-                // For window scroll, calculate position relative to this element
-                const rect = this.getBoundingClientRect();
-                this.state.scrollTop = Math.max(0, -rect.top);
-            } else if (this._scrollTarget) {
-                // For parent scroll, calculate position relative to this element within the parent
-                const parentRect = this._scrollTarget.getBoundingClientRect();
-                const thisRect = this.getBoundingClientRect();
-                this.state.scrollTop = Math.max(0, parentRect.top - thisRect.top);
-            }
-
-            this._updateVisibleRange();
-        },
-
-        _updateVisibleRange() {
-            const itemHeight = this.props.itemHeight;
-            const bufferSize = this.props.bufferSize;
-            const totalItems = this.props.items.length;
-
-            const visibleStart = Math.floor(this.state.scrollTop / itemHeight);
-            const visibleCount = Math.ceil(this.state.containerHeight / itemHeight);
-            const visibleEnd = visibleStart + visibleCount;
-
-            let newStart = Math.max(0, visibleStart - bufferSize);
-            let newEnd = Math.min(totalItems, visibleEnd + bufferSize);
-
-            // Bottom locking: ensure visibleStart doesn't cause content to extend past container
-            const renderCount = newEnd - newStart;
-            const maxVisibleStart = Math.max(0, totalItems - renderCount);
-            newStart = Math.min(newStart, maxVisibleStart);
-
-            if (this.state.visibleStart !== newStart || this.state.visibleEnd !== newEnd) {
-                // Use flushSync to ensure translateY and item slice update atomically
-                flushSync(() => {
-                    this.state.visibleStart = newStart;
-                    this.state.visibleEnd = newEnd;
-                });
-            }
-        },
-
         scrollToIndex(index) {
-            const itemHeight = this.props.itemHeight;
-            const targetScroll = index * itemHeight;
-
-            if (this.props.scrollContainer === 'self') {
-                this.scrollTop = targetScroll;
-            } else if (this._scrollTarget === window) {
-                const rect = this.getBoundingClientRect();
-                const currentScroll = window.scrollY;
-                window.scrollTo({ top: currentScroll + rect.top + targetScroll, behavior: 'smooth' });
-            } else if (this._scrollTarget) {
-                const thisRect = this.getBoundingClientRect();
-                const parentRect = this._scrollTarget.getBoundingClientRect();
-                const offset = thisRect.top - parentRect.top + this._scrollTarget.scrollTop;
-                this._scrollTarget.scrollTop = offset + targetScroll;
-            }
+            this._win.scrollToIndex(index);
         },
 
         scrollToTop() {
-            this.scrollToIndex(0);
+            this._win.scrollToTop();
         },
 
         scrollToBottom() {
-            const totalItems = this.props.items.length;
-            this.scrollToIndex(Math.max(0, totalItems - 1));
+            this._win.scrollToBottom();
         },
 
         handleItemClick(item, key) {
@@ -347,11 +200,11 @@ export default defineComponent('cl-virtual-list', {
 
     template() {
         const items = this.props.items || [];
-        const itemHeight = this.props.itemHeight;
-        const totalHeight = items.length * itemHeight;
+        const itemHeight = Number(this.props.itemHeight) || 50;
+        const totalHeight = this._win.totalHeight;
         const isSelfScroll = this.props.scrollContainer === 'self';
 
-        const offsetY = this.state.visibleStart * itemHeight;
+        const offsetY = this._win.offsetY;
 
         // Use provided keyFn or default
         const keyFn = this.props.keyFn || this._defaultKeyFn;
@@ -384,7 +237,7 @@ export default defineComponent('cl-virtual-list', {
                 <div class="virtual-list-spacer" style="height: ${totalHeight}px;"></div>
 
                 <div class="virtual-list-items" style="transform: translateY(${offsetY}px);">
-                    ${memoEach(items.slice(this.state.visibleStart, this.state.visibleEnd), (item) => {
+                    ${memoEach(items.slice(this._win.visibleStart, this._win.visibleEnd), (item) => {
                         // Position is handled by parent's translateY.
                         // Selection is included in key so only affected items re-render.
                         const itemKey = keyFn(item);

@@ -11,9 +11,9 @@
  * Includes syntax help for advanced query operators.
  */
 
-import { defineComponent, html, when, each, memoEach, untracked, flushSync } from '../lib/framework.js';
+import { defineComponent, html, when, each, memoEach, untracked } from '../lib/framework.js';
 import { getRouter } from '../lib/router.js';
-import { rafThrottle } from '../lib/utils.js';
+import { createWindowing } from '../lib/windowing.js';
 import { songs, ai } from '../offline/offline-api.js';
 import { player } from '../stores/player-store.js';
 import offlineStore from '../offline/offline-store.js';
@@ -30,6 +30,20 @@ export default defineComponent('quick-search-page', {
     stores: { offline: offlineStore },
 
     data() {
+        // Windowing controller owns the visible-range state and scroll/resize
+        // plumbing. Created in data() so its state exists for the first render.
+        // Advanced results scroll inside the app's .router-wrapper; the window
+        // position is measured against the songs spacer. itemHeight is 54
+        // (52px item + 2px gap). overscan matches the old velocity buffer.
+        this._win = createWindowing(this, {
+            itemHeight: 54,
+            buffer: 40,
+            overscan: 30,
+            count: () => this.state.advancedResults.length,
+            scrollContainer: 'div.router-wrapper',
+            measureElement: () => this.refs.songsSpacer
+        });
+
         return {
             searchQuery: '',  // The actual search text
             results: null,  // {artists, albums, songs, folders} for quick search
@@ -43,9 +57,6 @@ export default defineComponent('quick-search-page', {
             similarMode: false,
             similarSongUuid: null,
             similarSong: null,  // The source song for "similar to" header
-            // Windowed rendering for advanced results
-            visibleStart: 0,
-            visibleEnd: 50,
             // Section limits for quick search (for load more functionality)
             artistsLimit: 10,
             albumsLimit: 10,
@@ -55,12 +66,7 @@ export default defineComponent('quick-search-page', {
     },
 
     unmounted() {
-        if (this._scrollListener) {
-            const mainContent = document.querySelector('div.router-wrapper');
-            if (mainContent) {
-                mainContent.removeEventListener('scroll', this._scrollListener);
-            }
-        }
+        this._win.destroy();
     },
 
     mounted() {
@@ -369,8 +375,6 @@ export default defineComponent('quick-search-page', {
             this.state.isLoading = true;
             this.state.searchPerformed = true;
             this.state.advancedMode = true;
-            this.state.visibleStart = 0;
-            this.state.visibleEnd = 50;
             this._currentSearchQuery = query;
 
             if (isOffline) {
@@ -381,7 +385,7 @@ export default defineComponent('quick-search-page', {
                     if (this._advancedSearchId !== thisSearchId) return;
                     this.state.advancedResults = offlineSongs;
                     this.state.advancedTotalCount = offlineSongs.length;
-                    this._setupAdvancedScrollListener();
+                    requestAnimationFrame(() => this._win.refresh());
                 } catch (e) {
                     if (this._advancedSearchId === thisSearchId) {
                         console.error('Offline advanced search failed:', e);
@@ -413,8 +417,8 @@ export default defineComponent('quick-search-page', {
                 this.state.advancedResults = items;
                 this.state.advancedTotalCount = totalCount;
 
-                // Setup scroll listener
-                this._setupAdvancedScrollListener();
+                // Recompute the window once the new results have rendered
+                requestAnimationFrame(() => this._win.refresh());
 
                 // Background load remaining
                 if (result.hasMore && result.nextCursor) {
@@ -445,8 +449,6 @@ export default defineComponent('quick-search-page', {
             this.state.advancedMode = true;
             this.state.isLoading = true;
             this.state.searchPerformed = true;
-            this.state.visibleStart = 0;
-            this.state.visibleEnd = 50;
 
             try {
                 // Fetch the source song info for the header
@@ -470,8 +472,8 @@ export default defineComponent('quick-search-page', {
                 this.state.advancedResults = similarSongs;
                 this.state.advancedTotalCount = similarSongs.length;
 
-                // Setup scroll listener for virtual scroll
-                this._setupAdvancedScrollListener();
+                // Recompute the window once the new results have rendered
+                requestAnimationFrame(() => this._win.refresh());
             } catch (e) {
                 if (this._similarSearchId === thisSearchId) {
                     console.error('Similar search failed:', e);
@@ -514,79 +516,6 @@ export default defineComponent('quick-search-page', {
                 router.replace('/search/');
             } else {
                 window.location.hash = '/search/';
-            }
-        },
-
-        _setupAdvancedScrollListener() {
-            requestAnimationFrame(() => {
-                const mainContent = document.querySelector('div.router-wrapper');
-                if (!mainContent) return;
-
-                if (this._scrollListener) {
-                    mainContent.removeEventListener('scroll', this._scrollListener);
-                }
-
-                // Use rafThrottle to limit scroll handler to once per animation frame
-                this._scrollListener = rafThrottle(() => this._updateAdvancedVisibleRange());
-                mainContent.addEventListener('scroll', this._scrollListener, { passive: true });
-
-                // Initial update
-                this._updateAdvancedVisibleRange();
-            });
-        },
-
-        _updateAdvancedVisibleRange() {
-            const mainContent = document.querySelector('div.router-wrapper');
-            if (!mainContent || !this.state.advancedMode) return;
-
-            const spacer = this.querySelector('.songs-spacer');
-            if (!spacer) return;
-
-            const itemHeight = 54; // 52px item + 2px gap
-            const baseBuffer = 40; // Increased from 10 for smoother scrolling
-            const velocityBuffer = 30; // Extra items in scroll direction
-
-            // Use getBoundingClientRect for accurate positions relative to viewport
-            const spacerRect = spacer.getBoundingClientRect();
-            const containerRect = mainContent.getBoundingClientRect();
-
-            // Calculate how far we've scrolled into the spacer
-            const scrolledIntoSpacer = Math.max(0, containerRect.top - spacerRect.top);
-            const viewportHeight = mainContent.clientHeight;
-
-            // Track scroll velocity for predictive buffering
-            const now = performance.now();
-            let scrollDirection = 0; // -1 = up, 0 = stationary, 1 = down
-
-            if (this._lastScrollPos !== undefined && this._lastScrollTime !== undefined) {
-                const timeDelta = now - this._lastScrollTime;
-                if (timeDelta > 0 && timeDelta < 200) {
-                    const scrollDelta = scrolledIntoSpacer - this._lastScrollPos;
-                    const velocity = Math.abs(scrollDelta / timeDelta);
-                    if (velocity > 0.5) {
-                        scrollDirection = scrollDelta > 0 ? 1 : -1;
-                    }
-                }
-            }
-            this._lastScrollPos = scrolledIntoSpacer;
-            this._lastScrollTime = now;
-
-            // Calculate buffer with velocity-based overscan
-            const bufferAbove = baseBuffer + (scrollDirection < 0 ? velocityBuffer : 0);
-            const bufferBelow = baseBuffer + (scrollDirection > 0 ? velocityBuffer : 0);
-
-            const startIndex = Math.max(0, Math.floor(scrolledIntoSpacer / itemHeight) - bufferAbove);
-            const endIndex = Math.min(
-                this.state.advancedTotalCount,
-                Math.ceil((scrolledIntoSpacer + viewportHeight) / itemHeight) + bufferBelow
-            );
-
-            if (startIndex !== this.state.visibleStart || endIndex !== this.state.visibleEnd) {
-                // Use flushSync to ensure translateY and item slice update atomically
-                flushSync(() => {
-                    this.state.visibleStart = startIndex;
-                    this.state.visibleEnd = endIndex;
-                });
             }
         },
 
@@ -939,9 +868,8 @@ export default defineComponent('quick-search-page', {
 
                 <!-- Advanced Mode Results (full song list with windowed rendering) -->
                 ${when(advancedMode && this.state.advancedTotalCount > 0, () => {
-                    const itemHeight = 54; // 52px item + 2px gap
-                    const { visibleStart, visibleEnd, advancedTotalCount } = this.state;
-                    const visibleItems = advancedResults.slice(visibleStart, visibleEnd);
+                    const win = this._win;
+                    const { advancedTotalCount } = this.state;
 
                     return html`
                         <div class="advanced-results">
@@ -961,11 +889,11 @@ export default defineComponent('quick-search-page', {
                                     </button>
                                 </div>
                             </div>
-                            <div class="songs-spacer"
-                                 style="height: ${advancedTotalCount * itemHeight}px; position: relative;">
+                            <div class="songs-spacer" ref="songsSpacer"
+                                 style="height: ${win.totalHeight}px; position: relative;">
                                 <div class="songs-list"
-                                     style="position: absolute; top: ${visibleStart * itemHeight}px; left: 0; right: 0;">
-                                    ${memoEach(visibleItems, (song, idx) => {
+                                     style="position: absolute; top: ${win.offsetY}px; left: 0; right: 0;">
+                                    ${memoEach(advancedResults.slice(win.visibleStart, win.visibleEnd), (song, idx) => {
                                         if (!song) {
                                             return html`<div class="song-item loading-item">
                                                 <div class="song-icon">⏳</div>
@@ -978,8 +906,8 @@ export default defineComponent('quick-search-page', {
                                             <div class="song-item"
                                                  on-click="${() => this.handleSongClick(song)}"
                                                  on-contextmenu="${(e) => this.handleSongContextMenu(song, e)}"
-                                                 on-touchstart="${(e) => this.handleTouchStart(song, e)}"
-                                                 on-touchmove="handleTouchMove"
+                                                 on-touchstart-passive="${(e) => this.handleTouchStart(song, e)}"
+                                                 on-touchmove-passive="handleTouchMove"
                                                  on-touchend="handleTouchEnd">
                                                 <div class="song-icon">🎵</div>
                                                 <div class="song-info">
@@ -1079,8 +1007,8 @@ export default defineComponent('quick-search-page', {
                                         <div class="song-item"
                                              on-click="${() => this.handleSongClick(song)}"
                                              on-contextmenu="${(e) => this.handleSongContextMenu(song, e)}"
-                                             on-touchstart="${(e) => this.handleTouchStart(song, e)}"
-                                             on-touchmove="handleTouchMove"
+                                             on-touchstart-passive="${(e) => this.handleTouchStart(song, e)}"
+                                             on-touchmove-passive="handleTouchMove"
                                              on-touchend="handleTouchEnd">
                                             <div class="song-icon">🎵</div>
                                             <div class="song-info">

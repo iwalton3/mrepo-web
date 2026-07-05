@@ -9,9 +9,9 @@
  * - Virtual scrolling for large lists
  */
 
-import { defineComponent, html, when, each, memoEach, untracked, flushSync } from '../lib/framework.js';
+import { defineComponent, html, when, each, memoEach, untracked } from '../lib/framework.js';
 import { getRouter } from '../lib/router.js';
-import { rafThrottle } from '../lib/utils.js';
+import { createWindowing } from '../lib/windowing.js';
 import { browse, playlists, songs as songsApi } from '../offline/offline-api.js';
 import { player } from '../stores/player-store.js';
 import offlineStore, { setDownloadProgress, computeOfflineFilterSets, formatBytes } from '../offline/offline-store.js';
@@ -32,6 +32,25 @@ export default defineComponent('browse-page', {
     stores: { offline: offlineStore },
 
     data() {
+        // Windowing controller owns the visible-range state and the scroll/
+        // resize plumbing (rAF-throttled window scroll, directional overscan,
+        // bottom-locking, frame-atomic range commits). Created in data() so its
+        // state exists for the first render; count()/loadedCount() read reactive
+        // state so the window recomputes as items/totalCount change. onRange
+        // drives the "approaching the end" loadMore trigger for the windowed
+        // (hierarchy) views. The windowed template branch is conditional, so on
+        // filtered/offline/small lists the controller simply goes unused.
+        this._win = createWindowing(this, {
+            itemHeight: 52,
+            buffer: 40,
+            overscan: 30,
+            scrollContainer: 'window',
+            measureElement: () => this.refs.itemsContainer,
+            count: () => this.state.totalCount || this.state.items.length,
+            loadedCount: () => this.state.items.length,
+            onRange: () => this._maybeLoadMore()
+        });
+
         return {
             viewMode: 'hierarchy',  // 'hierarchy' or 'filepath'
 
@@ -48,10 +67,6 @@ export default defineComponent('browse-page', {
             hasMore: true,
             isLoading: false,
             totalCount: 0,
-
-            // Windowed rendering
-            visibleStart: 0,
-            visibleEnd: 50,
 
             // Breadcrumb
             breadcrumbs: [],
@@ -97,9 +112,7 @@ export default defineComponent('browse-page', {
         if (this._intersectionObserver) {
             this._intersectionObserver.disconnect();
         }
-        if (this._scrollHandler) {
-            window.removeEventListener('scroll', this._scrollHandler, true);
-        }
+        this._win.destroy();
         if (this._reloadTimeout) {
             clearTimeout(this._reloadTimeout);
         }
@@ -204,8 +217,9 @@ export default defineComponent('browse-page', {
             this.state.cursor = null;
             this.state.hasMore = true;
             this.state.totalCount = 0;  // reset so a stale count doesn't suppress the empty state
-            this.state.visibleStart = 0;
-            this.state.visibleEnd = 50;
+            // Recompute the window against the freshly-cleared list (the loader
+            // called below refreshes again once new items land).
+            this._win.refresh();
 
             if (target.mode === 'filepath') {
                 this.state.viewMode = 'filepath';
@@ -355,8 +369,16 @@ export default defineComponent('browse-page', {
                 this._updateBreadcrumbs();
                 // Re-setup infinite scroll after items load
                 this._setupInfiniteScroll();
-                // Setup scroll listener for windowed rendering
-                this._setupScrollListener();
+                // Recompute the window for the new items, then re-check the
+                // loadMore threshold on the NEXT frame (after the finally clears
+                // isLoading). This is the self-perpetuating pagination chain for
+                // windowed hierarchy views: onRange only fires when the range
+                // changes, so a successful cursor append that doesn't move the
+                // window still needs an explicit re-check to keep loading toward
+                // the frontier. Deferring past isLoading also prevents a failed
+                // load (which never reaches here) from hammering the backend.
+                this._win.refresh();
+                requestAnimationFrame(() => this._maybeLoadMore());
             } catch (e) {
                 if (this._hierarchyRequestId === thisRequestId && this._routeEpoch === epoch) {
                     console.error('Failed to load items:', e);
@@ -394,7 +416,7 @@ export default defineComponent('browse-page', {
                 this.state.hasMore = false;  // All genres loaded at once
                 this.state.filterLoading = false;
                 this.state.breadcrumbs = [{ label: 'All Genres', level: 'genre' }];
-                this._setupScrollListener();
+                this._win.refresh();
             } catch (e) {
                 if (this._genresRequestId === thisRequestId && this._routeEpoch === epoch) {
                     console.error('Failed to load genres:', e);
@@ -412,8 +434,6 @@ export default defineComponent('browse-page', {
             const epoch = this._routeEpoch;
 
             this.state.isLoading = true;
-            this.state.visibleStart = 0;
-            this.state.visibleEnd = 50;
 
             try {
                 // Load artists with 100+ songs (popular artists only)
@@ -442,8 +462,8 @@ export default defineComponent('browse-page', {
                 this.state.hasMore = result.hasMore;
                 this.state.breadcrumbs = [{ label: 'Artists', level: 'artists' }];
 
-                // Setup scroll listener for windowed rendering
-                this._setupScrollListener();
+                // Recompute the window for the freshly-loaded sparse array
+                this._win.refresh();
 
                 // Start background loading of all remaining artists
                 if (result.hasMore) {
@@ -474,8 +494,6 @@ export default defineComponent('browse-page', {
             const epoch = this._routeEpoch;
 
             this.state.isLoading = true;
-            this.state.visibleStart = 0;
-            this.state.visibleEnd = 50;
 
             try {
                 const sort = this.state.sortBy === 'count' ? 'song_count' : 'name';
@@ -500,8 +518,8 @@ export default defineComponent('browse-page', {
                 this.state.hasMore = result.hasMore;
                 this._updateFilePathBreadcrumbs();
 
-                // Setup scroll listener for windowed rendering
-                this._setupScrollListener();
+                // Recompute the window for the freshly-loaded sparse array
+                this._win.refresh();
 
                 // Start background loading
                 if (result.hasMore) {
@@ -557,90 +575,16 @@ export default defineComponent('browse-page', {
             });
         },
 
-        _setupScrollListener() {
-            if (this._scrollHandler) {
-                window.removeEventListener('scroll', this._scrollHandler, true);
-            }
-
-            // Use rafThrottle to limit scroll handler to once per animation frame (~16ms at 60fps)
-            this._scrollHandler = rafThrottle(() => this._updateVisibleRange());
-            window.addEventListener('scroll', this._scrollHandler, true);
-
-            requestAnimationFrame(() => this._updateVisibleRange());
-        },
-
-        _updateVisibleRange() {
-            const container = this.refs.itemsContainer;
-            if (!container) return;
-
-            const itemHeight = 52; // Must match CSS
-            const baseBuffer = 40; // Increased from 20 for smoother scrolling
-            const velocityBuffer = 30; // Extra items in scroll direction
-
-            const rect = container.getBoundingClientRect();
-            const viewportTop = Math.max(0, -rect.top);
-            const viewportBottom = viewportTop + window.innerHeight;
-
-            // Track scroll velocity for predictive buffering
-            const now = performance.now();
-            const scrollY = viewportTop;
-            let scrollDirection = 0; // -1 = up, 0 = stationary, 1 = down
-
-            if (this._lastScrollY !== undefined && this._lastScrollTime !== undefined) {
-                const timeDelta = now - this._lastScrollTime;
-                if (timeDelta > 0 && timeDelta < 200) { // Only if recent scroll
-                    const scrollDelta = scrollY - this._lastScrollY;
-                    const velocity = Math.abs(scrollDelta / timeDelta);
-                    // Only apply velocity buffer if scrolling fast (> 0.5px/ms)
-                    if (velocity > 0.5) {
-                        scrollDirection = scrollDelta > 0 ? 1 : -1;
-                    }
-                }
-            }
-            this._lastScrollY = scrollY;
-            this._lastScrollTime = now;
-
-            // Calculate buffer with velocity-based overscan
-            const bufferAbove = baseBuffer + (scrollDirection < 0 ? velocityBuffer : 0);
-            const bufferBelow = baseBuffer + (scrollDirection > 0 ? velocityBuffer : 0);
-
-            // Use totalCount if available, otherwise fall back to items.length
-            const itemCount = this.state.totalCount || this.state.items.length;
-
-            let startIndex = Math.max(0, Math.floor(viewportTop / itemHeight) - bufferAbove);
-            let endIndex = Math.min(
-                itemCount,
-                Math.ceil(viewportBottom / itemHeight) + bufferBelow
-            );
-
-            // Ensure valid range - only constrain based on actual loaded items
-            // Using totalCount here can cause jumps if it's stale during loadMore()
+        // Load more when the rendered window approaches the end of the loaded
+        // items. Driven by the windowing controller's onRange (fires when the
+        // visible range moves) and by an explicit re-check after each successful
+        // hierarchy append (see loadItems). The hasMore/isLoading guards are the
+        // same ones the old inline _updateVisibleRange used; loadMore() itself
+        // no-ops for filepath (background-loaded) mode.
+        _maybeLoadMore() {
             const loadedCount = this.state.items.length;
-            if (loadedCount > 0) {
-                startIndex = Math.min(startIndex, loadedCount - 1);
-                endIndex = Math.min(endIndex, loadedCount);
-            }
-            endIndex = Math.max(endIndex, startIndex + 1);
-
-            // Bottom locking: ensure visibleStart doesn't cause content to extend past container
-            // This prevents scroll position from jumping when reaching the end
-            const renderCount = endIndex - startIndex;
-            const maxVisibleStart = Math.max(0, loadedCount - renderCount);
-            startIndex = Math.min(startIndex, maxVisibleStart);
-
-            if (startIndex !== this.state.visibleStart || endIndex !== this.state.visibleEnd) {
-                // Use flushSync to ensure translateY and item slice update atomically
-                // Prevents visual desync between position and content in RAF-throttled handler
-                flushSync(() => {
-                    this.state.visibleStart = startIndex;
-                    this.state.visibleEnd = endIndex;
-                });
-            }
-
-            // Trigger loading more items when approaching end of loaded items
-            // This replaces the sentinel-based approach for virtual scroll mode
             const loadThreshold = 50; // Load more when within 50 items of end
-            if (this.state.hasMore && !this.state.isLoading && endIndex >= loadedCount - loadThreshold) {
+            if (this.state.hasMore && !this.state.isLoading && this._win.visibleEnd >= loadedCount - loadThreshold) {
                 this.loadMore();
             }
         },
@@ -1870,16 +1814,19 @@ export default defineComponent('browse-page', {
 
                             // For windowed mode
                             if (useWindowed) {
-                                const itemHeight = 52;
+                                // Window geometry comes from the windowing controller:
+                                // totalHeight = count()*52 (== itemCount*52), offsetY =
+                                // visibleStart*52. Reading these getters tracks the window
+                                // reactively so the template re-renders as it scrolls.
                                 // NOTE: We inline the slice directly in memoEach to allow
                                 // the optimizer to correctly track dependencies.
                                 // Using a local variable would break reactivity after optimization.
 
                                 return html`
                                     <div class="items-container" ref="itemsContainer"
-                                         style="height: ${itemCount * itemHeight}px; position: relative;">
-                                        <div class="items-list" style="transform: translateY(${this.state.visibleStart * itemHeight}px);">
-                                            ${memoEach(this.state.items.slice(this.state.visibleStart, this.state.visibleEnd), (item, idx) => {
+                                         style="height: ${this._win.totalHeight}px; position: relative;">
+                                        <div class="items-list" style="transform: translateY(${this._win.offsetY}px);">
+                                            ${memoEach(this.state.items.slice(this._win.visibleStart, this._win.visibleEnd), (item, idx) => {
                                                 if (!item) {
                                                     return html`
                                                         <div class="item loading-placeholder">
@@ -1894,8 +1841,8 @@ export default defineComponent('browse-page', {
                                                     <div class="item ${this.state.selectionMode && item.uuid ? 'selectable' : ''} ${this.isSelected(item) ? 'selected' : ''}"
                                                          on-click="${() => this.state.selectionMode && item.uuid ? this.toggleSelection(item, event) : this.handleItemClick(item)}"
                                                          on-contextmenu="${(e) => this.handleItemContextMenu(item, e)}"
-                                                         on-touchstart="${(e) => this.handleTouchStart(item, e)}"
-                                                         on-touchmove="handleTouchMove"
+                                                         on-touchstart-passive="${(e) => this.handleTouchStart(item, e)}"
+                                                         on-touchmove-passive="handleTouchMove"
                                                          on-touchend="handleTouchEnd">
                                                         ${when(this.state.selectionMode && item.uuid, () => html`
                                                             <input type="checkbox"
@@ -1942,8 +1889,8 @@ export default defineComponent('browse-page', {
                                     <div class="item ${this.state.selectionMode && item.uuid ? 'selectable' : ''} ${this.isSelected(item) ? 'selected' : ''}"
                                          on-click="${() => this.state.selectionMode && item.uuid ? this.toggleSelection(item, event) : this.handleItemClick(item)}"
                                          on-contextmenu="${(e) => this.handleItemContextMenu(item, e)}"
-                                         on-touchstart="${(e) => this.handleTouchStart(item, e)}"
-                                         on-touchmove="handleTouchMove"
+                                         on-touchstart-passive="${(e) => this.handleTouchStart(item, e)}"
+                                         on-touchmove-passive="handleTouchMove"
                                          on-touchend="handleTouchEnd">
                                         ${when(this.state.selectionMode && item.uuid, () => html`
                                             <input type="checkbox"
