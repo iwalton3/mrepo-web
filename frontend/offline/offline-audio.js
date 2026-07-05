@@ -287,6 +287,9 @@ async function fetchAllPlaylistSongs(playlistId) {
 
     do {
         const result = await api.playlists.getSongs(playlistId, { cursor, limit: batchSize });
+        // Private returns inline {error} on rejection; without this the loop
+        // treats it as an empty page and silently drops songs from the download.
+        if (result?.error) throw new Error(result.error);
         const items = Array.isArray(result) ? result : (result.items || result.songs || []);
         songs.push(...items);
         cursor = result.nextCursor;

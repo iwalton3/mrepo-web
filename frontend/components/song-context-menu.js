@@ -445,6 +445,7 @@ export default defineComponent('song-context-menu', {
             if (this.state.folderPath) {
                 do {
                     const result = await songsApi.byPath(this.state.folderPath, { cursor, limit: 500 });
+                    if (result?.error) throw new Error(result.error);
                     const songs = result.items || [];
                     allSongs.push(...songs);
                     cursor = result.nextCursor || null;
@@ -452,6 +453,7 @@ export default defineComponent('song-context-menu', {
             } else if (this.state.folderFilters) {
                 do {
                     const result = await songsApi.byFilter({ ...this.state.folderFilters, cursor, limit: 500 });
+                    if (result?.error) throw new Error(result.error);
                     const songs = result.items || [];
                     allSongs.push(...songs);
                     cursor = result.nextCursor || null;

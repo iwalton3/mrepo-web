@@ -326,6 +326,53 @@ class SyncContractTest(unittest.TestCase):
         # Rolled back: the queue.add at seq 0 must NOT have persisted
         self.assertEqual(self._queue_uuids(), self.songs[:2])
 
+    # ---- error-shape contract (hazard #2: envelope-vs-inline) --------------
+    #
+    # The shared frontend (api/music-api.js apiCall) THROWS only on a TOP-LEVEL
+    # envelope `error` and otherwise returns `result`. The public backend
+    # RAISES domain errors; the /api/ dispatcher (app.py:171-184) turns a
+    # ValueError into the wire envelope {success:False, error:'ValueError',
+    # message:str(e)}, so apiCall throws Error(message) and the frontend's
+    # try/catch consumers fire. The PRIVATE backend expresses the SAME
+    # conditions INLINE as {'error': str} (see the mirror section in
+    # swapi-apps/scripts/test_sync_contract.py). These tests pin that public
+    # stays on the throwing path and that the commit-failure envelope keeps the
+    # exact shape sync-manager.js depends on.
+
+    def test_playlist_not_found_raises(self):
+        # Missing playlist -> RAISES (envelope error -> apiCall throws). The
+        # private mirror returns {'error': 'Playlist not found'} inline.
+        with self.assertRaises(ValueError):
+            playlists_mod.playlists_get_songs('999999', details=DETAILS)
+
+    def test_playlist_sort_not_found_raises(self):
+        with self.assertRaises(ValueError):
+            playlists_mod.playlists_sort('999999', 'artist', 'asc', details=DETAILS)
+
+    def test_create_requires_name_raises(self):
+        with self.assertRaises(ValueError):
+            playlists_mod.playlists_create('', '', False, details=DETAILS)
+
+    def test_failed_commit_envelope_has_no_top_level_error(self):
+        # THE contract the sync-manager commit gate depends on: the public
+        # commit-failure envelope carries success:False + failed_seq/failed_op
+        # but NO top-level `error` string (backend/api/sync.py:200-207). The
+        # client must gate on `success === false`, not on `error` alone, or a
+        # rolled-back batch is mistaken for success and its pending writes are
+        # deleted. (Private carries a top-level `error` here; see the mirror.)
+        self._seed_queue(self.songs[:2])
+        result, _ = self._push_and_commit([
+            ('queue.add', {'songUuids': [self.songs[2]], 'position': None}),
+            ('bogus.op', {'foo': 'bar'}),
+        ], expect_success=False)
+        self.assertIs(result.get('success'), False)
+        self.assertNotIn('error', result)  # <-- the divergence from private
+        self.assertEqual(result.get('failed_seq'), 1)
+        self.assertEqual(result.get('failed_op'), 'bogus.op')
+        self.assertIsInstance(result.get('errors'), list)
+        self.assertTrue(result['errors'])
+        self.assertIsInstance(result['errors'][0].get('error'), str)
+
     # ---- playback state column preservation ---------------------------------
 
     def test_playback_set_state_preserves_device_columns(self):

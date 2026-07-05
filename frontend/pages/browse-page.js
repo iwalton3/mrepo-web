@@ -1387,6 +1387,7 @@ export default defineComponent('browse-page', {
                 // Fetch all songs by path
                 do {
                     const result = await songsApi.byPath(currentPath, { cursor, limit: 500 });
+                    if (result?.error) throw new Error(result.error);
                     const songs = result.items || result.songs || [];
                     allSongs.push(...songs);
                     cursor = result.nextCursor || null;
@@ -1396,6 +1397,7 @@ export default defineComponent('browse-page', {
                 const filters = this._apiFilters();
                 do {
                     const result = await songsApi.byFilter({ ...filters, cursor, limit: 500 });
+                    if (result?.error) throw new Error(result.error);
                     const songs = result.items || result.songs || [];
                     allSongs.push(...songs);
                     cursor = result.nextCursor || null;

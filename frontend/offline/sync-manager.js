@@ -55,6 +55,30 @@ function generateSessionId() {
 }
 
 /**
+ * Convert an in-band failure result into a throw so it reaches the caller's
+ * existing catch/retry path.
+ *
+ * The private backend reports failures as an inline {error: '<text>'} in the
+ * result body (swapi_apps/music.py, ~136 sites) rather than an envelope error
+ * the shared apiCall() throws on. A write processor that ignores the return
+ * value therefore records a server-REJECTED write as synced (silent data loss).
+ * Routing those inline failures through this helper makes them take the SAME
+ * catch/retry path a public envelope error already takes (apiCall throws).
+ *
+ * Add-only: no effect on public (envelope errors already threw at apiCall,
+ * before this runs) nor on successful private results (no `error` string).
+ * Do NOT use on methods whose inline `error` is load-bearing protocol
+ * (sync_commit failed_seq, clap fallback:true, the {error, items:[]} paging
+ * conventions) — those carry a payload the caller still needs.
+ */
+function ensureOk(result) {
+    if (result && typeof result.error === 'string') {
+        throw new Error(result.error);
+    }
+    return result;
+}
+
+/**
  * Process a single pending write
  */
 async function processWrite(write) {
@@ -103,20 +127,20 @@ async function processWrite(write) {
 async function processQueueWrite(operation, payload) {
     switch (operation) {
         case 'add':
-            await api.queue.add(payload.songUuids, payload.position);
+            ensureOk(await api.queue.add(payload.songUuids, payload.position));
             break;
         case 'remove':
-            await api.queue.remove(payload.positions);
+            ensureOk(await api.queue.remove(payload.positions));
             break;
         case 'clear':
-            await api.queue.clear();
+            ensureOk(await api.queue.clear());
             break;
         case 'setIndex':
             // Pass device ID and sequence for conflict resolution
-            await api.queue.setIndex(payload.index, payload.deviceId || null, payload.seq || null);
+            ensureOk(await api.queue.setIndex(payload.index, payload.deviceId || null, payload.seq || null));
             break;
         case 'reorder':
-            await api.queue.reorder(payload.fromPos, payload.toPos);
+            ensureOk(await api.queue.reorder(payload.fromPos, payload.toPos));
             break;
     }
 }
@@ -126,7 +150,7 @@ async function processQueueWrite(operation, payload) {
  */
 async function processPreferencesWrite(operation, payload) {
     if (operation === 'set') {
-        await api.preferences.set(payload);
+        ensureOk(await api.preferences.set(payload));
     }
 }
 
@@ -136,10 +160,10 @@ async function processPreferencesWrite(operation, payload) {
 async function processEqPresetsWrite(operation, payload) {
     switch (operation) {
         case 'save':
-            await api.eqPresets.save(payload);
+            ensureOk(await api.eqPresets.save(payload));
             break;
         case 'delete':
-            await api.eqPresets.delete(payload.uuid);
+            ensureOk(await api.eqPresets.delete(payload.uuid));
             break;
     }
 }
@@ -193,33 +217,33 @@ async function processPlaylistsWrite(operation, payload) {
 
     switch (operation) {
         case 'addSong':
-            await api.playlists.addSong(resolvedPlaylistId, payload.songUuid);
+            ensureOk(await api.playlists.addSong(resolvedPlaylistId, payload.songUuid));
             break;
         case 'removeSong':
-            await api.playlists.removeSong(resolvedPlaylistId, payload.songUuid);
+            ensureOk(await api.playlists.removeSong(resolvedPlaylistId, payload.songUuid));
             break;
         case 'removeSongs':
-            await api.playlists.removeSongs(resolvedPlaylistId, payload.songUuids);
+            ensureOk(await api.playlists.removeSongs(resolvedPlaylistId, payload.songUuids));
             break;
         case 'addSongsBatch':
-            await api.playlists.addSongsBatch(resolvedPlaylistId, payload.songUuids);
+            ensureOk(await api.playlists.addSongsBatch(resolvedPlaylistId, payload.songUuids));
             break;
         case 'sort':
-            await api.playlists.sort(resolvedPlaylistId, payload.sortBy, payload.order);
+            ensureOk(await api.playlists.sort(resolvedPlaylistId, payload.sortBy, payload.order));
             break;
         case 'reorder':
-            await api.playlists.reorder(resolvedPlaylistId, payload.positions);
+            ensureOk(await api.playlists.reorder(resolvedPlaylistId, payload.positions));
             break;
         case 'delete':
             // Skip delete for pending playlists that never got synced
             if (String(payload.playlistId).startsWith('pending-')) {
                 return;
             }
-            await api.playlists.delete(resolvedPlaylistId);
+            ensureOk(await api.playlists.delete(resolvedPlaylistId));
             break;
         case 'create':
             // Create playlist and store ID mapping for subsequent operations
-            const createResult = await api.playlists.create(payload.name, payload.description, payload.isPublic);
+            const createResult = ensureOk(await api.playlists.create(payload.name, payload.description, payload.isPublic));
             if (payload.tempId) {
                 // Store temp -> real ID mapping for subsequent operations in this sync
                 if (createResult.id) {
@@ -237,9 +261,9 @@ async function processPlaylistsWrite(operation, payload) {
             break;
         case 'createFromQueue':
             // Create playlist and add songs from queue
-            const result = await api.playlists.create(payload.name, payload.description, payload.isPublic);
+            const result = ensureOk(await api.playlists.create(payload.name, payload.description, payload.isPublic));
             if (result.id && payload.songUuids?.length > 0) {
-                await api.playlists.addSongsBatch(result.id, payload.songUuids);
+                ensureOk(await api.playlists.addSongsBatch(result.id, payload.songUuids));
             }
             // Clean up pending playlist data and store ID mapping
             if (payload.tempId) {
@@ -265,7 +289,7 @@ async function processPlaylistsWrite(operation, payload) {
  */
 async function processPlaybackWrite(operation, payload) {
     if (operation === 'setState') {
-        await api.playback.setState(payload);
+        ensureOk(await api.playback.setState(payload));
     }
 }
 
@@ -731,7 +755,10 @@ async function fetchQueueInBatches(batchSize = 1000) {
     let queueState = null;
 
     do {
-        const result = await api.queue.list({ cursor, limit: batchSize });
+        // ensureOk: on private a rejected queue_list returns inline {error};
+        // without this the loop treats it as an empty page and silently
+        // truncates the queue. The throw is caught by syncQueueState (non-fatal).
+        const result = ensureOk(await api.queue.list({ cursor, limit: batchSize }));
         queueState = result;
 
         const items = result.items || result;
