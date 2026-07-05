@@ -969,6 +969,52 @@ const test = new TestHelper();
         }
     });
 
+    // ============ Failed-commit pending-write retention (regression) ============
+    // Regression for the public sync_commit failure envelope: a rolled-back
+    // commit returns {success:false, ..., failed_seq} with NO top-level `error`
+    // string (backend/api/sync.py:200-207). sync-manager gated the whole failure
+    // path on `commitResult.error` only, so on the public backend a genuinely
+    // failed commit fell through to the success path and DELETED every pending
+    // write in the batch. This drives the browser-side analogue of
+    // test_failed_commit_reports_failed_seq (an unknown op type) and asserts the
+    // pending writes survive. FAILS on the unfixed gate.
+    await test.test('Failed sync commit keeps pending writes (does not silently drop them)', async () => {
+        const outcome = await test.page.evaluate(async () => {
+            // Dynamic import returns the app's LIVE singletons (same module
+            // registry + shared IndexedDB the running app uses).
+            const offlineDb = await import('/offline/offline-db.js');
+            const sync = await import('/offline/sync-manager.js');
+            const offlineStore = (await import('/offline/offline-store.js')).default;
+
+            // Isolate: clear any pre-existing pending writes and stale session.
+            const existing = await offlineDb.getPendingWrites();
+            for (const w of existing) await offlineDb.deletePendingWrite(w.id);
+            await offlineDb.saveSetting('sync-session', null);
+
+            // A write whose op_type the server cannot execute -> a genuine,
+            // non-harmless commit failure that rolls the whole batch back.
+            await offlineDb.addPendingWrite({ type: 'bogus', operation: 'op', payload: {} });
+
+            const online = offlineStore.state.isOnline;
+            const before = (await offlineDb.getPendingWrites()).length;
+            const result = await sync.syncPendingWrites();
+            const after = (await offlineDb.getPendingWrites()).length;
+
+            // Cleanup so later tests start clean (also clears sync-failed state).
+            await sync.discardPendingWrites();
+
+            return { online, before, after, result };
+        });
+
+        await test.assert(outcome.online === true,
+            'precondition: app must be online (a skipped sync would give a false pass)');
+        await test.assert(outcome.before === 1, 'exactly one poison write was queued');
+        await test.assert(outcome.result && outcome.result.success === false,
+            'a rolled-back commit must report success:false');
+        await test.assert(outcome.after >= 1,
+            'pending write must survive a failed commit (the unfixed gate deletes it via the success path)');
+    });
+
     // ==================== Network Simulation Test ====================
 
     await test.test('App handles network offline gracefully', async () => {

@@ -516,8 +516,15 @@ async function _doSyncPendingWrites() {
     // Phase 2: Commit all operations
     const commitResult = await api.sync.commit(sessionId);
 
-    if (commitResult.error) {
-        console.error('[Sync] Commit failed:', commitResult.error, 'at operation:', commitResult.failed_op);
+    if (commitResult.error || commitResult.success === false) {
+        // The two backends report a failed commit differently: private carries a
+        // top-level `error` string (music.py:6275,6287); public returns
+        // {success:false, ..., errors:[{op_type,error}], failed_seq} with NO
+        // top-level `error` (sync.py:200-207). Gate on EITHER, and derive a
+        // human message from whichever field is present so we never fall through
+        // to the success path and delete a rolled-back batch's pending writes.
+        const commitError = commitResult.error || commitResult.errors?.[0]?.error || 'Sync commit failed';
+        console.error('[Sync] Commit failed:', commitError, 'at operation:', commitResult.failed_op);
 
         // Poison-pill guard: the batch commits atomically, so a single op the
         // server permanently rejects blocks EVERY queued change forever — each
@@ -545,7 +552,7 @@ async function _doSyncPendingWrites() {
             }
             await refreshPendingWriteCount();
             // Don't latch sync-failed — let the next sync proceed with the rest.
-            return { success: false, error: commitResult.error, droppedPoison: true };
+            return { success: false, error: commitError, droppedPoison: true };
         }
 
         // Keep local writes for retry - don't delete them.
@@ -558,10 +565,10 @@ async function _doSyncPendingWrites() {
         await refreshPendingWriteCount();
 
         // Set sync failure state and show toast
-        setSyncFailed(commitResult.error);
+        setSyncFailed(commitError);
         showSyncToast('Sync Failed', 'Go to Settings to retry or discard changes.', 'error');
 
-        return { success: false, error: commitResult.error };
+        return { success: false, error: commitError };
     }
 
     // Phase 3: Success - clear local pending writes (history already deleted
