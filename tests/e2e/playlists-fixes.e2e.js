@@ -160,6 +160,50 @@ const test = new TestHelper();
             'no accidental reorder happened');
     });
 
+    await test.test('checkbox tap with finger wobble toggles selection - never drags/reorders', async () => {
+        const r = await test.page.evaluate(async () => {
+            const el = document.querySelector('playlists-page');
+            const raf = () => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
+            const fire = (target, type, x, y) => {
+                const touch = new Touch({ identifier: 1, target, clientX: x, clientY: y });
+                target.dispatchEvent(new TouchEvent(type, {
+                    touches: type === 'touchend' ? [] : [touch],
+                    changedTouches: [touch],
+                    bubbles: true, cancelable: true,
+                }));
+            };
+
+            // Row 2 is selected (from the earlier test). Tap ITS CHECKBOX to
+            // unselect, with realistic finger wobble (>10px) during the tap.
+            const row = el.querySelector('.song-item[data-index="2"]');
+            const cb = row.querySelector('.selection-checkbox');
+            const box = cb.getBoundingClientRect();
+            const x = box.x + box.width / 2, y = box.y + box.height / 2;
+            fire(cb, 'touchstart', x, y);
+            fire(cb, 'touchmove', x + 6, y + 18);   // wobble past the old 10px gate
+            const draggedDuringTap = !!el.querySelector('.song-item.dragging');
+            fire(cb, 'touchend', x + 6, y + 18);
+            await raf();
+            // The browser would now synthesize a click on the checkbox.
+            cb.click();
+            await raf();
+
+            const order = [...el.querySelectorAll('.song-item')].map((s) => s.dataset.index);
+            return {
+                draggedDuringTap,
+                selectedAfter: [...el.state.selectedIndices],
+                order,
+            };
+        });
+
+        await test.assert(!r.draggedDuringTap,
+            'a tap starting on the checkbox must never arm a drag');
+        await test.assertEqual(JSON.stringify(r.order), JSON.stringify(['0', '1', '2']),
+            'no reorder from the checkbox tap');
+        await test.assertEqual(JSON.stringify(r.selectedAfter), JSON.stringify([]),
+            'the checkbox tap toggled the selection off');
+    });
+
     // Cleanup
     await test.apiCall('playlists_delete', { playlist_id: pid });
     await test.apiCall('queue_clear', {});

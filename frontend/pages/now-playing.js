@@ -1045,16 +1045,25 @@ export default defineComponent('now-playing-page', {
             this._selectionTouchStartX = touch.clientX;
             this._selectionTouchStartY = touch.clientY;
             this._selectionDragActive = false;
-            this._touchDragIndex = index;
             this._touchDropIndex = null;
 
-            // Group drag: if touching a selected item, prepare to move all selected
-            if (this.state.selectedIndices.has(index)) {
+            // A touch that starts on the selection checkbox is a selection
+            // tap, never a grab - finger wobble during the tap used to
+            // promote it into a (group) reorder and eat the click.
+            const onCheckbox = !!(e.target && e.target.closest
+                && e.target.closest('.selection-checkbox'));
+
+            // Only fully-selected rows act as grab handles in selection mode
+            // (same rule as playlists-page). Touching an unselected row must
+            // scroll or tap-select - never start a drag.
+            if (!onCheckbox && this.state.selectedIndices.has(index)) {
+                this._touchDragIndex = index;
                 this._touchGroupDrag = true;
                 this._touchDraggedIndices = [...this.state.selectedIndices].sort((a, b) => a - b);
             } else {
+                this._touchDragIndex = null;
                 this._touchGroupDrag = false;
-                this._touchDraggedIndices = [index];
+                this._touchDraggedIndices = null;
             }
         },
 
@@ -1096,7 +1105,9 @@ export default defineComponent('now-playing-page', {
             if (this.state.selectionMode && !this._selectionDragActive) {
                 const dx = Math.abs(touch.clientX - this._selectionTouchStartX);
                 const dy = Math.abs(touch.clientY - this._selectionTouchStartY);
-                if (dx < 10 && dy < 10) return; // Not enough movement yet
+                // 16px (not 10) so ordinary tap wobble on a selected row's
+                // body doesn't get promoted into a group reorder.
+                if (dx < 16 && dy < 16) return; // Not enough movement yet
 
                 // Activate drag mode
                 this._selectionDragActive = true;
