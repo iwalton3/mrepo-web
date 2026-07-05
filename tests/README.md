@@ -135,6 +135,10 @@ All 19 legacy suites run green under the harness. Adaptations made:
 
 - **Ports:** the harness allocates its own free high port and refuses 9000 /
   9900 / 9901 / 9902. :9900 is the owner's live docker instance.
+- **The venv must satisfy `requirements.txt`.** A hand-built partial venv
+  bites late: `requests` was once missing, which broke every radio-start
+  endpoint (they import it unconditionally) while everything else worked.
+  When in doubt: `./venv/bin/python -m pip install -r requirements.txt`.
 - **`--contract` needs pytest** in the venv. If it's missing the lane is skipped
   with a clear message (we do not install dependencies).
 - **Codecs:** the bundled Chromium here decodes opus/mp3/m4a, so `playback-real`

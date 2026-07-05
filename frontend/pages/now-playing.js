@@ -66,7 +66,6 @@ export default defineComponent('now-playing-page', {
             // Selection mode
             selectionMode: false,
             selectedIndices: new Set(),
-            selectionVersion: 0,  // Incremented on selection changes to invalidate memoEach cache
             // Confirm dialog
             confirmDialog: { show: false, title: '', message: '', action: null },
             // Extend queue with AI (aiEnabled = AI-search adapter status, NOT
@@ -259,8 +258,9 @@ export default defineComponent('now-playing-page', {
 
         // Selection mode methods
         toggleSelectionMode() {
+            // No version bump: selection mode/state live in the memoEach key,
+            // so only rows whose key bits change re-render.
             this.state.selectionMode = !this.state.selectionMode;
-            this.state.selectionVersion++;  // Invalidate memoEach cache
             if (!this.state.selectionMode) {
                 this.clearSelection();
             }
@@ -291,7 +291,8 @@ export default defineComponent('now-playing-page', {
             }
 
             this.state.selectedIndices = newSet;
-            this.state.selectionVersion++;  // Invalidate memoEach cache
+            // No version bump: the per-row selected bit in the memoEach key
+            // re-renders exactly the toggled row(s).
         },
 
         selectAll() {
@@ -301,13 +302,11 @@ export default defineComponent('now-playing-page', {
                 newSet.add(i);
             }
             this.state.selectedIndices = newSet;
-            this.state.selectionVersion++;  // Invalidate memoEach cache
         },
 
         clearSelection() {
             this.state.selectedIndices = new Set();
             this._lastSelectedIndex = undefined;
-            this.state.selectionVersion++;  // Invalidate memoEach cache
         },
 
         async handleDeleteSelected() {
@@ -1014,9 +1013,8 @@ export default defineComponent('now-playing-page', {
 
                         player.reorderQueueBatch(this._draggedIndices, target);
 
-                        // Update selection to new positions
+                        // Update selection to new positions (per-row key bits re-render them)
                         this.state.selectedIndices = newSet;
-                        this.state.selectionVersion++;
                     }
                 } else {
                     // Single item drag. Translate the gap onto reorderQueue's
@@ -1194,9 +1192,8 @@ export default defineComponent('now-playing-page', {
 
                     player.reorderQueueBatch(this._touchDraggedIndices, this._touchDropIndex);
 
-                    // Update selection to new positions
+                    // Update selection to new positions (per-row key bits re-render them)
                     this.state.selectedIndices = newSet;
-                    this.state.selectionVersion++;
                 } else {
                     // Single item drag: _touchDropIndex is the hovered row,
                     // i.e. an insertion GAP ("insert before this row" - the
@@ -1746,7 +1743,16 @@ export default defineComponent('now-playing-page', {
                                         <button class="queue-remove" on-click="${(e) => this.handleRemoveFromQueue(index, e)}" title="Remove">✕</button>
                                     </div>
                                 </div>
-                            `}, ({ item, index }) => `${item.uuid}-${index}-${this.state.selectionVersion}-${index === queueIndex}`, { trustKey: true })}
+                            `}, ({ item, index }) => {
+                                // Selection state is IN the key (mode + per-row bit), not a
+                                // global version: a toggle re-renders ONLY the toggled row.
+                                // Tearing down every rendered row per tap also fed browser
+                                // scroll anchoring (the Android jump bug on playlists).
+                                const sel = this.state.selectionMode
+                                    ? (this.state.selectedIndices.has(index) ? 's' : 'u')
+                                    : 'n';
+                                return `${item.uuid}-${index}-${sel}-${index === queueIndex}`;
+                            }, { trustKey: true })}
                         </div>
                     </div>
 

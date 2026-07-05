@@ -15,6 +15,18 @@ const test = new TestHelper();
     console.log('Now Playing Page Tests');
     console.log('-'.repeat(50));
 
+    // Self-seed the queue: playback controls only render with songs queued.
+    // Without this the suite silently depended on whichever suites ran before
+    // it having left songs in the server queue (alphabetical suite order).
+    const sl = await test.apiCall('songs_list', { limit: 5, sort: 'title', order: 'asc' });
+    await test.apiCall('queue_clear', {});
+    const seeded = await test.apiCall('queue_add', { song_uuids: sl.result.items.map((i) => i.uuid) });
+    if (!seeded.success) throw new Error('queue seed failed: ' + JSON.stringify(seeded));
+    // The player store loads the queue once at app init; hash navigation never
+    // refetches - reload so the store sees the seeded queue.
+    await test.page.reload({ waitUntil: 'networkidle2' });
+    await test.wait(800);
+
     // ==================== Basic Page Tests ====================
 
     await test.test('Now Playing page loads', async () => {

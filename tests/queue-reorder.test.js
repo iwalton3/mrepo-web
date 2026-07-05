@@ -53,7 +53,6 @@ async function installQueueHelpers() {
             ps.state.queueVersion++;
             el.state.selectionMode = false;
             el.state.selectedIndices = new Set();
-            el.state.selectionVersion++;
             await raf();
         };
 
@@ -90,7 +89,6 @@ async function installQueueHelpers() {
             await window.__reset();
             el.state.selectionMode = true;
             el.state.selectedIndices = new Set(selected);
-            el.state.selectionVersion++;
             await window.__raf();
             const fEl = window.__rowEl(from);
             if (!fEl) return { error: `source row ${from} not rendered (group)` };
@@ -359,6 +357,44 @@ async function touch(from, target) {
             return c.state.playlistSongs.map(s => s.uuid).join('');
         });
         await test.assertEqual(order, '012345');
+    });
+
+    // ==================== Selection-toggle row identity (scroll-anchor safety) ====================
+
+    await test.test('queue selection toggle replaces only the toggled row', async () => {
+        // Earlier tests navigated to the playlists page - go back and re-query
+        // the live now-playing element (window.__el may be detached).
+        await test.goto('/');
+        await test.wait(600);
+        const r = await test.page.evaluate(async () => {
+            const el = document.querySelector('now-playing-page');
+            const ps = window.__ps;
+            const raf = () => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
+            ps.state.tempQueueMode = true;
+            ps.state.queueLoaded = true;
+            ps.state.queueIndex = 0;
+            ps.state.queue = ['A', 'B', 'C', 'D'].map((c, i) =>
+                ({ uuid: c, title: c, artist: 'Art ' + c, position: i, track_number: i + 1 }));
+            ps.state.queueVersion++;
+            el.state.selectionMode = true;
+            el.state.selectedIndices = new Set();
+            await raf();
+            const rowEl = (i) => el.querySelector(`.queue-item[data-index="${i}"]`);
+            const before0 = rowEl(0);
+            const before1 = rowEl(1);
+            el.toggleSelection(1, { stopPropagation() {} });
+            await raf();
+            return {
+                row0Same: rowEl(0) === before0,
+                row1Same: rowEl(1) === before1,
+                row1Selected: rowEl(1).classList.contains('selected'),
+            };
+        });
+        // Replacing EVERY rendered row per toggle fed browser scroll anchoring
+        // (the Android jump bug) - untouched rows must keep their DOM nodes.
+        await test.assert(r.row0Same, 'untouched rows keep their DOM nodes (memo cache hit)');
+        await test.assert(!r.row1Same, 'the toggled row is re-rendered');
+        await test.assert(r.row1Selected, 'toggled row shows selected');
     });
 
     await test.teardown();

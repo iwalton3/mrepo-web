@@ -972,6 +972,13 @@ export default defineComponent('playlists-page', {
 
         async reorderPlaylistSongs(fromIndex, toIndex) {
             if (!this.state.currentPlaylist) return;
+            // The sparse array still has unloaded (null) rows while background
+            // loading runs; building the full positions payload needs every
+            // row. Ignore the reorder instead of throwing on null.uuid.
+            if (this.state.playlistSongs.some(x => !x)) {
+                console.warn('Reorder ignored: playlist songs still loading');
+                return;
+            }
             const songs = [...this.state.playlistSongs];
             const [moved] = songs.splice(fromIndex, 1);
             // When moving down, adjust for the index shift after removal
@@ -996,6 +1003,13 @@ export default defineComponent('playlists-page', {
 
         async reorderPlaylistSongsBatch(indices, targetIndex) {
             if (!this.state.currentPlaylist) return;
+            // The sparse array still has unloaded (null) rows while background
+            // loading runs; building the full positions payload needs every
+            // row. Ignore the reorder instead of throwing on null.uuid.
+            if (this.state.playlistSongs.some(x => !x)) {
+                console.warn('Reorder ignored: playlist songs still loading');
+                return;
+            }
             // Move all items at indices to targetIndex, maintaining relative order
             const sortedIndices = [...indices].sort((a, b) => a - b);
             const songs = [...this.state.playlistSongs];
