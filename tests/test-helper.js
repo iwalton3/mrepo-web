@@ -9,7 +9,17 @@ const puppeteer = require('puppeteer');
 
 const BASE_URL = process.env.TEST_URL || 'http://127.0.0.1:9900';
 const VIEWPORT = { width: 1280, height: 800 };
-const CREDENTIALS = { username: 'testuser', password: 'testuser' };
+// Credentials come from the harness (run-e2e.js) via env vars, falling back to
+// the historical testuser/testuser + admin defaults so the plain
+// `TEST_URL=... node test-runner.js` path keeps working unchanged.
+const CREDENTIALS = {
+    username: process.env.TEST_USER_NAME || 'testuser',
+    password: process.env.TEST_USER_PASS || 'testuser',
+};
+const ADMIN_CREDENTIALS = {
+    username: process.env.TEST_ADMIN_NAME || 'admin',
+    password: process.env.TEST_ADMIN_PASS || 'adminpass123',
+};
 
 class TestHelper {
     constructor() {
@@ -280,6 +290,33 @@ class TestHelper {
         // These are expected (unauthorized requests before login completes)
         this.consoleErrors = [];
         this.pageErrors = [];
+    }
+
+    async loginAsAdmin() {
+        return this.login(ADMIN_CREDENTIALS);
+    }
+
+    /**
+     * Make an API call from the page's session (uses the logged-in cookie).
+     * Returns the parsed envelope {success, result} | {success:false, error, message}.
+     */
+    async apiCall(method, kwargs = {}) {
+        return await this.page.evaluate(async (m, kw) => {
+            const r = await fetch('/api/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ method: m, args: [], kwargs: kw, version: 2 }),
+            });
+            return r.json();
+        }, method, kwargs);
+    }
+
+    /** Load the generated fixture manifest (facts to assert against). */
+    loadManifest() {
+        const fs = require('fs');
+        const p = process.env.FIXTURE_MANIFEST ||
+            require('path').join(__dirname, 'fixture-manifest.json');
+        return JSON.parse(fs.readFileSync(p, 'utf8'));
     }
 
     async logout() {
@@ -634,3 +671,6 @@ class TestHelper {
 }
 
 module.exports = TestHelper;
+module.exports.CREDENTIALS = CREDENTIALS;
+module.exports.ADMIN_CREDENTIALS = ADMIN_CREDENTIALS;
+module.exports.BASE_URL = BASE_URL;

@@ -167,19 +167,28 @@ extraRoutes); (4) backend differences downstream of the above.
 5. Regenerate the cache manifest in EACH repo: `node spider-deps.js`
    from the app directory. Never copy a manifest.
 6. Public build: `node tools/optimize.js -i frontend -o frontend-dist -m -s`
-   (the backend serves `frontend-dist` when present - including the
-   local docker instance on :9900, which otherwise serves STALE code).
+   (the backend serves `frontend-dist` when present). The docker
+   instance is separate: it builds its own dist inside the image, so
+   deploying to :9900 means rebuilding the image (see Testing below).
 7. Review the `profile.js` diff between repos - it should only ever
    change deliberately.
 
 ## Testing after a sync
 
+- **Hermetic e2e suite (public repo) - run this BEFORE porting is
+  considered done**: `cd tests && node run-e2e.js --only-errors`.
+  Provisions its own backend (scratch DB + curated fixture music),
+  seeds users, and runs all 30 suites (~10 min) against `frontend/`
+  source. Zero external setup; never touches the docker instance.
+  See `tests/README.md` and `tests/E2E-DESIGN.md`.
 - Backend-free suites (run against a static server of the app dir,
   or set `TEST_URL`): `tests/queue-reorder.test.js` (drag semantics,
   desktop + touch), `tests/windowing.test.js` (virtual scroll).
-  WARNING: the default `TEST_URL` (:9900) may be a docker instance
-  serving the last-built `frontend-dist` - rebuild first or point at
-  a static server on `frontend/`.
+  WARNING: the docker instance on :9900 bakes the optimized frontend
+  AND backend into its image at build time - a container restart does
+  NOT pick up changes; redeploy with `docker compose build && docker
+  compose up -d`. Tests pointed at :9900 exercise the last-built
+  image, not the working tree.
 - Backend contract tests (public): `backend/test_sync_contract.py`
   incl. `QueueReorderDragContractTest` (frontend reorder math against
   the real backend).

@@ -15,9 +15,26 @@ const test = new TestHelper();
     console.log('AI Features Tests');
     console.log('-'.repeat(50));
 
+    // AI is disabled by design in the hermetic harness (config ai.enabled:false).
+    // Per E2E-DESIGN.md, AI-service e2e is out of scope; only the disabled-gates
+    // are covered here (the new e2e/ suites assert Extend-hidden / ai: graceful).
+    // Tests below that require a live AI adapter are SKIPPED when AI is
+    // unavailable so the suite stays green hermetically. Point TEST_URL at an
+    // AI-enabled instance to exercise them.
+    const _aiStatus = await test.apiCall('ai_status').catch(() => null);
+    const AI_AVAILABLE = !!(_aiStatus && _aiStatus.success && _aiStatus.result &&
+        (_aiStatus.result.enabled === true || _aiStatus.result.available === true));
+    async function aiTest(name, fn) {
+        if (!AI_AVAILABLE) {
+            console.log(`  ⏭️  ${name} (skipped: AI adapter unavailable)`);
+            return;
+        }
+        await test.test(name, fn);
+    }
+
     // ==================== AI Status Tests ====================
 
-    await test.test('AI status API returns enabled', async () => {
+    await aiTest('AI status API returns enabled', async () => {
         const status = await test.page.evaluate(async () => {
             const response = await fetch('/api/', {
                 method: 'POST',
@@ -170,7 +187,7 @@ const test = new TestHelper();
 
     // ==================== Context Menu Similar Tests ====================
 
-    await test.test('Context menu has "Find Similar" option', async () => {
+    await aiTest('Context menu has "Find Similar" option', async () => {
         // First ensure we have songs in the queue
         await test.goto('/browse/');
         await test.wait(500);
@@ -215,7 +232,7 @@ const test = new TestHelper();
 
     // ==================== Extend Queue with AI Tests ====================
 
-    await test.test('Extend button exists in queue toolbar', async () => {
+    await aiTest('Extend button exists in queue toolbar', async () => {
         await test.goto('/');
         await test.wait(500);
 
@@ -227,7 +244,7 @@ const test = new TestHelper();
         await test.assert(hasExtendBtn, 'Extend button should exist');
     });
 
-    await test.test('Extend dialog opens', async () => {
+    await aiTest('Extend dialog opens', async () => {
         // First add songs to queue
         await test.goto('/browse/');
         await test.wait(500);
@@ -274,7 +291,7 @@ const test = new TestHelper();
         await test.pressKey('Escape');
     });
 
-    await test.test('Extend dialog has count and diversity sliders', async () => {
+    await aiTest('Extend dialog has count and diversity sliders', async () => {
         await test.goto('/');
         await test.wait(500);
 
@@ -417,7 +434,7 @@ const test = new TestHelper();
 
     // ==================== Playlist AI Extension Tests ====================
 
-    await test.test('Extend AI button exists in playlist detail', async () => {
+    await aiTest('Extend AI button exists in playlist detail', async () => {
         await test.goto('/playlists/');
         await test.wait(500);
 
@@ -441,7 +458,7 @@ const test = new TestHelper();
         await test.assert(hasExtendAI, 'Extend AI button should exist in playlist');
     });
 
-    await test.test('Playlist Extend AI dialog opens', async () => {
+    await aiTest('Playlist Extend AI dialog opens', async () => {
         await test.goto('/playlists/');
         await test.wait(500);
 

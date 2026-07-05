@@ -198,11 +198,15 @@ const test = new TestHelper();
         await test.goto('/nonexistent-page/');
         await test.wait(500);
 
-        // Should either show a fallback page or redirect to home
+        // Should either show a fallback page or redirect to home. The 404 route
+        // mounts <not-found-page> whose heading reads "Page not found" (note the
+        // lowercase 'n' — the old assertion looked for "Not Found" and never
+        // matched). Accept the element or a case-insensitive text match.
         const route = await test.getRoute();
         const pageExists = await test.page.evaluate(() => {
             return document.querySelector('now-playing-page') !== null ||
-                   document.body.textContent.includes('Not Found');
+                   document.querySelector('not-found-page') !== null ||
+                   /not found/i.test(document.body.textContent);
         });
 
         await test.assert(pageExists || route === '/', 'Unknown route should have fallback behavior');

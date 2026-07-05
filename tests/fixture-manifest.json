@@ -1,0 +1,236 @@
+{
+  "fixtureHash": "72c12ff9a25cc919",
+  "fixturePaths": [
+    "/home/izzie/file-cache/test-music/Tunguska Chillout Grooves vol 1",
+    "/home/izzie/file-cache/test-music/blackmill",
+    "/home/izzie/file-cache/test-music/dss",
+    "/home/izzie/file-cache/test-music/Lewis OfMan"
+  ],
+  "generatedAt": "2026-07-05T17:24:43.793Z",
+  "counts": {
+    "totalSongs": 151,
+    "totalArtists": 67,
+    "totalAlbums": 33,
+    "totalGenres": 1
+  },
+  "stats": {
+    "playsLastWeek": 0,
+    "totalAlbums": 33,
+    "totalArtists": 67,
+    "totalCategories": 1,
+    "totalDuration": 55303.21905683107,
+    "totalDurationFormatted": "15h 21m",
+    "totalGenres": 1,
+    "totalPlaylists": 0,
+    "totalPlays": 0,
+    "totalSongs": 151,
+    "totalUsers": 2
+  },
+  "artists": [
+    "9029YK01",
+    "Aaron Wheeler",
+    "Alesso, Charlotte Lawrence",
+    "Alice Gas",
+    "Ambition",
+    "Audio Library — Music for content creators",
+    "Beats Soondooboo",
+    "Blackmill",
+    "Cactus Club",
+    "Chata",
+    "City Girl",
+    "Cults",
+    "DROELOE",
+    "Deaf Kev",
+    "Downtown Binary",
+    "Electronic Gems",
+    "Emil Rottmayer",
+    "ErgSngFl 02",
+    "ErgSngFl 03",
+    "FUTURO PELO",
+    "Geoxor",
+    "Hertan",
+    "Kirasane",
+    "Kitsuné Musique",
+    "Lewis OfMan",
+    "Lower Dens",
+    "Mac DeMarco",
+    "MinTeats3",
+    "Mitski, Mitski",
+    "Molina",
+    "Mort Garson",
+    "MrAnimeMusic",
+    "Paax",
+    "Profil de Face",
+    "Ragriz000",
+    "Real Love Music",
+    "Rejjie Snow",
+    "Revya",
+    "Robin Savage, Julie Vass",
+    "Royalty Free Music — Creative Commons",
+    "Sitcom",
+    "Sitting Duck, Ambulo, Louk",
+    "Still Corners",
+    "Strawberry Guy",
+    "Tame Impala",
+    "Tennis",
+    "Titio08",
+    "Towerz",
+    "Trifect",
+    "Triple Crazycat",
+    "Tunguska Electronic Music Society",
+    "VOYAGER",
+    "Wild Nothing",
+    "Wild Nothing, Wild Nothing",
+    "Zana Venom",
+    "erogesong2002c",
+    "erogesongfull2011b",
+    "fusq",
+    "herion lasfolt",
+    "khai dreams",
+    "lil soda boi",
+    "retro jungle",
+    "solfa, meu koharu",
+    "tom cardy",
+    "なな",
+    "嶺内ともみ",
+    "ｒｉｎｏ"
+  ],
+  "albums": [
+    "3 Am. Study Session",
+    "Be the Cowboy",
+    "Be the One You Love",
+    "Cloudbusting",
+    "Creatures of an Hour",
+    "Eco",
+    "Escape From Evil",
+    "Gemini",
+    "Golden Haze",
+    "Indigo",
+    "LOVE - single",
+    "Laughing Gas",
+    "Limit",
+    "Mother Earth's Plantasia",
+    "Mrs Magic",
+    "Neon Impasse",
+    "Nocturne",
+    "Oblivion",
+    "Paradox",
+    "Pursuit of Calm",
+    "Salad Days",
+    "Sky",
+    "Sorry 4 Being Famous",
+    "Static",
+    "Swimmer",
+    "Tunguska Chillout Grooves vol. 1",
+    "Until Tomorrow",
+    "Vanilla Shell",
+    "Various",
+    "We Can Die Happy",
+    "Wonderland Chapter 1",
+    "chronicle ～hot dream～",
+    "落日"
+  ],
+  "genres": [
+    "(255)"
+  ],
+  "formats": [
+    "m4a",
+    "mp3",
+    "opus"
+  ],
+  "perFormat": {
+    "opus": {
+      "uuid": "2131519f-4d41-e129-6094-973d8a8103a5",
+      "title": "72 Degrees and Sunny ☀️ 1-Hour of Happy Relaxing Lofi Music",
+      "artist": "Beats Soondooboo",
+      "album": null,
+      "duration": 3686.1135,
+      "file": "/home/izzie/file-cache/test-music/dss/74-72 Degrees and Sunny ☀️ 1-Hour of Happy Relaxing Lofi Music.opus"
+    },
+    "mp3": {
+      "uuid": "533f5d2b-dce4-3c11-7623-96bae3807f8e",
+      "title": "AFTERHOMEWORK PRESENTATION AW17 music by Lewis OfMan",
+      "artist": "Cactus Club",
+      "album": null,
+      "duration": 988.387097505669,
+      "file": "/home/izzie/file-cache/test-music/Lewis OfMan/AFTERHOMEWORK PRESENTATION AW17 music by Lewis OfMan.mp3"
+    },
+    "m4a": {
+      "uuid": "63341279-cdbd-6d80-5bba-f350fc149fde",
+      "title": "High Road",
+      "artist": null,
+      "album": null,
+      "duration": 268.5489342403628,
+      "file": "/home/izzie/file-cache/test-music/dss/42-High Road.m4a"
+    }
+  },
+  "knownTracks": [
+    {
+      "uuid": "310848ab-d5da-1c98-dc45-c873a831f5a6",
+      "title": "A.L.N.P.S.V. - Dream Catchers",
+      "artist": "Tunguska Electronic Music Society",
+      "album": "Tunguska Chillout Grooves vol. 1"
+    },
+    {
+      "uuid": "533f5d2b-dce4-3c11-7623-96bae3807f8e",
+      "title": "AFTERHOMEWORK PRESENTATION AW17 music by Lewis OfMan",
+      "artist": "Cactus Club",
+      "album": null
+    },
+    {
+      "uuid": "04b9e9f3-0ff4-5c6f-1407-9d3906c0b33e",
+      "title": "AFTERHOMEWORK SS18",
+      "artist": "Lewis OfMan",
+      "album": null
+    },
+    {
+      "uuid": "ded97cae-c9d0-94d1-79de-add14fb37237",
+      "title": "Al. Galizdra - Cheko Lake",
+      "artist": "Tunguska Electronic Music Society",
+      "album": "Tunguska Chillout Grooves vol. 1"
+    },
+    {
+      "uuid": "0436a189-e6fb-a096-efe1-14ca6b48ac51",
+      "title": "Always Forever",
+      "artist": "Cults",
+      "album": "Static"
+    },
+    {
+      "uuid": "993071f3-5575-16f4-a82b-5a4b8cf9346d",
+      "title": "Always Forever",
+      "artist": "Cults",
+      "album": null
+    },
+    {
+      "uuid": "f88ef158-ac35-ef02-4a16-f225549bc749",
+      "title": "Aquascape - Vacuum Fields",
+      "artist": "Tunguska Electronic Music Society",
+      "album": "Tunguska Chillout Grooves vol. 1"
+    },
+    {
+      "uuid": "4248ee78-e017-ca50-a350-e449fbc6b8dd",
+      "title": "Argonika - Freezing Point",
+      "artist": "Tunguska Electronic Music Society",
+      "album": "Tunguska Chillout Grooves vol. 1"
+    }
+  ],
+  "nonAsciiTrack": {
+    "uuid": "2131519f-4d41-e129-6094-973d8a8103a5",
+    "title": "72 Degrees and Sunny ☀️ 1-Hour of Happy Relaxing Lofi Music",
+    "artist": "Beats Soondooboo"
+  },
+  "sampleUuids": [
+    "2131519f-4d41-e129-6094-973d8a8103a5",
+    "310848ab-d5da-1c98-dc45-c873a831f5a6",
+    "533f5d2b-dce4-3c11-7623-96bae3807f8e",
+    "04b9e9f3-0ff4-5c6f-1407-9d3906c0b33e",
+    "ded97cae-c9d0-94d1-79de-add14fb37237",
+    "0436a189-e6fb-a096-efe1-14ca6b48ac51",
+    "993071f3-5575-16f4-a82b-5a4b8cf9346d",
+    "f88ef158-ac35-ef02-4a16-f225549bc749",
+    "4248ee78-e017-ca50-a350-e449fbc6b8dd",
+    "6fd76b97-28b0-e6a2-b22e-0a1f9742f687",
+    "d5b70061-06b4-0a3e-0af7-f77fa067532a",
+    "62657ecd-b55a-522e-a404-0eb585dbe797"
+  ]
+}
