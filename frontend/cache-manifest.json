@@ -1,8 +1,8 @@
 {
-  "version": "7cc5a33e",
-  "timestamp": 1783234538210,
-  "generatedAt": "2026-07-05T06:55:38.210Z",
-  "fileCount": 50,
+  "version": "2403461f",
+  "timestamp": 1783265343024,
+  "generatedAt": "2026-07-05T15:29:03.024Z",
+  "fileCount": 51,
   "files": [
     "/api/music-api.js",
     "/componentlib/button/button.js",
@@ -21,6 +21,7 @@
     "/components/scroll-to-top.js",
     "/components/song-context-menu.js",
     "/components/song-info-modal.js",
+    "/components/vfs-folder-manager.js",
     "/index.html",
     "/lib/framework.js",
     "/lib/gestures.js",
