@@ -106,6 +106,58 @@ async function installQueueHelpers() {
             await window.__raf();
             return { order: window.__order() };
         };
+
+        // ---- Mobile TOUCH drag driver (drag-handle path) -------------------
+        // Drives the real handleHandleTouch{Start,Move,End} handlers by
+        // dispatching synthetic touch events on the source row's
+        // span.drag-handle (rendered only when NOT in selection mode). The
+        // handlers read e.touches[0].clientX/clientY and resolve the hovered
+        // row via document.elementFromPoint. Unlike the desktop drag path,
+        // the touch path has no upper/lower-half nibble: the hovered row IS
+        // the insertion gap ("insert before this row"). handleHandleTouchEnd
+        // translates gap -> reorderQueue's remove-then-insert index with
+        //   to = gap > from ? gap - 1 : gap
+        // and no-ops when to === from. We therefore hover the TARGET row's
+        // center so elementFromPoint resolves it as the gap.
+        window.__fireTouch = (elem, type, cx, cy) => {
+            const ev = new Event(type, { bubbles: true, cancelable: true });
+            Object.defineProperty(ev, 'touches', {
+                value: (cx === null ? [] : [{ clientX: cx, clientY: cy }]),
+                configurable: true
+            });
+            elem.dispatchEvent(ev);
+        };
+
+        window.__touch = async (from, target) => {
+            await window.__reset();
+            const fEl = window.__rowEl(from);
+            if (!fEl) return { error: `source row ${from} not rendered` };
+            const handle = fEl.querySelector('.drag-handle');
+            if (!handle) return { error: `source row ${from} has no .drag-handle` };
+            const tEl = window.__rowEl(target);
+            if (!tEl) return { error: `target row ${target} not rendered` };
+
+            // touchstart on the handle (marks source, adds 'dragging' class)
+            const fr = fEl.getBoundingClientRect();
+            window.__fireTouch(handle, 'touchstart', fr.left + 5, fr.top + fr.height / 2);
+            await window.__raf();
+
+            // touchmove with the finger over the TARGET row's center, so
+            // elementFromPoint -> closest('.queue-item') resolves data-index
+            // === target and sets _touchDropIndex = target (the gap). Source
+            // row now carries 'dragging' and is excluded by the handler.
+            const tr = tEl.getBoundingClientRect();
+            const cx = tr.left + tr.width / 2;
+            const cy = tr.top + tr.height / 2;
+            window.__fireTouch(handle, 'touchmove', cx, cy);
+            await window.__raf();
+            const drop = el._touchDropIndex;   // capture before touchend clears it
+
+            // touchend performs the reorder (reads no touches)
+            window.__fireTouch(handle, 'touchend', null, null);
+            await window.__raf();
+            return { order: window.__order(), drop };
+        };
     });
 }
 
@@ -117,6 +169,12 @@ async function single(from, target, half) {
 
 async function group(selected, from, target, half) {
     const r = await test.page.evaluate((s, f, t, h) => window.__group(s, f, t, h), selected, from, target, half);
+    if (r.error) throw new Error(r.error);
+    return r.order;
+}
+
+async function touch(from, target) {
+    const r = await test.page.evaluate((f, t) => window.__touch(f, t), from, target);
     if (r.error) throw new Error(r.error);
     return r.order;
 }
@@ -178,6 +236,42 @@ async function group(selected, from, target, half) {
     await test.test('no-op: gap === from+1 (row below, upper half)', async () => {
         // Drag C(2) onto upper half of D(3): gap=3, to=2 === from -> no-op
         await test.assertEqual(await single(2, 3, 'upper'), 'ABCDEF');
+    });
+
+    // ============= Mobile TOUCH drags (drag-handle path, ABCDEF) =============
+    // Regression coverage for the single-item touch drag off-by-one when
+    // moving DOWN. The touch path's _touchDropIndex is the *hovered row* = an
+    // insertion GAP ("insert before this row"), but reorderQueue takes a
+    // remove-then-insert index. handleHandleTouchEnd now translates
+    //   to = gap > from ? gap - 1 : gap   (no-op when to === from).
+    // Each expectation below is hand-computed from those gap semantics.
+
+    await test.test('touch down by one: drag A, hover C -> BACDEF', async () => {
+        // from=0 (A), hover row C -> gap=2. gap>from, so to=gap-1=1.
+        // reorderQueue(0,1): remove A -> BCDEF, insert A at idx1 -> B A C D E F.
+        // (Hovering B instead would be gap=1 -> to=0 === from, a no-op; the
+        //  real one-step-down move requires hovering the row *after* the
+        //  neighbor. See the no-op guard test below.)
+        await test.assertEqual(await touch(0, 2), 'BACDEF');
+    });
+
+    await test.test('touch down by several: drag A, hover E -> BCDAEF', async () => {
+        // from=0 (A), hover row E -> gap=4. gap>from, so to=gap-1=3.
+        // reorderQueue(0,3): remove A -> BCDEF, insert A at idx3 -> B C D A E F.
+        await test.assertEqual(await touch(0, 4), 'BCDAEF');
+    });
+
+    await test.test('touch up: drag E, hover B -> AEBCDF', async () => {
+        // from=4 (E), hover row B -> gap=1. gap<from, so to=gap=1.
+        // reorderQueue(4,1): remove E -> ABCDF, insert E at idx1 -> A E B C D F.
+        await test.assertEqual(await touch(4, 1), 'AEBCDF');
+    });
+
+    await test.test('touch no-op: drag A, hover the row directly below (B)', async () => {
+        // from=0 (A), hover row B -> gap=1. gap>from, so to=gap-1=0 === from.
+        // The guard skips reorderQueue -> queue unchanged. This is the exact
+        // off-by-one that previously mis-moved A one slot down.
+        await test.assertEqual(await touch(0, 1), 'ABCDEF');
     });
 
     // ==================== Group drags (select A,B) ====================

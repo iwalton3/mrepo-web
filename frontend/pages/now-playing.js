@@ -1178,8 +1178,17 @@ export default defineComponent('now-playing-page', {
                     this.state.selectedIndices = newSet;
                     this.state.selectionVersion++;
                 } else {
-                    // Single item drag
-                    player.reorderQueue(this._touchDragIndex, this._touchDropIndex);
+                    // Single item drag: _touchDropIndex is the hovered row,
+                    // i.e. an insertion GAP ("insert before this row" - the
+                    // drag-over indicator sits on its top edge). reorderQueue
+                    // takes a remove-then-insert index, so translate (same
+                    // math as gestures' gapToRemoveInsertIndex). Hovering the
+                    // row directly below is a no-op, as before.
+                    const gap = this._touchDropIndex;
+                    const to = gap > this._touchDragIndex ? gap - 1 : gap;
+                    if (to !== this._touchDragIndex) {
+                        player.reorderQueue(this._touchDragIndex, to);
+                    }
                 }
             }
 
