@@ -12,6 +12,7 @@
 import { createStore, untracked } from 'vdx/framework.js';
 import { getStreamUrl, history, queue as queueApi, playback, sca, radio, preferences, songs as songsApi, playlists as playlistsApi, getDeviceId, getCurrentQueueSeq } from '../offline/offline-api.js';
 import { getAudioUrl } from '../offline/offline-audio.js';
+import { profile } from '#profile';
 import offlineStore from '../offline/offline-store.js';
 import * as offlineDb from '../offline/offline-db.js';
 import { isSyncing } from '../offline/sync-manager.js';
@@ -5508,8 +5509,9 @@ class AudioController {
     async _populateScaQueue(count = 10) {
         const { aiRadioEnabled, aiRadioAvailable, currentSong } = this.store.state;
 
-        // Use AI if enabled and available
-        if (aiRadioEnabled && aiRadioAvailable) {
+        // Use AI only when this deployment wires the radio adapter (profile.radio)
+        // and AI radio is both enabled by the user and available on the server.
+        if (profile.radio && aiRadioEnabled && aiRadioAvailable) {
             const seedUuid = currentSong?.uuid || null;
             return await sca.populateQueueAi(count, seedUuid);
         }
@@ -5523,6 +5525,11 @@ class AudioController {
      * @private
      */
     async _checkAiRadioStatus() {
+        // No radio adapter wired on this deployment - AI radio stays unavailable.
+        if (!profile.radio) {
+            this.store.state.aiRadioAvailable = false;
+            return;
+        }
         try {
             const status = await sca.status();
             this.store.state.aiRadioAvailable = status.aiAvailable || false;
@@ -5540,9 +5547,11 @@ class AudioController {
         const newValue = !this.store.state.aiRadioEnabled;
         this.store.state.aiRadioEnabled = newValue;
 
-        // Save preference to server
+        // Save preference to server (only when a radio adapter is wired)
         try {
-            await sca.setAiPreference(newValue);
+            if (profile.radio) {
+                await sca.setAiPreference(newValue);
+            }
         } catch (e) {
             console.error('Failed to save AI radio preference:', e);
         }

@@ -14,6 +14,8 @@ import { getRouter } from 'vdx/router.js';
 import { createWindowing } from 'vdx/windowing.js';
 import { browse, playlists, songs as songsApi } from '../offline/offline-api.js';
 import { player } from '../stores/player-store.js';
+import { profile } from '#profile';
+import '../components/vfs-folder-manager.js';
 import offlineStore, { setDownloadProgress, computeOfflineFilterSets, formatBytes } from '../offline/offline-store.js';
 import { downloadSong, canCacheOffline, downloadFolder, downloadByFilter, deleteOfflineFolderDownload } from '../offline/offline-audio.js';
 import { showSongContextMenu } from '../components/song-context-menu.js';
@@ -1698,6 +1700,12 @@ export default defineComponent('browse-page', {
                             on-click="${() => this.handleViewModeChange('filepath')}">
                         📁 Files
                     </button>
+                    ${profile.vfs && viewMode === 'filepath' ? html`
+                        <button class="tab manage-btn"
+                                on-click="${() => document.querySelector('vfs-folder-manager')?.openMappings()}">
+                            ⚙️
+                        </button>
+                    ` : ''}
                 </div>
 
                 <!-- Breadcrumbs -->
@@ -1855,6 +1863,13 @@ export default defineComponent('browse-page', {
                                                             <div class="item-name">${item.uuid && item.track_number ? html`<span class="track-number">${String(item.track_number).padStart(2, '0')}</span>` : ''}${this.getDisplayTitle(item)}</div>
                                                             <div class="item-subtitle">${this.getItemSubtitle(item)}</div>
                                                         </div>
+                                                        ${profile.vfs && item && item.type === 'directory' ? html`
+                                                            <button class="item-action move-btn"
+                                                                    on-click="${(e) => { e.stopPropagation(); document.querySelector('vfs-folder-manager')?.openMove(item, this.state.currentPath); }}"
+                                                                    title="Move Folder">
+                                                                ✏️
+                                                            </button>
+                                                        ` : ''}
                                                         ${when(item && item.uuid, () => html`
                                                             <button class="item-action"
                                                                     on-click="${(e) => this.handleAddToQueue(item, e)}"
@@ -1903,6 +1918,13 @@ export default defineComponent('browse-page', {
                                             <div class="item-name">${item.uuid && item.track_number ? html`<span class="track-number">${String(item.track_number).padStart(2, '0')}</span>` : ''}${this.getDisplayTitle(item)}</div>
                                             <div class="item-subtitle">${this.getItemSubtitle(item)}</div>
                                         </div>
+                                        ${profile.vfs && viewMode === 'filepath' && item.type === 'directory' ? html`
+                                            <button class="item-action move-btn"
+                                                    on-click="${(e) => { e.stopPropagation(); document.querySelector('vfs-folder-manager')?.openMove(item, this.state.currentPath); }}"
+                                                    title="Move Folder">
+                                                ✏️
+                                            </button>
+                                        ` : ''}
                                         ${when(level === 'songs' || item.uuid, () => html`
                                             <button class="item-action"
                                                     on-click="${(e) => this.handleAddToQueue(item, e)}"
@@ -1931,6 +1953,11 @@ export default defineComponent('browse-page', {
                         `})}
                     `)}
                 </div>
+
+                <!-- VFS Folder Manager (private feature; absent when profile.vfs is null) -->
+                ${profile.vfs ? html`
+                    <vfs-folder-manager on-vfs-changed="${() => this.loadFilePath()}"></vfs-folder-manager>
+                ` : ''}
 
                 <!-- Selection Action Bar -->
                 ${when(this.state.selectionMode && this.state.selectedSongs.length > 0, () => html`
@@ -2323,6 +2350,17 @@ export default defineComponent('browse-page', {
             text-align: center;
             padding: 1rem;
             min-height: 50px;
+        }
+
+        /* VFS Management triggers (dormant unless profile.vfs is wired) */
+        .manage-btn {
+            flex: 0 !important;
+            padding: 0.5rem 1rem !important;
+            min-width: 50px;
+        }
+
+        .move-btn {
+            margin-right: 0.25rem;
         }
 
         /* Sort & Selection Toggles */

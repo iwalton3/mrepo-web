@@ -15,14 +15,20 @@ That is the entire point of this arrangement - protect it.
 ## What is shared vs divergent
 
 **Byte-identical (the shared tree):** everything not listed below.
-As of 2026-07 that is 21 of 35 common app files, including all of
-`components/`, `offline/` (except offline-api), most pages, and the
-stores' shared logic.
+As of 2026-07 that is 25 of 38 common app files, including all of
+`components/` (now incl. `vfs-folder-manager.js`), `offline/` (except
+offline-api), most pages (incl. `browse-page.js` and `radio-page.js`),
+and the stores in full (`player-store.js` is now byte-identical - AI
+radio moved behind `profile.radio`).
 
 **Intentionally divergent, by design (never sync these):**
 - `index.html` - title, icons, per-repo import map, public `config.js`
-- `profile.js` - THE divergence seam: per-repo endpoints (and, later,
-  feature adapters)
+- `profile.js` - THE divergence seam: per-repo endpoints AND feature
+  adapters. Currently exposes: `endpoints` (audioUrl/basePath),
+  `radio` (AI-radio capability gate; non-null on both today - public
+  via its embedding AI service, private via CLAP/`radio_algorithm`),
+  and `vfs` (folder-mapping adapter; non-null on private, null on
+  public whose backend has no vfs_* surface).
 - `sw.js` - classic worker; per-repo API/stream/index route prefixes
 - `spider-deps.js` - differs by ONE line (`PROJECT_ROOT`); keep the
   rest identical
@@ -31,17 +37,28 @@ stores' shared logic.
 
 **Feature-divergent (sync with care; the deferred convergence steps
 will shrink this list):** `api/music-api.js` (backend surface),
-`offline/offline-api.js` (auth/AI/VFS exports), `stores/player-store.js`
-(AI radio), `music-app.js` (admin/login routes), `pages/now-playing.js`,
-`pages/playlists-page.js`, `pages/quick-search-page.js`,
-`pages/settings-page.js`, `components/song-context-menu.js` (all AI
-adapter + auth links), `pages/browse-page.js` (private VFS panel),
-`pages/radio-page.js` (one import line).
+`offline/offline-api.js` (auth/AI/VFS exports), `music-app.js`
+(admin/login routes), `pages/now-playing.js`, `pages/playlists-page.js`,
+`pages/quick-search-page.js`, `pages/settings-page.js`,
+`components/song-context-menu.js` (all AI-search adapter + auth links).
+
+Converged since the 2026-07 sweep (now byte-identical, do not re-diverge):
+- `stores/player-store.js` - AI radio branches on `profile.radio`;
+  the AI adapter calls (`sca.populateQueueAi/status/setAiPreference`)
+  are guarded so a null `profile.radio` degrades to plain
+  `sca.populateQueue`.
+- `pages/browse-page.js` + `components/vfs-folder-manager.js` - the VFS
+  folder-management UI is a shared, always-present component gated at
+  its mount/trigger sites on `profile.vfs`; dormant (never rendered) on
+  public where `profile.vfs` is null.
+- `pages/radio-page.js` - `browse` now imported from `offline-api.js`
+  on both (was `api/music-api.js` on private).
 
 The four intended divergence axes: (1) library management - public has
 admin panel + scanner, private uses out-of-band scripts + VFS remaps;
-(2) AI is optional on public; (3) auth - site auth vs password/docker;
-(4) backend differences downstream of the above.
+(2) AI *search* is optional on public (`ai_*` vs `clap_*`); AI *radio*
+is now wired on BOTH via the `profile.radio` seam; (3) auth - site auth
+vs password/docker; (4) backend differences downstream of the above.
 
 ## Conventions that keep files identical
 
@@ -111,8 +128,17 @@ talks to the API:
    call with `InvalidParameters`.
 3. **`queue_list`**: private paginates (cursor exclusive), public
    returns everything and ignores cursor/limit.
-4. **`ai_*` (public) vs `clap_*` (private)** method names - intended
-   axis, but `MethodNotFound` at any unadapted call site.
+4. **`ai_*` (public) vs `clap_*` (private)** method names for AI
+   *search* - intended axis, `MethodNotFound` at any unadapted call
+   site. NOTE: AI *radio* is NOT part of this trap anymore - the swapi
+   backend now implements `sca_status` / `sca_set_ai_preference` /
+   `sca_populate_queue_ai` (matching the public backend's names and
+   response shapes) so `profile.radio` resolves identically on both.
+   On swapi these are CLAP-backed: `sca_set_ai_preference` maps the
+   boolean onto the `radio_algorithm` pref ('clap'/'sca'),
+   `sca_populate_queue_ai` delegates to `sca_populate_queue` (which
+   already routes to CLAP when the pref is 'clap'), and `sca_status`
+   reports CLAP `/health` as `aiAvailable`.
 5. Reorder semantics are SETTLED and tested: `queue_reorder` is
    remove-then-insert on both backends (no-op when from==to); every
    frontend caller translates its own gap at the call site; the store
@@ -121,12 +147,38 @@ talks to the API:
 
 ## Deferred convergence work (in order)
 
-1. AI adapter behind `profile.js` (unifies now-playing, playlists,
-   quick-search, settings, song-context-menu, player-store; includes
+1. AI-**search** adapter behind `profile.js` (unifies now-playing,
+   playlists, quick-search, settings, song-context-menu; includes
    reconciling quick-search's quoted-vs-unquoted `ai:` syntax and
-   `items` vs `results` shapes).
-2. VFS panel extraction to a private-only component (frees
-   browse-page).
-3. `api/music-api.js` split (shared core + `profile.library`).
+   `items` vs `results` shapes). NOTE: player-store is already done -
+   AI *radio* was split out ahead of this step behind `profile.radio`.
+2. ~~VFS panel extraction (frees browse-page)~~ - DONE. The VFS UI now
+   lives in the shared `components/vfs-folder-manager.js`, gated on
+   `profile.vfs`; browse-page is byte-identical. When a deployment's
+   backend grows vfs_* support, wire `profile.vfs` to light it up.
+3. `api/music-api.js` split (shared core + `profile.library`). This
+   would also absorb the remaining `sca` AI-method surface (public
+   defines `populateQueueAi/status/setAiPreference` on `sca`; private
+   now defines the same three) into the shared core.
 4. Error-shape normalization (hazard #1) - fold into the profile/
    offline-api seam when doing step 1.
+
+## Backend note: swapi AI-radio surface (2026-07)
+
+`swapi_apps/music.py` gained three endpoints so `profile.radio` works
+on the private deployment (all `@capi.add(require='music', details=True)`,
+registered by function name like every other method):
+- `sca_status()` -> `{scaEnabled, poolSize, aiAvailable, aiRadioPreferred}`.
+  `aiAvailable` = CLAP `/health` probe; `aiRadioPreferred` =
+  (`radio_algorithm == 'clap'`).
+- `sca_set_ai_preference(enabled=True)` -> sets `radio_algorithm` to
+  'clap'/'sca'; returns `{success, aiRadioEnabled}`.
+- `sca_populate_queue_ai(count=10, seed_uuid=None, diversity=0.3)` ->
+  delegates to the existing `sca_populate_queue` (which already does the
+  CLAP rolling-seed / pool-filter selection when the pref is 'clap'),
+  tagging the result with `ai_used`. The richer CLAP population logic was
+  ALREADY present server-side inside `sca_populate_queue`; only this thin
+  status/toggle/entrypoint surface was missing. (The classic `radio_*`
+  session flow uses `music_sca.py`'s `SCA` class - no CLAP there.)
+  Module-level helper `clap_service_available()` mirrors the public
+  `/health` availability check.

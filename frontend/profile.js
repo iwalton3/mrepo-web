@@ -28,5 +28,29 @@ export const profile = {
          * Base path for app-relative static assets (e.g. vendored libraries).
          */
         basePath: BASE_PATH
-    }
+    },
+
+    /**
+     * Radio/AI adapter capability gate. When present, the player store polls
+     * AI-radio status (sca.status), offers the AI-radio toggle, and populates
+     * the radio queue with sca.populateQueueAi. Set to null on deployments
+     * whose backend lacks the sca_status / sca_populate_queue_ai /
+     * sca_set_ai_preference surface, so the store degrades to plain
+     * sca.populateQueue. This (mrepo/public) backend wires them via its
+     * embedding AI service.
+     */
+    radio: {
+        available: true
+    },
+
+    /**
+     * VFS (Virtual File System) folder-management adapter. Null on this
+     * (mrepo/public) deployment: the public backend has no vfs_* surface, so
+     * the browse-page VFS UI (folder move / mappings dialogs) stays absent.
+     * When a deployment's backend grows VFS support, wire an object with
+     * { listMappings, moveFolder, removeMapping } here to light it up - the
+     * shared vfs-folder-manager component and browse-page hooks are already
+     * present and gated on this value.
+     */
+    vfs: null
 };
