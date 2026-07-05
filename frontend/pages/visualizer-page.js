@@ -9,8 +9,9 @@
  * - Graceful degradation if butterchurn/WebGL unavailable
  */
 
-import { defineComponent, html, when, each } from '../lib/framework.js';
+import { defineComponent, html, when, each } from 'vdx/framework.js';
 import { player, playerStore } from '../stores/player-store.js';
+import { profile } from '#profile';
 
 // Visualizer mode localStorage key
 const VISUALIZER_MODE_KEY = 'music-visualizer-mode';
@@ -19,8 +20,7 @@ const VISUALIZER_RANDOM_PER_SONG_KEY = 'music-visualizer-random-per-song';
 const VISUALIZER_PRESET_PACKS_KEY = 'music-visualizer-preset-packs';
 
 // Local butterchurn files
-const config = window.MREPO_CONFIG || {};
-const BASE = config.basePath || '';
+const BASE = profile.endpoints.basePath;
 const BUTTERCHURN_URL = `${BASE}/vendor/butterchurn/butterchurn.min.js`;
 const BUTTERCHURN_PRESETS_URL = `${BASE}/vendor/butterchurn/butterchurnPresets.min.js`;
 const BUTTERCHURN_PRESET_META_URL = `${BASE}/vendor/butterchurn/presetPackMeta.min.js`;

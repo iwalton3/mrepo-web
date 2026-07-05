@@ -4,13 +4,13 @@
  * Main application shell with responsive layout and routing.
  */
 
-import { defineComponent, html, when, each } from './lib/framework.js';
-import { enableRouting, getRouter } from './lib/router.js';
+import { defineComponent, html, when, each } from 'vdx/framework.js';
+import { enableRouting, getRouter } from 'vdx/router.js';
 import { auth, playlists as playlistsApi } from './offline/offline-api.js';
 import { player, playerStore } from './stores/player-store.js';
 import { initializeOfflineStore } from './offline/offline-store.js';
-import './componentlib/layout/shell.js';
-import './componentlib/overlay/toast.js';
+import 'vdxui/layout/shell.js';
+import 'vdxui/overlay/toast.js';
 
 // Import pages (lazy loaded)
 const loadNowPlaying = () => import('./pages/now-playing.js');
@@ -173,7 +173,7 @@ export default defineComponent('music-app', {
                 return;
             }
 
-            // enableRouting warns on a second call; if the shell ever
+            // enableRouting warns and merges on a second call; if the shell ever
             // remounts, reattach the outlet to the existing router instead
             const existing = getRouter();
             if (existing) {

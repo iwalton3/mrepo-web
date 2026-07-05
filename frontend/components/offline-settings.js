@@ -5,7 +5,7 @@
  * and list of offline playlists.
  */
 
-import { defineComponent, html, when, each } from '../lib/framework.js';
+import { defineComponent, html, when, each } from 'vdx/framework.js';
 import offlineStore, {
     setWorkOfflineMode,
     formatBytes,
@@ -17,8 +17,8 @@ import { getOfflinePlaylists, deleteOfflinePlaylist, cleanupOrphanedFiles, refre
 import { fullSync, discardPendingWrites } from '../offline/sync-manager.js';
 import { notifyPlaylistsChanged } from '../offline/offline-api.js';
 import * as offlineDb from '../offline/offline-db.js';
-import '../componentlib/overlay/dialog.js';
-import '../componentlib/button/button.js';
+import 'vdxui/overlay/dialog.js';
+import 'vdxui/button/button.js';
 
 export default defineComponent('offline-settings', {
     stores: { offline: offlineStore },

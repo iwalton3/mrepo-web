@@ -5,7 +5,7 @@
  * offline playlists, favorites, and disk usage.
  */
 
-import { createStore } from '../lib/framework.js';
+import { createStore } from 'vdx/framework.js';
 import * as offlineDb from './offline-db.js';
 
 // Track the version that was running when page loaded (for update detection)

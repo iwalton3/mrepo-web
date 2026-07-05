@@ -5,7 +5,7 @@
  * Useful on mobile where song titles often get cut off.
  */
 
-import { defineComponent, html, when, each } from '../lib/framework.js';
+import { defineComponent, html, when, each } from 'vdx/framework.js';
 import { navigateToArtist, navigateToAlbum, navigateToCategory, navigateToGenre, navigateToFolder } from './song-context-menu.js';
 import { songs as songsApi } from '../offline/offline-api.js';
 

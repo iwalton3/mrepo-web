@@ -9,7 +9,7 @@
  * - Media Session API for Android background playback
  */
 
-import { createStore, untracked } from '../lib/framework.js';
+import { createStore, untracked } from 'vdx/framework.js';
 import { getStreamUrl, history, queue as queueApi, playback, sca, radio, preferences, songs as songsApi, playlists as playlistsApi, getDeviceId, getCurrentQueueSeq } from '../offline/offline-api.js';
 import { getAudioUrl } from '../offline/offline-audio.js';
 import offlineStore from '../offline/offline-store.js';

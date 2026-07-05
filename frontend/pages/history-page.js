@@ -9,16 +9,16 @@
  * - Batch add to queue/playlist
  */
 
-import { defineComponent, html, when, each, memoEach, untracked } from '../lib/framework.js';
-import { notify } from '../lib/utils.js';
-import { createWindowing } from '../lib/windowing.js';
+import { defineComponent, html, when, each, memoEach, untracked } from 'vdx/framework.js';
+import { notify } from 'vdx/utils.js';
+import { createWindowing } from 'vdx/windowing.js';
 import { history as historyApi, playlists as playlistsApi, auth, shouldUseOffline } from '../offline/offline-api.js';
 import { player } from '../stores/player-store.js';
 import { showSongContextMenu, navigateToArtist, navigateToAlbum } from '../components/song-context-menu.js';
 import '../components/scroll-to-top.js';
-import '../componentlib/button/button.js';
-import '../componentlib/overlay/dialog.js';
-import '../componentlib/misc/spinner.js';
+import 'vdxui/button/button.js';
+import 'vdxui/overlay/dialog.js';
+import 'vdxui/misc/spinner.js';
 
 export default defineComponent('history-page', {
     props: {

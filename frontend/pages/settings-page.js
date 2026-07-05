@@ -7,11 +7,11 @@
  * - Radio EOPP mode
  */
 
-import { defineComponent, html, when } from '../lib/framework.js';
+import { defineComponent, html, when } from 'vdx/framework.js';
 import { preferences, auth, ai } from '../offline/offline-api.js';
 import player from '../stores/player-store.js';
 import offlineStore, { forceReloadWithUpdate, requestCacheStatus } from '../offline/offline-store.js';
-import '../componentlib/button/button.js';
+import 'vdxui/button/button.js';
 import '../components/offline-settings.js';
 
 // Low latency mode localStorage key

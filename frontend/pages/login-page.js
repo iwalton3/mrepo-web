@@ -6,9 +6,9 @@
  * - Shows login form for returning users
  */
 
-import { defineComponent, html, when } from '../lib/framework.js';
+import { defineComponent, html, when } from 'vdx/framework.js';
 import { auth } from '../offline/offline-api.js';
-import '../componentlib/button/button.js';
+import 'vdxui/button/button.js';
 
 export default defineComponent('login-page', {
     data() {

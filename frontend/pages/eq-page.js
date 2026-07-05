@@ -7,11 +7,11 @@
  * - Easy navigation back to settings
  */
 
-import { defineComponent, html, when, each } from '../lib/framework.js';
+import { defineComponent, html, when, each } from 'vdx/framework.js';
 import player, { EQ_BANDS } from '../stores/player-store.js';
 import eqPresetsStore from '../stores/eq-presets-store.js';
 import '../components/parametric-eq-editor.js';
-import '../componentlib/button/button.js';
+import 'vdxui/button/button.js';
 
 // Number of points for frequency response calculation
 const RESPONSE_POINTS = 256;

@@ -42,6 +42,46 @@ class DependencySpider {
         this.discovered = new Set();
         this.visited = new Set();
         this.errors = [];
+        // Import map is the single source of truth for bare specifiers
+        // (e.g. 'vdx/...', 'vdxui/...', '#profile'); read it from index.html.
+        this.importMap = this.loadImportMap();
+    }
+
+    /**
+     * Read the import map from the entry HTML so bare specifiers resolve the
+     * same way the browser resolves them - the import map is the single source
+     * of truth (no duplicated path constants here).
+     */
+    loadImportMap() {
+        try {
+            const html = readFileSync(resolve(APP_ROOT, ENTRY_POINT), 'utf-8');
+            const match = /<script[^>]*type=["']importmap["'][^>]*>([\s\S]*?)<\/script>/i.exec(html);
+            if (!match) return {};
+            return JSON.parse(match[1]).imports || {};
+        } catch (err) {
+            this.errors.push(`Failed to read import map: ${err.message}`);
+            return {};
+        }
+    }
+
+    /**
+     * Resolve a bare specifier through the import map, returning a path relative
+     * to the document (index.html), or null if no mapping applies. Prefix keys
+     * (ending in '/') are matched longest-first.
+     */
+    applyImportMap(dep) {
+        if (Object.prototype.hasOwnProperty.call(this.importMap, dep)) {
+            return this.importMap[dep];
+        }
+        const keys = Object.keys(this.importMap)
+            .filter(k => k.endsWith('/'))
+            .sort((a, b) => b.length - a.length);
+        for (const key of keys) {
+            if (dep.startsWith(key)) {
+                return this.importMap[key] + dep.slice(key.length);
+            }
+        }
+        return null;
     }
 
     /**
@@ -135,9 +175,13 @@ class DependencySpider {
 
         const fromDir = dirname(fromFile);
 
-        // Resolve relative path
+        // Resolve path
         let resolved;
-        if (dep.startsWith('./') || dep.startsWith('../')) {
+        const mapped = this.applyImportMap(dep);
+        if (mapped !== null) {
+            // Import-map values resolve relative to the document (index.html = APP_ROOT)
+            resolved = resolve(APP_ROOT, mapped);
+        } else if (dep.startsWith('./') || dep.startsWith('../')) {
             resolved = resolve(fromDir, dep);
         } else if (dep.startsWith('/')) {
             // Absolute path from project root
@@ -250,7 +294,7 @@ class DependencySpider {
     }
 
     /**
-     * Convert absolute paths to URL paths relative to frontend root
+     * Convert absolute paths to URL paths relative to the deploy root
      */
     toUrlPaths() {
         const urls = [];

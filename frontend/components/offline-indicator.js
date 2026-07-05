@@ -7,7 +7,7 @@
  * - Currently downloading (spinner)
  */
 
-import { defineComponent, html, when } from '../lib/framework.js';
+import { defineComponent, html, when } from 'vdx/framework.js';
 import offlineStore, { shouldShowOfflineWarnings } from '../offline/offline-store.js';
 import { isAvailableOffline } from '../offline/offline-audio.js';
 

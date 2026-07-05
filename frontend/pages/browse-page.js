@@ -9,19 +9,19 @@
  * - Virtual scrolling for large lists
  */
 
-import { defineComponent, html, when, each, memoEach, untracked } from '../lib/framework.js';
-import { getRouter } from '../lib/router.js';
-import { createWindowing } from '../lib/windowing.js';
+import { defineComponent, html, when, each, memoEach, untracked } from 'vdx/framework.js';
+import { getRouter } from 'vdx/router.js';
+import { createWindowing } from 'vdx/windowing.js';
 import { browse, playlists, songs as songsApi } from '../offline/offline-api.js';
 import { player } from '../stores/player-store.js';
 import offlineStore, { setDownloadProgress, computeOfflineFilterSets, formatBytes } from '../offline/offline-store.js';
 import { downloadSong, canCacheOffline, downloadFolder, downloadByFilter, deleteOfflineFolderDownload } from '../offline/offline-audio.js';
 import { showSongContextMenu } from '../components/song-context-menu.js';
 import '../components/scroll-to-top.js';
-import '../componentlib/data/virtual-list.js';
-import '../componentlib/button/button.js';
-import '../componentlib/overlay/dialog.js';
-import '../componentlib/misc/spinner.js';
+import 'vdxui/data/virtual-list.js';
+import 'vdxui/button/button.js';
+import 'vdxui/overlay/dialog.js';
+import 'vdxui/misc/spinner.js';
 
 export default defineComponent('browse-page', {
     props: {

@@ -5,7 +5,7 @@
  * allowing them to quickly return to the top of the page.
  */
 
-import { defineComponent, html, when } from '../lib/framework.js';
+import { defineComponent, html, when } from 'vdx/framework.js';
 
 export default defineComponent('scroll-to-top', {
     props: {

@@ -7,7 +7,7 @@
  * - Conversion between graphic and parametric EQ formats
  */
 
-import { createStore, untracked } from '../lib/framework.js';
+import { createStore, untracked } from 'vdx/framework.js';
 import { eqPresets as api } from '../offline/offline-api.js';
 import { EQ_BANDS } from './player-store.js';
 

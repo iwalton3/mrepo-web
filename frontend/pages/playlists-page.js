@@ -8,8 +8,8 @@
  * - Sharing functionality
  */
 
-import { defineComponent, html, when, each, memoEach, untracked } from '../lib/framework.js';
-import { createWindowing } from '../lib/windowing.js';
+import { defineComponent, html, when, each, memoEach, untracked } from 'vdx/framework.js';
+import { createWindowing } from 'vdx/windowing.js';
 import { songs as songsApi, playlists as playlistsApi, auth, ai } from '../offline/offline-api.js';
 import offlineStore, { shouldShowOfflineWarnings, setDownloadProgress, computeOfflineFilterSets } from '../offline/offline-store.js';
 import { downloadSong, canCacheOffline } from '../offline/offline-audio.js';
@@ -17,9 +17,9 @@ import { player } from '../stores/player-store.js';
 import { showSongContextMenu, navigateToArtist, navigateToAlbum } from '../components/song-context-menu.js';
 import '../components/scroll-to-top.js';
 import '../components/playlist-download-btn.js';
-import '../componentlib/button/button.js';
-import '../componentlib/overlay/dialog.js';
-import '../componentlib/misc/spinner.js';
+import 'vdxui/button/button.js';
+import 'vdxui/overlay/dialog.js';
+import 'vdxui/misc/spinner.js';
 
 export default defineComponent('playlists-page', {
     props: {

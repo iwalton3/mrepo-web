@@ -9,7 +9,7 @@
  * - Real-time frequency response curve calculation
  */
 
-import { defineComponent, html, each } from '../lib/framework.js';
+import { defineComponent, html, each } from 'vdx/framework.js';
 
 // Grid frequencies for labels (log scale)
 const GRID_FREQUENCIES = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];

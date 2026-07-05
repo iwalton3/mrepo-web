@@ -6,7 +6,7 @@
  * Also provides navigation: Go to Album, Artist, Folder, Category.
  */
 
-import { defineComponent, html, when, each } from '../lib/framework.js';
+import { defineComponent, html, when, each } from 'vdx/framework.js';
 import { playlists as playlistsApi, songs as songsApi, isFavorite, getFavoritesPlaylistId } from '../offline/offline-api.js';
 import { ai } from '../api/music-api.js';
 import { player } from '../stores/player-store.js';

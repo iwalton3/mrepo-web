@@ -382,7 +382,7 @@ export const queue = {
 
     /**
      * Set queue index
-     * Uses device ID and sequence number to order updates across devices.
+     * Records timestamp at call time so latent syncs don't overwrite newer positions.
      */
     async setIndex(index) {
         // Get device ID and next sequence number for this update

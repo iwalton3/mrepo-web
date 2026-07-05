@@ -9,9 +9,9 @@
  * - Volume control
  */
 
-import { defineComponent, html, when, each, memoEach, contain } from '../lib/framework.js';
-import { debounce, rafThrottle } from '../lib/utils.js';
-import { createWindowing } from '../lib/windowing.js';
+import { defineComponent, html, when, each, memoEach, contain } from 'vdx/framework.js';
+import { debounce, rafThrottle } from 'vdx/utils.js';
+import { createWindowing } from 'vdx/windowing.js';
 import { player, playerStore } from '../stores/player-store.js';
 import { playlists as playlistsApi } from '../offline/offline-api.js';
 import * as offlineApi from '../offline/offline-api.js';
@@ -19,9 +19,9 @@ import offlineStore from '../offline/offline-store.js';
 import eqPresetsStore from '../stores/eq-presets-store.js';
 import { showSongContextMenu, navigateToArtist, navigateToAlbum, navigateToCategory, navigateToGenre, navigateToFolder } from '../components/song-context-menu.js';
 import '../components/scroll-to-top.js';
-import '../componentlib/form/slider.js';
-import '../componentlib/button/button.js';
-import '../componentlib/overlay/dialog.js';
+import 'vdxui/form/slider.js';
+import 'vdxui/button/button.js';
+import 'vdxui/overlay/dialog.js';
 
 const FAVORITES_PLAYLIST_NAME = 'Favorites';
 

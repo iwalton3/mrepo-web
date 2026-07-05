@@ -5,8 +5,8 @@
  * Displays current song info with basic controls.
  */
 
-import { defineComponent, html, when, contain } from '../lib/framework.js';
-import { debounce } from '../lib/utils.js';
+import { defineComponent, html, when, contain } from 'vdx/framework.js';
+import { debounce } from 'vdx/utils.js';
 import { player, playerStore } from '../stores/player-store.js';
 
 export default defineComponent('mini-player', {
@@ -130,7 +130,13 @@ export default defineComponent('mini-player', {
                     <button class="ctrl-btn play-btn ${isLoading ? 'loading' : ''}"
                             on-click="handlePlayPause"
                             title="${isPlaying ? 'Pause' : 'Play'}">
-                        ${isLoading ? html`<span class="icon">⏳</span>` : (isPlaying ? html`<span class="pause-icon"></span>` : html`<span class="play-icon"></span>`)}
+                        ${when(isLoading,
+                            html`<span class="icon">⏳</span>`,
+                            when(isPlaying,
+                                html`<span class="pause-icon"></span>`,
+                                html`<span class="play-icon"></span>`
+                            )
+                        )}
                     </button>
                     <button class="ctrl-btn" on-click="handleNext" title="Next">
                         <span class="icon">⏭</span>

@@ -8,12 +8,12 @@
  * - Real-time audio preview
  */
 
-import { defineComponent, html, when, each } from '../lib/framework.js';
+import { defineComponent, html, when, each } from 'vdx/framework.js';
 import eqPresetsStore, { FILTER_TYPES, createDefaultBand, graphicToParametric } from '../stores/eq-presets-store.js';
 import player, { EQ_BANDS } from '../stores/player-store.js';
 import './eq-response-canvas.js';
-import '../componentlib/overlay/dialog.js';
-import '../componentlib/button/button.js';
+import 'vdxui/overlay/dialog.js';
+import 'vdxui/button/button.js';
 
 export default defineComponent('parametric-eq-editor', {
     props: {

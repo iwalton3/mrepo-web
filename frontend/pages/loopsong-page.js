@@ -8,7 +8,7 @@
  * - Uses player's audio pipeline (EQ, crossfeed, etc.)
  */
 
-import { defineComponent, html, when } from '../lib/framework.js';
+import { defineComponent, html, when } from 'vdx/framework.js';
 import { songs as songsApi, getStreamUrl } from '../offline/offline-api.js';
 import { getAudioUrl } from '../offline/offline-audio.js';
 import { player } from '../stores/player-store.js';
@@ -892,10 +892,11 @@ class CrossfadeLooper {
             }
         }
 
-        // Fallback: if no loop point, loop to start
-        if (this.analysisComplete && !this.bestLoopPoint) {
+        // Fallback: always loop to start if near the end and nothing scheduled yet
+        // This handles: no match found, OR analysis still running (e.g., lag on mobile)
+        if (!this.bestLoopPoint && !this._scheduledLoopTime) {
             const timeToEnd = this.duration - currentTime;
-            if (timeToEnd > 0.5 && timeToEnd <= 2.0 && !this._scheduledLoopTime) {
+            if (timeToEnd > 0.5 && timeToEnd <= 2.0) {
                 this._scheduleLoopToStart();
             }
         }

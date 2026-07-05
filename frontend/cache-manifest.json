@@ -1,8 +1,8 @@
 {
-  "version": "80f5fb14",
-  "timestamp": 1783225410766,
-  "generatedAt": "2026-07-05T04:23:30.766Z",
-  "fileCount": 48,
+  "version": "3232d6de",
+  "timestamp": 1783229896888,
+  "generatedAt": "2026-07-05T05:38:16.888Z",
+  "fileCount": 50,
   "files": [
     "/api/music-api.js",
     "/componentlib/button/button.js",
@@ -23,6 +23,7 @@
     "/components/song-info-modal.js",
     "/index.html",
     "/lib/framework.js",
+    "/lib/gestures.js",
     "/lib/router.js",
     "/lib/utils.js",
     "/lib/windowing.js",
@@ -47,6 +48,7 @@
     "/pages/radio-page.js",
     "/pages/settings-page.js",
     "/pages/visualizer-page.js",
+    "/profile.js",
     "/stores/eq-presets-store.js",
     "/stores/player-store.js",
     "/vendor/butterchurn/butterchurn.min.js",

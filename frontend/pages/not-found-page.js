@@ -5,8 +5,8 @@
  * '/404' route key in music-app.js and reached via _findRoute's fallback.
  */
 
-import { defineComponent, html } from '../lib/framework.js';
-import { getRouter } from '../lib/router.js';
+import { defineComponent, html } from 'vdx/framework.js';
+import { getRouter } from 'vdx/router.js';
 
 // Resolve the path the user tried to reach. Prefer the router's current route
 // (already normalized); fall back to the raw hash. Returned as a plain string

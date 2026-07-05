@@ -18,6 +18,7 @@ import offlineStore, {
 } from './offline-store.js';
 // Use raw API to avoid offline wrapper caching during downloads
 import * as api from '../api/music-api.js';
+import { profile } from '#profile';
 
 /**
  * Formats that require server-side transcoding and cannot be cached offline
@@ -47,14 +48,7 @@ const MIME_TYPES = {
  * Get the stream URL for a song (same logic as music-api.js)
  */
 function getStreamUrl(uuid, fileExt) {
-    const config = window.MREPO_CONFIG || {};
-    const STREAM_BASE = config.streamBase || '/stream/';
-
-    if (fileExt) {
-        const ext = fileExt.toLowerCase().replace(/^\./, '');
-        return `${STREAM_BASE}${uuid}.${ext}`;
-    }
-    return `${STREAM_BASE}${uuid}`;
+    return profile.endpoints.audioUrl(uuid, fileExt);
 }
 
 /**
@@ -250,10 +244,10 @@ export async function refreshAllMetadata(onProgress = null) {
         for (let i = 0; i < uuidArray.length; i += batchSize) {
             const batch = uuidArray.slice(i, i + batchSize);
 
-            // Bulk fetch song details
+            // Bulk fetch song details with VFS paths
             let songs = [];
             try {
-                songs = await api.songs.getBulk(batch);
+                songs = await api.songs.getBulk(batch, { include_vfs: true });
             } catch (e) {
                 console.error('[Offline Audio] Bulk fetch failed for batch:', e);
                 continue;

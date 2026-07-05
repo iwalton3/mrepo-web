@@ -5,7 +5,7 @@
  * or storage info with delete option if downloaded.
  */
 
-import { defineComponent, html, when, raw } from '../lib/framework.js';
+import { defineComponent, html, when, raw } from 'vdx/framework.js';
 import offlineStore, { formatBytes } from '../offline/offline-store.js';
 import {
     downloadPlaylist,
@@ -14,8 +14,8 @@ import {
     isPlaylistOffline,
     getPlaylistStorageSize
 } from '../offline/offline-audio.js';
-import '../componentlib/button/button.js';
-import '../componentlib/overlay/dialog.js';
+import 'vdxui/button/button.js';
+import 'vdxui/overlay/dialog.js';
 
 export default defineComponent('playlist-download-btn', {
     props: {

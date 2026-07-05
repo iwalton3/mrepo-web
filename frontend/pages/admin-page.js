@@ -1,7 +1,7 @@
 /**
  * Admin page for user and system management.
  */
-import { defineComponent, html, when, each } from '../lib/framework.js';
+import { defineComponent, html, when, each } from 'vdx/framework.js';
 import { admin, aiAdmin } from '../api/music-api.js';
 
 export default defineComponent('admin-page', {

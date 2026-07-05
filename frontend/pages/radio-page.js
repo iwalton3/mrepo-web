@@ -7,13 +7,13 @@
  * - Skip and filter controls
  */
 
-import { defineComponent, html, when, each, contain } from '../lib/framework.js';
+import { defineComponent, html, when, each, contain } from 'vdx/framework.js';
 import { browse } from '../offline/offline-api.js';
 import { player, playerStore } from '../stores/player-store.js';
 import offlineStore from '../offline/offline-store.js';
-import '../componentlib/button/button.js';
-import '../componentlib/selection/dropdown.js';
-import '../componentlib/misc/spinner.js';
+import 'vdxui/button/button.js';
+import 'vdxui/selection/dropdown.js';
+import 'vdxui/misc/spinner.js';
 
 export default defineComponent('radio-page', {
     stores: { player: playerStore, offline: offlineStore },
@@ -147,6 +147,7 @@ export default defineComponent('radio-page', {
         const queue = this.stores.player.queue;
         const isPlaying = this.stores.player.isPlaying;
         const error = this.stores.player.error;
+        const isOffline = this.stores.offline.workOfflineMode || !this.stores.offline.isOnline;
 
         return html`
             <div class="radio-page">
@@ -176,7 +177,7 @@ export default defineComponent('radio-page', {
                         <div class="quick-start">
                             <cl-button severity="primary" icon="🎲" on-click="startRandomRadio"
                                        loading="${isLoading}"
-                                       disabled="${this.stores.offline.workOfflineMode || !this.stores.offline.isOnline}">
+                                       disabled="${isOffline}">
                                 Random Radio
                             </cl-button>
                         </div>
@@ -227,7 +228,7 @@ export default defineComponent('radio-page', {
 
                             <cl-button severity="primary" icon="📻" on-click="startRadio"
                                        loading="${isLoading}"
-                                       disabled="${this.stores.offline.workOfflineMode || !this.stores.offline.isOnline}">
+                                       disabled="${isOffline}">
                                 Start Filtered Radio
                             </cl-button>
                         </div>

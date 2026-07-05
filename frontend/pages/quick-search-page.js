@@ -11,16 +11,16 @@
  * Includes syntax help for advanced query operators.
  */
 
-import { defineComponent, html, when, each, memoEach, untracked } from '../lib/framework.js';
-import { getRouter } from '../lib/router.js';
-import { createWindowing } from '../lib/windowing.js';
+import { defineComponent, html, when, each, memoEach, untracked } from 'vdx/framework.js';
+import { getRouter } from 'vdx/router.js';
+import { createWindowing } from 'vdx/windowing.js';
 import { songs, ai } from '../offline/offline-api.js';
 import { player } from '../stores/player-store.js';
 import offlineStore from '../offline/offline-store.js';
 import { searchOfflineSongs } from '../offline/offline-db.js';
 import { showSongContextMenu, navigateToArtist, navigateToAlbum, navigateToFolder } from '../components/song-context-menu.js';
-import '../componentlib/button/button.js';
-import '../componentlib/misc/spinner.js';
+import 'vdxui/button/button.js';
+import 'vdxui/misc/spinner.js';
 
 export default defineComponent('quick-search-page', {
     props: {
