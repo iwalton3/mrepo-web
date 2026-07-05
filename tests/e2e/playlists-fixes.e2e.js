@@ -120,7 +120,10 @@ const test = new TestHelper();
             const raf = () => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
             const fire = (target, type, x, y) => {
                 const touch = new Touch({ identifier: 1, target, clientX: x, clientY: y });
-                target.dispatchEvent(new TouchEvent(type, {
+                // dispatchEvent returns false when preventDefault was called -
+                // for touchend that means the browser would NOT synthesize the
+                // tap's click (dead checkboxes on real devices).
+                return target.dispatchEvent(new TouchEvent(type, {
                     touches: type === 'touchend' ? [] : [touch],
                     changedTouches: [touch],
                     bubbles: true, cancelable: true,
@@ -135,7 +138,7 @@ const test = new TestHelper();
             fire(r1, 'touchstart', box1.x + 40, box1.y + 5);
             fire(r1, 'touchmove', box1.x + 40, box1.y + 45);
             const unselectedDragged = !!el.querySelector('.song-item.dragging');
-            fire(r1, 'touchend', box1.x + 40, box1.y + 45);
+            const unselectedEndNotPrevented = fire(r1, 'touchend', box1.x + 40, box1.y + 45);
             await raf();
 
             // Row 2 IS selected: the same gesture arms the drag (grab handle).
@@ -149,11 +152,13 @@ const test = new TestHelper();
             await raf();
 
             const order = [...el.querySelectorAll('.song-item')].map((x) => x.dataset.index);
-            return { unselectedDragged, selectedDragged, order };
+            return { unselectedDragged, unselectedEndNotPrevented, selectedDragged, order };
         });
 
         await test.assert(!r.unselectedDragged,
             'touch-dragging an UNSELECTED row must not arm a drag (scroll wins)');
+        await test.assert(r.unselectedEndNotPrevented,
+            'unselected-row touchend must not be default-prevented (tap-select depends on the synthesized click)');
         await test.assert(r.selectedDragged,
             'a selected row acts as a grab handle and arms the drag');
         await test.assertEqual(JSON.stringify(r.order), JSON.stringify(['0', '1', '2']),
@@ -166,7 +171,10 @@ const test = new TestHelper();
             const raf = () => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
             const fire = (target, type, x, y) => {
                 const touch = new Touch({ identifier: 1, target, clientX: x, clientY: y });
-                target.dispatchEvent(new TouchEvent(type, {
+                // dispatchEvent returns false when preventDefault was called -
+                // for touchend that means the browser would NOT synthesize the
+                // tap's click (dead checkboxes on real devices).
+                return target.dispatchEvent(new TouchEvent(type, {
                     touches: type === 'touchend' ? [] : [touch],
                     changedTouches: [touch],
                     bubbles: true, cancelable: true,
@@ -182,7 +190,7 @@ const test = new TestHelper();
             fire(cb, 'touchstart', x, y);
             fire(cb, 'touchmove', x + 6, y + 18);   // wobble past the old 10px gate
             const draggedDuringTap = !!el.querySelector('.song-item.dragging');
-            fire(cb, 'touchend', x + 6, y + 18);
+            const endNotPrevented = fire(cb, 'touchend', x + 6, y + 18);
             await raf();
             // The browser would now synthesize a click on the checkbox.
             cb.click();
@@ -191,6 +199,7 @@ const test = new TestHelper();
             const order = [...el.querySelectorAll('.song-item')].map((s) => s.dataset.index);
             return {
                 draggedDuringTap,
+                endNotPrevented,
                 selectedAfter: [...el.state.selectedIndices],
                 order,
             };
@@ -198,6 +207,8 @@ const test = new TestHelper();
 
         await test.assert(!r.draggedDuringTap,
             'a tap starting on the checkbox must never arm a drag');
+        await test.assert(r.endNotPrevented,
+            'checkbox touchend must not be default-prevented (or the real tap synthesizes no click and the checkbox is dead)');
         await test.assertEqual(JSON.stringify(r.order), JSON.stringify(['0', '1', '2']),
             'no reorder from the checkbox tap');
         await test.assertEqual(JSON.stringify(r.selectedAfter), JSON.stringify([]),
