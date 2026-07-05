@@ -309,12 +309,16 @@ export default defineComponent('playlists-page', {
             if (indices.length === 0) return;
 
             const songs = this.state.playlistSongs;
-            const songUuids = indices.map(i => songs[i]?.uuid).filter(Boolean);
+            // Keep uuids and indices aligned: `indices` addresses the exact rows
+            // (duplicate-safe removal of only the selected copies); `songUuids`
+            // is kept for the legacy/verification path.
+            const validIndices = indices.filter(i => songs[i]?.uuid);
+            const songUuids = validIndices.map(i => songs[i].uuid);
 
             if (songUuids.length === 0) return;
 
             try {
-                await playlistsApi.removeSongs(this.state.currentPlaylist.id, songUuids);
+                await playlistsApi.removeSongs(this.state.currentPlaylist.id, songUuids, validIndices);
 
                 // Update local state
                 const newSongs = this.state.playlistSongs.filter((_, i) => !this.state.selectedIndices.has(i));
@@ -992,12 +996,14 @@ export default defineComponent('playlists-page', {
             await player.startScaFromPlaylist(this.state.currentPlaylist.id);
         },
 
-        async handleRemoveSong(song, e) {
+        async handleRemoveSong(song, index, e) {
             e.stopPropagation();
             if (!this.state.currentPlaylist) return;
             try {
-                await playlistsApi.removeSong(this.state.currentPlaylist.id, song.uuid);
-                this.state.playlistSongs = this.state.playlistSongs.filter(s => s.uuid !== song.uuid);
+                // Duplicate-safe: address the exact row by its index so only the
+                // clicked copy is removed, even when the same song repeats.
+                await playlistsApi.removeSong(this.state.currentPlaylist.id, song.uuid, index);
+                this.state.playlistSongs = this.state.playlistSongs.filter((_, i) => i !== index);
                 this.state.totalCount = this.state.playlistSongs.length;
                 this.state.playlistVersion++;  // Invalidate memoEach cache
             } catch (e) {
@@ -1139,10 +1145,11 @@ export default defineComponent('playlists-page', {
             if (!this.state.currentPlaylist) return;
             try {
                 await playlistsApi.addSong(this.state.currentPlaylist.id, song.uuid);
-                // Add to local state
-                if (!this.state.playlistSongs.find(s => s.uuid === song.uuid)) {
-                    this.state.playlistSongs = [...this.state.playlistSongs, song];
-                }
+                // Duplicates are a first-class feature: always append the copy
+                // just added, even if the song is already in the playlist.
+                this.state.playlistSongs = [...this.state.playlistSongs, song];
+                this.state.totalCount = this.state.playlistSongs.length;
+                this.state.playlistVersion++;
             } catch (e) {
                 console.error('Failed to add song:', e);
             }
@@ -1212,7 +1219,7 @@ export default defineComponent('playlists-page', {
                     ${when(view !== 'shared', html`
                         <div class="song-item-actions">
                             <button class="remove-btn"
-                                    on-click="${(e) => this.handleRemoveSong(song, e)}"
+                                    on-click="${(e) => this.handleRemoveSong(song, index, e)}"
                                     title="Remove">
                                 ✕
                             </button>
@@ -1706,15 +1713,15 @@ export default defineComponent('playlists-page', {
                                                     )}
                                                 </div>
                                             </div>
-                                            ${when(this.isSongInPlaylist(song),
-                                                html`<span class="added-badge">✓ Added</span>`,
-                                                () => html`
-                                                    <button class="add-song-btn"
-                                                            on-click="${(e) => this.handleAddSongToPlaylist(song, e)}">
-                                                        + Add
-                                                    </button>
-                                                `
-                                            )}
+                                            <div class="add-song-controls">
+                                                ${when(this.isSongInPlaylist(song),
+                                                    html`<span class="added-badge">✓ In playlist</span>`
+                                                )}
+                                                <button class="add-song-btn"
+                                                        on-click="${(e) => this.handleAddSongToPlaylist(song, e)}">
+                                                    + Add
+                                                </button>
+                                            </div>
                                         </div>
                                     `)}
                                 </div>
@@ -2577,6 +2584,12 @@ export default defineComponent('playlists-page', {
         .search-result-item .song-artist {
             font-size: 0.75rem;
             color: var(--text-secondary, #a0a0a0);
+        }
+
+        .add-song-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
 
         .add-song-btn {

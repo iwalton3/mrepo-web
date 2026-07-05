@@ -1166,18 +1166,15 @@ export const playlists = {
         if (stringId.startsWith('pending-')) {
             const key = `pending-playlist-songs:${stringId}`;
             const existing = await offlineDb.getSetting(key) || [];
-            if (!existing.includes(songUuid)) {
-                existing.push(songUuid);
-                await offlineDb.saveSetting(key, existing);
-            }
+            // Duplicates are allowed: always append this copy.
+            existing.push(songUuid);
+            await offlineDb.saveSetting(key, existing);
 
             // Update playlist-songs cache (optimistic UI)
             await updatePlaylistSongsCache(playlistId, async songs => {
-                if (!songs.find(s => s.uuid === songUuid)) {
-                    const metadata = await getSongMetadataWithQueueFallback(songUuid);
-                    if (metadata) {
-                        songs.push(metadata);
-                    }
+                const metadata = await getSongMetadataWithQueueFallback(songUuid);
+                if (metadata) {
+                    songs.push(metadata);
                 }
                 return songs;
             });
@@ -1212,11 +1209,10 @@ export const playlists = {
 
             // Update playlist-songs cache (optimistic UI)
             await updatePlaylistSongsCache(playlistId, async songs => {
-                if (!songs.find(s => s.uuid === songUuid)) {
-                    const metadata = await getSongMetadataWithQueueFallback(songUuid);
-                    if (metadata) {
-                        songs.push(metadata);
-                    }
+                // Duplicates are allowed: always append this copy.
+                const metadata = await getSongMetadataWithQueueFallback(songUuid);
+                if (metadata) {
+                    songs.push(metadata);
                 }
                 return songs;
             });
@@ -1238,30 +1234,39 @@ export const playlists = {
     /**
      * Remove song from playlist (with favorites and offline playlist support)
      */
-    async removeSong(playlistId, songUuid) {
+    async removeSong(playlistId, songUuid, index = undefined) {
         const stringId = String(playlistId);
         const favoritesId = offlineStore.state.favoritesPlaylistId;
+
+        // Duplicate-safe: when an index (0-based rank in position order) is
+        // given, remove exactly that one copy; otherwise remove every copy of
+        // the uuid (legacy). `index` is carried into the queued write so an
+        // offline replay removes the same single copy on the server.
+        const removeOneByIndex = (arr) => index != null && index >= 0 && index < arr.length;
+        const filterSongs = (songs) => removeOneByIndex(songs)
+            ? songs.filter((_, i) => i !== index)
+            : songs.filter(s => s.uuid !== songUuid);
+        const filterUuids = (uuids) => removeOneByIndex(uuids)
+            ? uuids.filter((_, i) => i !== index)
+            : uuids.filter(u => u !== songUuid);
 
         // Handle pending playlists separately (they have non-numeric IDs like 'pending-123')
         if (stringId.startsWith('pending-')) {
             const key = `pending-playlist-songs:${stringId}`;
             const existing = await offlineDb.getSetting(key) || [];
-            const filtered = existing.filter(uuid => uuid !== songUuid);
-            await offlineDb.saveSetting(key, filtered);
+            await offlineDb.saveSetting(key, filterUuids(existing));
 
             // Update playlist-songs cache (optimistic UI)
-            await updatePlaylistSongsCache(playlistId, songs =>
-                songs.filter(s => s.uuid !== songUuid)
-            );
+            await updatePlaylistSongsCache(playlistId, songs => filterSongs(songs));
             await updatePlaylistSongCount(playlistId, -1);
 
             if (shouldUseOffline()) {
-                await queueWrite('playlists', 'removeSong', { playlistId, songUuid });
+                await queueWrite('playlists', 'removeSong', { playlistId, songUuid, index });
                 await computeOfflineFilterSets();
                 notifyPlaylistsChanged();
                 return { success: true, queued: true };
             }
-            await queueWrite('playlists', 'removeSong', { playlistId, songUuid });
+            await queueWrite('playlists', 'removeSong', { playlistId, songUuid, index });
             notifyPlaylistsChanged();
             return { success: true, queued: true };
         }
@@ -1276,28 +1281,23 @@ export const playlists = {
             // Update offline playlist cache if exists
             const offlinePlaylist = await offlineDb.getOfflinePlaylist(numericId);
             if (offlinePlaylist) {
-                const idx = offlinePlaylist.songUuids.indexOf(songUuid);
-                if (idx !== -1) {
-                    offlinePlaylist.songUuids.splice(idx, 1);
-                    await offlineDb.saveOfflinePlaylist(offlinePlaylist);
-                }
+                offlinePlaylist.songUuids = filterUuids(offlinePlaylist.songUuids);
+                await offlineDb.saveOfflinePlaylist(offlinePlaylist);
             }
 
             // Update playlist-songs cache (optimistic UI)
-            await updatePlaylistSongsCache(playlistId, songs =>
-                songs.filter(s => s.uuid !== songUuid)
-            );
+            await updatePlaylistSongsCache(playlistId, songs => filterSongs(songs));
             await updatePlaylistSongCount(playlistId, -1);
         }
 
         if (shouldUseOffline()) {
-            await queueWrite('playlists', 'removeSong', { playlistId, songUuid });
+            await queueWrite('playlists', 'removeSong', { playlistId, songUuid, index });
             await computeOfflineFilterSets();
             notifyPlaylistsChanged();
             return { success: true, queued: true };
         }
 
-        const result = await api.playlists.removeSong(playlistId, songUuid);
+        const result = await api.playlists.removeSong(playlistId, songUuid, index);
         notifyPlaylistsChanged();
         return result;
     },
@@ -1305,33 +1305,42 @@ export const playlists = {
     /**
      * Remove multiple songs from playlist (batch, with offline playlist support)
      */
-    async removeSongs(playlistId, songUuids) {
+    async removeSongs(playlistId, songUuids, indices = undefined) {
         const stringId = String(playlistId);
         const favoritesId = offlineStore.state.favoritesPlaylistId;
+
+        // Duplicate-safe: when `indices` (0-based ranks in position order) are
+        // given, remove exactly those rows; otherwise remove every copy of each
+        // uuid (legacy). `indices` is carried into the queued write so an
+        // offline replay removes the same copies on the server.
+        const indexSet = Array.isArray(indices) ? new Set(indices) : null;
+        const uuidSet = new Set(songUuids);
+        const filterSongs = (songs) => indexSet
+            ? songs.filter((_, i) => !indexSet.has(i))
+            : songs.filter(s => !uuidSet.has(s.uuid));
+        const filterUuids = (uuids) => indexSet
+            ? uuids.filter((_, i) => !indexSet.has(i))
+            : uuids.filter(u => !uuidSet.has(u));
 
         // Handle pending playlists separately (they have non-numeric IDs like 'pending-123')
         if (stringId.startsWith('pending-')) {
             // Update pending playlist songs cache
             const key = `pending-playlist-songs:${stringId}`;
             const existing = await offlineDb.getSetting(key) || [];
-            const filtered = existing.filter(uuid => !songUuids.includes(uuid));
-            await offlineDb.saveSetting(key, filtered);
+            await offlineDb.saveSetting(key, filterUuids(existing));
 
             // Update playlist-songs cache (optimistic UI)
-            const uuidSet = new Set(songUuids);
-            await updatePlaylistSongsCache(playlistId, songs =>
-                songs.filter(s => !uuidSet.has(s.uuid))
-            );
+            await updatePlaylistSongsCache(playlistId, songs => filterSongs(songs));
             await updatePlaylistSongCount(playlistId, -songUuids.length);
 
             if (shouldUseOffline()) {
-                await queueWrite('playlists', 'removeSongs', { playlistId, songUuids });
+                await queueWrite('playlists', 'removeSongs', { playlistId, songUuids, indices });
                 await computeOfflineFilterSets();
                 notifyPlaylistsChanged();
                 return { success: true, queued: true, removed: songUuids.length };
             }
             // If online but pending playlist, still queue (playlist will sync first)
-            await queueWrite('playlists', 'removeSongs', { playlistId, songUuids });
+            await queueWrite('playlists', 'removeSongs', { playlistId, songUuids, indices });
             notifyPlaylistsChanged();
             return { success: true, queued: true, removed: songUuids.length };
         }
@@ -1352,30 +1361,25 @@ export const playlists = {
             // Update offline playlist cache if exists
             const offlinePlaylist = await offlineDb.getOfflinePlaylist(numericId);
             if (offlinePlaylist) {
-                offlinePlaylist.songUuids = offlinePlaylist.songUuids.filter(
-                    uuid => !songUuids.includes(uuid)
-                );
+                offlinePlaylist.songUuids = filterUuids(offlinePlaylist.songUuids);
                 await offlineDb.saveOfflinePlaylist(offlinePlaylist);
             }
 
             // Update playlist-songs cache (optimistic UI)
-            const uuidSet = new Set(songUuids);
-            await updatePlaylistSongsCache(playlistId, songs =>
-                songs.filter(s => !uuidSet.has(s.uuid))
-            );
+            await updatePlaylistSongsCache(playlistId, songs => filterSongs(songs));
             await updatePlaylistSongCount(playlistId, -songUuids.length);
         }
 
         if (shouldUseOffline()) {
             // Queue as batch operation for sync
-            await queueWrite('playlists', 'removeSongs', { playlistId, songUuids });
+            await queueWrite('playlists', 'removeSongs', { playlistId, songUuids, indices });
             await computeOfflineFilterSets();
             notifyPlaylistsChanged();
             return { success: true, queued: true, removed: songUuids.length };
         }
 
         // Online - remove songs and notify
-        const result = await api.playlists.removeSongs(playlistId, songUuids);
+        const result = await api.playlists.removeSongs(playlistId, songUuids, indices);
         notifyPlaylistsChanged();
         return result;
     },
@@ -1690,13 +1694,13 @@ export const playlists = {
             // Pending playlist created offline - store songs in settings cache
             const key = `pending-playlist-songs:${stringId}`;
             const existing = await offlineDb.getSetting(key) || [];
-            const newUuids = songUuids.filter(uuid => !existing.includes(uuid));
-            await offlineDb.saveSetting(key, [...existing, ...newUuids]);
+            // Duplicates are allowed: append every uuid in the batch, in order.
+            await offlineDb.saveSetting(key, [...existing, ...songUuids]);
 
-            // Ensure metadata is cached for new songs (check queue cache)
+            // Ensure metadata is cached for the added songs (check queue cache)
             const queueCache = await offlineDb.getQueueCache();
             const queueMap = new Map((queueCache?.items || []).map(s => [s.uuid, s]));
-            for (const uuid of newUuids) {
+            for (const uuid of songUuids) {
                 const queueSong = queueMap.get(uuid);
                 if (queueSong && queueSong.title) {
                     await offlineDb.saveSongMetadata(queueSong);
@@ -1707,7 +1711,7 @@ export const playlists = {
             const cached = await offlineDb.getSetting('playlists') || [];
             const playlistIndex = cached.findIndex(p => p.id === stringId);
             if (playlistIndex >= 0) {
-                cached[playlistIndex].song_count = (cached[playlistIndex].song_count || 0) + newUuids.length;
+                cached[playlistIndex].song_count = (cached[playlistIndex].song_count || 0) + songUuids.length;
                 await offlineDb.saveSetting('playlists', cached);
             }
         } else {
@@ -1722,20 +1726,21 @@ export const playlists = {
                 await offlineDb.saveOfflinePlaylist(offlinePlaylist);
             }
 
-            // Update playlist-songs cache (optimistic UI)
-            const existingUuids = new Set();
+            // Update playlist-songs cache (optimistic UI). Duplicates are
+            // allowed: append one row per uuid in the batch, in order.
+            // getMetadataWithQueueFallback dedups by uuid, so map the resolved
+            // metadata back over the (possibly repeating) input order.
             await updatePlaylistSongsCache(playlistId, async songs => {
-                songs.forEach(s => existingUuids.add(s.uuid));
-                const newUuids = songUuids.filter(uuid => !existingUuids.has(uuid));
-                if (newUuids.length > 0) {
-                    const metadata = await getMetadataWithQueueFallback(newUuids);
-                    songs.push(...metadata);
+                const metadata = await getMetadataWithQueueFallback(songUuids);
+                const byUuid = new Map(metadata.map(m => [m.uuid, m]));
+                for (const uuid of songUuids) {
+                    const m = byUuid.get(uuid);
+                    if (m) songs.push(m);
                 }
                 return songs;
             });
-            const addedCount = songUuids.filter(uuid => !existingUuids.has(uuid)).length;
-            if (addedCount > 0) {
-                await updatePlaylistSongCount(playlistId, addedCount);
+            if (songUuids.length > 0) {
+                await updatePlaylistSongCount(playlistId, songUuids.length);
             }
         }
 

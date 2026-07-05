@@ -696,9 +696,11 @@ def queue_save_as_playlist(name, description='', is_public=False, details=None):
     """, (user_id, final_name, description or '', 1 if is_public else 0))
     playlist_id = cur.lastrowid
 
-    # Get unique songs from queue (deduplicated)
+    # Preserve the full queue order INCLUDING duplicates - a playlist may
+    # legitimately contain the same song more than once, so saving a queue that
+    # repeats a song must keep every copy.
     cur.execute("""
-        SELECT DISTINCT song_uuid FROM user_queue WHERE user_id = ? ORDER BY position
+        SELECT song_uuid FROM user_queue WHERE user_id = ? ORDER BY position
     """, (user_id,))
     songs = cur.fetchall()
 

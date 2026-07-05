@@ -347,16 +347,21 @@ export const playlists = {
 
     /**
      * Remove a song from a playlist.
+     * @param {number} index - 0-based rank of the row to remove (position order).
+     *   Duplicate-safe: removes exactly the addressed copy. Omit only for legacy
+     *   callers that intend to remove every copy of the uuid.
      */
-    async removeSong(playlistId, songUuid) {
-        return apiCall('playlists_remove_song', { playlist_id: playlistId, song_uuid: songUuid });
+    async removeSong(playlistId, songUuid, index = undefined) {
+        return apiCall('playlists_remove_song', { playlist_id: playlistId, song_uuid: songUuid, index });
     },
 
     /**
      * Remove multiple songs from a playlist (batch).
+     * @param {number[]} indices - 0-based ranks of the rows to remove. Duplicate-safe:
+     *   removes exactly the addressed copies. Omit for legacy remove-all-by-uuid.
      */
-    async removeSongs(playlistId, songUuids) {
-        return apiCall('playlists_remove_songs', { playlist_id: playlistId, song_uuids: songUuids });
+    async removeSongs(playlistId, songUuids, indices = undefined) {
+        return apiCall('playlists_remove_songs', { playlist_id: playlistId, song_uuids: songUuids, indices });
     },
 
     /**

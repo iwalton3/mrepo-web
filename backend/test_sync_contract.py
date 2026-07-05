@@ -243,17 +243,101 @@ class SyncContractTest(unittest.TestCase):
         ])
         self.assertEqual(result['executed'], 1)
 
-        # Duplicate add is a harmless no-op (INSERT OR IGNORE), not a batch poison
+        # Duplicates are a first-class feature: adding the same song again
+        # APPENDS a second copy (it does not skip). Still must not poison the batch.
         result2, _ = self._push_and_commit([
             ('playlists.addSong', {'playlistId': pid, 'songUuid': self.songs[0]}),
             ('queue.add', {'songUuids': [self.songs[1]], 'position': None}),
         ])
         self.assertEqual(result2['executed'], 2)
-        # Only one row for that song
+        # Two rows for that song now
         count = self.conn.execute(
             "SELECT COUNT(*) FROM playlist_songs WHERE playlist_id = ? AND song_uuid = ?",
             (pid, self.songs[0])).fetchone()[0]
-        self.assertEqual(count, 1)
+        self.assertEqual(count, 2)
+
+    # ---- playlist duplicate-song support -----------------------------------
+
+    def _playlist_rows(self, pid):
+        """Ordered (song_uuid, position) rows for a playlist."""
+        return [(r['song_uuid'], r['position']) for r in self.conn.execute(
+            "SELECT song_uuid, position FROM playlist_songs WHERE playlist_id = ? "
+            "ORDER BY position", (pid,)).fetchall()]
+
+    def test_add_songs_preserves_duplicates(self):
+        created = playlists_mod.playlists_create('dupes', '', False, details=DETAILS)
+        pid = created['id']
+        # song[0] appears twice in the input - both must land, in order.
+        r = playlists_mod.playlists_add_songs(
+            pid, [self.songs[0], self.songs[1], self.songs[0]], details=DETAILS)
+        self.assertEqual(r['added'], 3)
+        self.assertEqual(r['skipped'], 0)
+        rows = self._playlist_rows(pid)
+        self.assertEqual([u for u, _ in rows],
+                         [self.songs[0], self.songs[1], self.songs[0]])
+        self.assertEqual([p for _, p in rows], sorted(p for _, p in rows))
+
+    def test_remove_one_copy_by_index(self):
+        created = playlists_mod.playlists_create('dupes', '', False, details=DETAILS)
+        pid = created['id']
+        playlists_mod.playlists_add_songs(
+            pid, [self.songs[0], self.songs[1], self.songs[0]], details=DETAILS)
+        # Remove the FIRST copy of song[0] (index 0). Exactly one copy dies, and
+        # the surviving copy of song[0] (was index 2) remains.
+        playlists_mod.playlists_remove_song(pid, self.songs[0], index=0, details=DETAILS)
+        rows = self._playlist_rows(pid)
+        self.assertEqual([u for u, _ in rows], [self.songs[1], self.songs[0]])
+        # Positions renumbered contiguously from 0.
+        self.assertEqual([p for _, p in rows], [0, 1])
+
+    def test_remove_songs_by_indices_removes_only_selected_copies(self):
+        created = playlists_mod.playlists_create('dupes', '', False, details=DETAILS)
+        pid = created['id']
+        playlists_mod.playlists_add_songs(
+            pid, [self.songs[0], self.songs[0], self.songs[0]], details=DETAILS)
+        # Remove copies at ranks 0 and 2; the middle copy survives.
+        r = playlists_mod.playlists_remove_songs(
+            pid, [self.songs[0], self.songs[0]], indices=[0, 2], details=DETAILS)
+        self.assertEqual(r['removed'], 2)
+        rows = self._playlist_rows(pid)
+        self.assertEqual([u for u, _ in rows], [self.songs[0]])
+        self.assertEqual([p for _, p in rows], [0])
+
+    def test_reorder_with_duplicates_moves_the_right_copy(self):
+        created = playlists_mod.playlists_create('dupes', '', False, details=DETAILS)
+        pid = created['id']
+        # [A, B, A] -> move to [A, A, B] (swap B and the 2nd A).
+        playlists_mod.playlists_add_songs(
+            pid, [self.songs[0], self.songs[1], self.songs[0]], details=DETAILS)
+        playlists_mod.playlists_reorder(pid, [
+            {'uuid': self.songs[0], 'position': 0},
+            {'uuid': self.songs[0], 'position': 1},
+            {'uuid': self.songs[1], 'position': 2},
+        ], details=DETAILS)
+        rows = self._playlist_rows(pid)
+        self.assertEqual([u for u, _ in rows],
+                         [self.songs[0], self.songs[0], self.songs[1]])
+        self.assertEqual([p for _, p in rows], [0, 1, 2])
+
+    def test_remove_song_legacy_uuid_removes_all_copies(self):
+        # An offline write queued before duplicates existed carries no index;
+        # it still removes every copy of the uuid (backward compatible).
+        created = playlists_mod.playlists_create('dupes', '', False, details=DETAILS)
+        pid = created['id']
+        playlists_mod.playlists_add_songs(
+            pid, [self.songs[0], self.songs[1], self.songs[0]], details=DETAILS)
+        playlists_mod.playlists_remove_song(pid, self.songs[0], details=DETAILS)
+        rows = self._playlist_rows(pid)
+        self.assertEqual([u for u, _ in rows], [self.songs[1]])
+
+    def test_queue_save_as_playlist_keeps_duplicates(self):
+        self._seed_queue([self.songs[0], self.songs[1], self.songs[0]])
+        r = queue_mod.queue_save_as_playlist('mixtape', details=DETAILS)
+        pid = r['playlist_id']
+        self.assertEqual(r['songs_added'], 3)
+        rows = self._playlist_rows(pid)
+        self.assertEqual([u for u, _ in rows],
+                         [self.songs[0], self.songs[1], self.songs[0]])
 
     def test_temp_playlist_id_resolution_and_map(self):
         result, _ = self._push_and_commit([

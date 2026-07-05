@@ -220,10 +220,10 @@ async function processPlaylistsWrite(operation, payload) {
             ensureOk(await api.playlists.addSong(resolvedPlaylistId, payload.songUuid));
             break;
         case 'removeSong':
-            ensureOk(await api.playlists.removeSong(resolvedPlaylistId, payload.songUuid));
+            ensureOk(await api.playlists.removeSong(resolvedPlaylistId, payload.songUuid, payload.index));
             break;
         case 'removeSongs':
-            ensureOk(await api.playlists.removeSongs(resolvedPlaylistId, payload.songUuids));
+            ensureOk(await api.playlists.removeSongs(resolvedPlaylistId, payload.songUuids, payload.indices));
             break;
         case 'addSongsBatch':
             ensureOk(await api.playlists.addSongsBatch(resolvedPlaylistId, payload.songUuids));

@@ -11,6 +11,23 @@ from ..app import api_method
 from ..db import get_db, row_to_dict, rows_to_list
 
 
+def _renumber_playlist(cur, playlist_id):
+    """Rewrite positions to a contiguous 0-based sequence, preserving order and
+    duplicates. Uses rowid (stable per physical row) so duplicate song_uuids are
+    handled unambiguously, and a two-pass negative range to dodge the
+    (playlist_id, position) PRIMARY KEY mid-rewrite."""
+    cur.execute("""
+        SELECT rowid FROM playlist_songs WHERE playlist_id = ? ORDER BY position
+    """, (playlist_id,))
+    rowids = [r[0] for r in cur.fetchall()]
+    for i, rid in enumerate(rowids):
+        cur.execute("UPDATE playlist_songs SET position = ? WHERE rowid = ?",
+                    (-(i + 1), rid))
+    for i, rid in enumerate(rowids):
+        cur.execute("UPDATE playlist_songs SET position = ? WHERE rowid = ?",
+                    (i, rid))
+
+
 @api_method('playlists_list', require='user')
 def playlists_list(details=None):
     """List all playlists for the current user."""
@@ -297,20 +314,11 @@ def playlists_add_song(playlist_id, song_uuid, details=None, _conn=None):
                 cur.execute("ROLLBACK")
             raise ValueError('Playlist not found or access denied')
 
-        # Idempotent add: skip if the song is already in this playlist. The
-        # table's PRIMARY KEY is (playlist_id, position), so INSERT OR IGNORE
-        # would NOT dedupe by song_uuid — a repeated add (e.g. an offline sync
-        # replay) would create a duplicate row. Check explicitly instead. This
-        # also keeps a duplicate add a harmless no-op rather than an error that
-        # poisons the atomic sync batch.
-        cur.execute("""
-            SELECT 1 FROM playlist_songs WHERE playlist_id = ? AND song_uuid = ?
-        """, (playlist_id, song_uuid))
-        if cur.fetchone():
-            if own_conn:
-                cur.execute("COMMIT")
-            return {'success': True, 'skipped': True, 'alreadyInPlaylist': True}
-
+        # Duplicates are a first-class feature: a playlist may contain the same
+        # song more than once (e.g. the VVVVVV soundtrack repeats tracks
+        # intentionally), so this always appends. The table's PRIMARY KEY is
+        # (playlist_id, position), so a repeated add lands at a fresh position
+        # rather than colliding.
         # Get next position (now protected by write lock)
         cur.execute("SELECT MAX(position) FROM playlist_songs WHERE playlist_id = ?",
                    (playlist_id,))
@@ -367,29 +375,22 @@ def playlists_add_songs(playlist_id, song_uuids, details=None, _conn=None):
                 cur.execute("ROLLBACK")
             raise ValueError('Playlist not found or access denied')
 
-        # Get existing songs to check for duplicates
-        cur.execute("""
-            SELECT song_uuid FROM playlist_songs WHERE playlist_id = ?
-        """, (playlist_id,))
-        existing = {row['song_uuid'] for row in cur.fetchall()}
-
         # Get next position (now protected by write lock)
         cur.execute("SELECT MAX(position) FROM playlist_songs WHERE playlist_id = ?",
                    (playlist_id,))
         result = cur.fetchone()
         next_pos = (result[0] or 0) + 1
 
+        # Duplicates are a first-class feature: append every uuid given, in
+        # order, even if it already appears in the playlist. `skipped` stays in
+        # the response shape (always 0 now) so callers that read it don't break.
         added = 0
         skipped = 0
         for uuid in song_uuids:
-            if uuid in existing:
-                skipped += 1
-                continue
             cur.execute("""
                 INSERT INTO playlist_songs (playlist_id, song_uuid, position)
                 VALUES (?, ?, ?)
             """, (playlist_id, uuid, next_pos))
-            existing.add(uuid)
             added += 1
             next_pos += 1
 
@@ -412,8 +413,17 @@ def playlists_add_songs(playlist_id, song_uuids, details=None, _conn=None):
 
 
 @api_method('playlists_remove_song', require='user')
-def playlists_remove_song(playlist_id, song_uuid, details=None, _conn=None):
-    """Remove a song from a playlist by UUID."""
+def playlists_remove_song(playlist_id, song_uuid, index=None, details=None, _conn=None):
+    """Remove a song from a playlist.
+
+    Duplicate-safe: when `index` (the 0-based rank of the row in position order,
+    i.e. the row the user clicked) is given, exactly that one copy is removed -
+    critical now that a playlist may hold the same song several times. `song_uuid`
+    then only verifies the rank still points at the intended song; on a mismatch
+    (the client's view diverged) the lowest-position copy of song_uuid is removed
+    so one intended copy still goes. When `index` is omitted (legacy offline
+    writes queued before duplicates existed), every copy of song_uuid is removed.
+    """
     own_conn = _conn is None
     conn = _conn if _conn else get_db()
     cur = conn.cursor()
@@ -431,9 +441,31 @@ def playlists_remove_song(playlist_id, song_uuid, details=None, _conn=None):
                 cur.execute("ROLLBACK")
             raise ValueError('Playlist not found or access denied')
 
-        cur.execute("""
-            DELETE FROM playlist_songs WHERE playlist_id = ? AND song_uuid = ?
-        """, (playlist_id, song_uuid))
+        if index is not None:
+            cur.execute("""
+                SELECT position, song_uuid FROM playlist_songs
+                WHERE playlist_id = ? ORDER BY position LIMIT 1 OFFSET ?
+            """, (playlist_id, int(index)))
+            row = cur.fetchone()
+            if row is not None and row['song_uuid'] == song_uuid:
+                target_pos = row['position']
+            else:
+                cur.execute("""
+                    SELECT position FROM playlist_songs
+                    WHERE playlist_id = ? AND song_uuid = ?
+                    ORDER BY position LIMIT 1
+                """, (playlist_id, song_uuid))
+                r2 = cur.fetchone()
+                target_pos = r2['position'] if r2 else None
+            if target_pos is not None:
+                cur.execute("""
+                    DELETE FROM playlist_songs WHERE playlist_id = ? AND position = ?
+                """, (playlist_id, target_pos))
+                _renumber_playlist(cur, playlist_id)
+        else:
+            cur.execute("""
+                DELETE FROM playlist_songs WHERE playlist_id = ? AND song_uuid = ?
+            """, (playlist_id, song_uuid))
 
         cur.execute("UPDATE playlists SET updated_at = ? WHERE id = ?",
                    (datetime.utcnow(), playlist_id))
@@ -453,8 +485,15 @@ def playlists_remove_song(playlist_id, song_uuid, details=None, _conn=None):
 
 
 @api_method('playlists_remove_songs', require='user')
-def playlists_remove_songs(playlist_id, song_uuids, details=None, _conn=None):
-    """Remove multiple songs from a playlist by UUIDs."""
+def playlists_remove_songs(playlist_id, song_uuids, indices=None, details=None, _conn=None):
+    """Remove multiple songs from a playlist.
+
+    Duplicate-safe: when `indices` (the 0-based ranks in position order of the
+    selected rows) is given, exactly those rows are removed - so a multi-select
+    that includes some-but-not-all copies of a repeated song removes only the
+    chosen copies. When `indices` is omitted (legacy offline writes), every copy
+    of each uuid in song_uuids is removed.
+    """
     own_conn = _conn is None
     conn = _conn if _conn else get_db()
     cur = conn.cursor()
@@ -479,11 +518,31 @@ def playlists_remove_songs(playlist_id, song_uuids, details=None, _conn=None):
             raise ValueError('Playlist not found or access denied')
 
         removed = 0
-        for uuid in song_uuids:
+        if indices is not None:
             cur.execute("""
-                DELETE FROM playlist_songs WHERE playlist_id = ? AND song_uuid = ?
-            """, (playlist_id, uuid))
-            removed += cur.rowcount
+                SELECT position, song_uuid FROM playlist_songs
+                WHERE playlist_id = ? ORDER BY position
+            """, (playlist_id,))
+            rows = cur.fetchall()  # rank == list index
+            target_positions = []
+            for rank in indices:
+                try:
+                    target_positions.append(rows[int(rank)]['position'])
+                except (IndexError, ValueError, TypeError):
+                    continue
+            for pos in target_positions:
+                cur.execute("""
+                    DELETE FROM playlist_songs WHERE playlist_id = ? AND position = ?
+                """, (playlist_id, pos))
+                removed += cur.rowcount
+            if removed:
+                _renumber_playlist(cur, playlist_id)
+        else:
+            for uuid in song_uuids:
+                cur.execute("""
+                    DELETE FROM playlist_songs WHERE playlist_id = ? AND song_uuid = ?
+                """, (playlist_id, uuid))
+                removed += cur.rowcount
 
         cur.execute("UPDATE playlists SET updated_at = ? WHERE id = ?",
                    (datetime.utcnow(), playlist_id))
@@ -525,6 +584,34 @@ def playlists_reorder(playlist_id, positions, details=None, _conn=None):
         if not positions or not isinstance(positions, list):
             if own_conn:
                 cur.execute("ROLLBACK")
+            return {'success': True}
+
+        # Duplicate-safe path: when the same uuid appears more than once in the
+        # payload, the per-uuid UPDATEs below can't tell the copies apart (they
+        # would all collapse onto one position). A reorder from the frontend
+        # always carries the COMPLETE new ordering, so when the payload covers
+        # every row we rebuild the playlist from it wholesale - assigning each
+        # copy its own position unambiguously. A payload that does NOT cover the
+        # whole playlist is skipped rather than risk deleting rows it omits.
+        valid = [(it.get('uuid'), it.get('position')) for it in positions
+                 if it.get('uuid') is not None and it.get('position') is not None]
+        uuids = [u for u, _ in valid]
+        if len(uuids) != len(set(uuids)):
+            cur.execute("SELECT COUNT(*) FROM playlist_songs WHERE playlist_id = ?",
+                       (playlist_id,))
+            current_count = cur.fetchone()[0]
+            if len(valid) == current_count:
+                cur.execute("DELETE FROM playlist_songs WHERE playlist_id = ?",
+                           (playlist_id,))
+                for uuid, position in sorted(valid, key=lambda x: x[1]):
+                    cur.execute("""
+                        INSERT INTO playlist_songs (playlist_id, song_uuid, position)
+                        VALUES (?, ?, ?)
+                    """, (playlist_id, uuid, position))
+            cur.execute("UPDATE playlists SET updated_at = ? WHERE id = ?",
+                       (datetime.utcnow(), playlist_id))
+            if own_conn:
+                cur.execute("COMMIT")
             return {'success': True}
 
         # Use negative positions temporarily to avoid UNIQUE constraint violations

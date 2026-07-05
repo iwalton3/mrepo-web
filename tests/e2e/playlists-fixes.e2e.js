@@ -69,9 +69,9 @@ const test = new TestHelper();
     // ==================== 2 + 3. Duplicates rendering / selection touch ====================
 
     // Real playlist for the detail view; duplicates are injected client-side
-    // below (the public add APIs are dedup-by-policy, but playlists created by
-    // other paths - e.g. the private backend's single add - can contain them,
-    // and the shared UI must handle them).
+    // below to exercise the rendering/selection paths in isolation. (The add
+    // APIs now APPEND duplicates too - that end-to-end path is pinned in the
+    // "duplicate songs are first-class" section further down.)
     const created = await test.apiCall('playlists_create', { name: 'DupUI ' + Date.now() });
     const pid = created.result.id;
     await test.apiCall('playlists_add_songs', { playlist_id: pid, song_uuids: [a, b, c] });
@@ -232,6 +232,89 @@ const test = new TestHelper();
         await test.assert(r.row1Selected, 'toggled row shows selected');
         await test.assertEqual(r.scrollDelta, 0, 'scroll position unchanged by the toggle');
         await test.assertEqual(r.anchor, 'none', 'scroll container opts out of scroll anchoring');
+    });
+
+    // ==================== 4. Duplicate songs are first-class (server state) ====================
+    //
+    // The owner's decision: playlists intentionally support the same song more
+    // than once (the VVVVVV soundtrack reuses tracks). These pin the WRITE and
+    // MUTATION paths against the real backend, asserting server state via
+    // playlists_get_songs after each op.
+
+    await test.test('adding the same song twice keeps both copies, in order (server state)', async () => {
+        const p = await test.apiCall('playlists_create', { name: 'DupAdd ' + Date.now() });
+        const dp = p.result.id;
+        // Batch add with a repeat, then a single add of the same song again.
+        await test.apiCall('playlists_add_songs', { playlist_id: dp, song_uuids: [a, b, a] });
+        await test.apiCall('playlists_add_song', { playlist_id: dp, song_uuid: a });
+        const songs = await test.apiCall('playlists_get_songs', { playlist_id: dp });
+        const uuids = songs.result.items.map((i) => i.uuid);
+        await test.assertEqual(JSON.stringify(uuids), JSON.stringify([a, b, a, a]),
+            'every copy persists in add order (no dedup)');
+        await test.apiCall('playlists_delete', { playlist_id: dp });
+    });
+
+    await test.test('removing ONE copy by index removes exactly that copy', async () => {
+        const p = await test.apiCall('playlists_create', { name: 'DupRm ' + Date.now() });
+        const dp = p.result.id;
+        await test.apiCall('playlists_add_songs', { playlist_id: dp, song_uuids: [a, b, a] });
+        // Remove the FIRST copy of A (rank 0); the trailing copy must survive.
+        await test.apiCall('playlists_remove_song', { playlist_id: dp, song_uuid: a, index: 0 });
+        const songs = await test.apiCall('playlists_get_songs', { playlist_id: dp });
+        const uuids = songs.result.items.map((i) => i.uuid);
+        await test.assertEqual(JSON.stringify(uuids), JSON.stringify([b, a]),
+            'only the addressed copy of A is gone; B and the other copy remain');
+        await test.apiCall('playlists_delete', { playlist_id: dp });
+    });
+
+    await test.test('UI remove of a duplicate row deletes exactly that copy (end to end)', async () => {
+        const p = await test.apiCall('playlists_create', { name: 'DupUIrm ' + Date.now() });
+        const dp = p.result.id;
+        await test.apiCall('playlists_add_songs', { playlist_id: dp, song_uuids: [a, b, a] });
+        await test.goto(`/playlists/${dp}/`);
+        await test.wait(700);
+        await test.page.evaluate(async () => {
+            const el = document.querySelector('playlists-page');
+            const raf = () => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
+            const songs = el.state.playlistSongs.filter(Boolean);
+            // Click "remove" on the FIRST row (index 0) - the first copy of A.
+            await el.handleRemoveSong(songs[0], 0, { stopPropagation() {} });
+            await raf();
+        });
+        await test.wait(300);
+        const songs = await test.apiCall('playlists_get_songs', { playlist_id: dp });
+        const uuids = songs.result.items.map((i) => i.uuid);
+        await test.assertEqual(JSON.stringify(uuids), JSON.stringify([b, a]),
+            'removing the first row via the UI deletes only that copy (index threads to the server)');
+        await test.apiCall('playlists_delete', { playlist_id: dp });
+    });
+
+    await test.test('reordering a duplicate moves the right copy', async () => {
+        const p = await test.apiCall('playlists_create', { name: 'DupRe ' + Date.now() });
+        const dp = p.result.id;
+        await test.apiCall('playlists_add_songs', { playlist_id: dp, song_uuids: [a, b, a] });
+        // [A, B, A] -> [A, A, B]
+        await test.apiCall('playlists_reorder', { playlist_id: dp, positions: [
+            { uuid: a, position: 0 }, { uuid: a, position: 1 }, { uuid: b, position: 2 },
+        ] });
+        const songs = await test.apiCall('playlists_get_songs', { playlist_id: dp });
+        const uuids = songs.result.items.map((i) => i.uuid);
+        await test.assertEqual(JSON.stringify(uuids), JSON.stringify([a, a, b]),
+            'duplicate-aware reorder produces [A, A, B] without collapsing the copies');
+        await test.apiCall('playlists_delete', { playlist_id: dp });
+    });
+
+    await test.test('queue with a duplicate saved as playlist keeps both copies', async () => {
+        await test.apiCall('queue_clear', {});
+        await test.apiCall('queue_add', { song_uuids: [a, b, a] });
+        const saved = await test.apiCall('queue_save_as_playlist', { name: 'DupQ ' + Date.now() });
+        const dp = saved.result.playlist_id;
+        const songs = await test.apiCall('playlists_get_songs', { playlist_id: dp });
+        const uuids = songs.result.items.map((i) => i.uuid);
+        await test.assertEqual(JSON.stringify(uuids), JSON.stringify([a, b, a]),
+            'saving a queue that repeats a song preserves the duplicate');
+        await test.apiCall('playlists_delete', { playlist_id: dp });
+        await test.apiCall('queue_clear', {});
     });
 
     // Cleanup

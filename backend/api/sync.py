@@ -419,10 +419,12 @@ def _execute_sync_op(op_type, payload, details, _conn=None):
         'playlists.removeSong': lambda p: playlists.playlists_remove_song(
             _get_param(p, 'playlistId', 'playlist_id'),
             _get_param(p, 'songUuid', 'song_uuid'),
+            index=_get_param(p, 'index'),
             details=details, _conn=_conn),
         'playlists.removeSongs': lambda p: playlists.playlists_remove_songs(
             _get_param(p, 'playlistId', 'playlist_id'),
             _get_param(p, 'songUuids', 'song_uuids', default=[]),
+            indices=_get_param(p, 'indices'),
             details=details, _conn=_conn),
         'playlists.addSongsBatch': lambda p: playlists.playlists_add_songs(
             _get_param(p, 'playlistId', 'playlist_id'),
