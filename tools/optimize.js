@@ -29,6 +29,13 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import {
+    maskStringsAndComments,
+    buildRegistry as buildTemplateRegistry,
+    lintTemplates,
+    serializeRegistry,
+    isDefaultExcluded as isTemplateLintExcluded,
+} from './template-lint.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -49,7 +56,10 @@ function parseArgs() {
         verbose: false,
         dryRun: false,
         strict: false,
-        exclude: []
+        exclude: [],
+        templatesOnly: false,
+        includeTests: false,
+        disable: new Set()
     };
 
     for (let i = 0; i < args.length; i++) {
@@ -91,6 +101,26 @@ function parseArgs() {
                 break;
             case '--strict':
                 options.strict = true;
+                break;
+            case '--templates-only':
+                // Run only the template lint (implies --lint-only)
+                options.templatesOnly = true;
+                options.lintOnly = true;
+                break;
+            case '--include-tests':
+                // Template lint skips tests/ trees by default (deliberate error cases)
+                options.includeTests = true;
+                break;
+            case '--disable':
+                // Comma-separated template-lint check ids (e.g. t1-handler)
+                for (const id of (args[++i] || '').split(',')) {
+                    if (id.trim()) options.disable.add(id.trim());
+                }
+                break;
+            case '--emit-registry':
+                // Write the component registry (tags -> props/methods/state/
+                // events) as JSON - a hook for future editor tooling
+                options.emitRegistry = args[++i];
                 break;
             case '--exclude':
             case '-x':
@@ -142,6 +172,13 @@ Options:
   --exclude, -x     Comma-separated path prefixes (relative to input) to copy
                     verbatim, skipping optimization and minification
                     e.g. --exclude bundle-demo,tests
+  --templates-only  Run only the template binding lint (implies --lint-only)
+  --disable         Comma-separated template-lint check ids to skip
+                    e.g. --disable t1-handler
+  --include-tests   Template-lint tests/ trees too (skipped by default -
+                    they contain deliberate error cases)
+  --emit-registry   Write the component registry (tag -> props/methods/state/
+                    events) as JSON, e.g. --emit-registry registry.json
   --auto-fix        Fix early dereferences in-place (all files)
                     Only fixes simple patterns, not computed expressions
   --verbose, -v     Show detailed processing information
@@ -1244,96 +1281,7 @@ function lintStaleArgumentPatterns(source, filename = '') {
     return issues;
 }
 
-/**
- * Mask string literals, template literals, and comments with spaces
- * (preserving length and newlines) so structural scans can use regex/brace
- * matching without false positives from quoted text.
- */
-function maskStringsAndComments(source) {
-    const chars = source.split('');
-    const len = chars.length;
-    let i = 0;
-    // Template literals nest via ${...}; track a stack of "inside template" states
-    const templateStack = [];
-
-    const blank = (from, to) => {
-        for (let k = from; k < to; k++) {
-            if (chars[k] !== '\n') chars[k] = ' ';
-        }
-    };
-
-    while (i < len) {
-        const c = source[i];
-        if (c === '/' && source[i + 1] === '/') {
-            const start = i;
-            while (i < len && source[i] !== '\n') i++;
-            blank(start, i);
-        } else if (c === '/' && source[i + 1] === '*') {
-            const start = i;
-            i += 2;
-            while (i < len && !(source[i] === '*' && source[i + 1] === '/')) i++;
-            i = Math.min(i + 2, len);
-            blank(start, i);
-        } else if (c === "'" || c === '"') {
-            const quote = c;
-            const start = i;
-            i++;
-            while (i < len && (source[i] !== quote || isEscaped(source, i))) i++;
-            i = Math.min(i + 1, len);
-            blank(start + 1, i - 1);
-        } else if (c === '`') {
-            const start = i;
-            i++;
-            while (i < len) {
-                if (source[i] === '`' && !isEscaped(source, i)) break;
-                if (source[i] === '$' && source[i + 1] === '{' && !isEscaped(source, i)) {
-                    // Blank up to the interpolation, then recurse conceptually:
-                    // push template state and let the main loop handle the expression
-                    blank(start + 1, i);
-                    templateStack.push(true);
-                    i += 2;
-                    // Scan the ${...} expression with the main loop by tracking depth
-                    let depth = 1;
-                    while (i < len && depth > 0) {
-                        const e = source[i];
-                        if (e === '{') { depth++; i++; }
-                        else if (e === '}') { depth--; i++; }
-                        else if (e === "'" || e === '"' || e === '`' || (e === '/' && (source[i + 1] === '/' || source[i + 1] === '*'))) {
-                            // Mask nested literals inside the interpolation via recursion
-                            const rest = maskStringsAndComments(source.slice(i));
-                            // Copy masked chars until we can resume (one literal's worth):
-                            // simplest correct approach: mask the whole remainder once and splice
-                            for (let k = 0; k < rest.length; k++) chars[i + k] = rest[k];
-                            // Recompute depth over the masked remainder
-                            let d = depth, j = i;
-                            while (j < len && d > 0) {
-                                if (chars[j] === '{') d++;
-                                else if (chars[j] === '}') d--;
-                                j++;
-                            }
-                            depth = 0;
-                            i = j;
-                            break;
-                        } else {
-                            i++;
-                        }
-                    }
-                    templateStack.pop();
-                    // Continue scanning the rest of the template literal
-                    continue;
-                }
-                i++;
-            }
-            // Blank remaining template text up to closing backtick
-            blank(start + 1, i);
-            i = Math.min(i + 1, len);
-        } else {
-            i++;
-        }
-    }
-
-    return chars.join('');
-}
+// maskStringsAndComments is imported from template-lint.js (shared scanner)
 
 /**
  * Lint class-authored components for class fields that shadow declared props
@@ -3094,9 +3042,27 @@ function runLintOnly(inputDir, options) {
     const files = walkDirectory(inputDir);
     let fixableCount = 0;
     let unfixableCount = 0;
+    let templateWarnCount = 0;
     let filesWithIssues = 0;
     let filesFixed = 0;
     let totalAutoFixed = 0;
+
+    // Template lint pass 1: component registry over ALL js files (tags and
+    // component shapes may be referenced across files)
+    const registryFiles = [];
+    for (const relativePath of files) {
+        const ext = path.extname(relativePath).toLowerCase();
+        if (ext !== '.js' && ext !== '.mjs') continue;
+        registryFiles.push({
+            path: relativePath,
+            content: fs.readFileSync(path.join(inputDir, relativePath), 'utf-8'),
+        });
+    }
+    const templateRegistry = buildTemplateRegistry(registryFiles);
+    if (options.emitRegistry) {
+        fs.writeFileSync(options.emitRegistry, JSON.stringify(serializeRegistry(templateRegistry), null, 2) + '\n');
+        console.log(`Component registry written to ${options.emitRegistry}\n`);
+    }
 
     for (const relativePath of files) {
         const ext = path.extname(relativePath).toLowerCase();
@@ -3127,25 +3093,49 @@ function runLintOnly(inputDir, options) {
 
         // --strict mode: Check for issues that break AFTER optimization (stale arguments)
         // Normal mode: Check for issues that break deployed code AS-IS (early derefs in callbacks)
-        let issues;
-        if (options.strict) {
-            issues = lintStaleArgumentPatterns(content, relativePath);
-        } else {
-            issues = lintEarlyDereferences(content, relativePath);
+        let issues = [];
+        if (!options.templatesOnly) {
+            if (options.strict) {
+                issues = lintStaleArgumentPatterns(content, relativePath);
+            } else {
+                issues = lintEarlyDereferences(content, relativePath);
+            }
+            // Class component checks apply in both modes (always a real defect)
+            issues = issues.concat(lintClassComponentFields(content, relativePath));
         }
-        // Class component checks apply in both modes (always a real defect)
-        issues = issues.concat(lintClassComponentFields(content, relativePath));
+        // Template binding checks apply in both modes (always a real defect).
+        // tests/ trees are skipped by default - they contain deliberate errors.
+        if (options.includeTests || !isTemplateLintExcluded(relativePath)) {
+            issues = issues.concat(lintTemplates(content, relativePath, templateRegistry, {
+                disable: options.disable,
+            }));
+        }
 
-        const unfixable = issues.filter(i => !i.fixable);
+        // Template-lint issues carry a severity; warns/infos are advisory and
+        // never affect exit codes. Legacy issues (no severity) keep their
+        // fixable/unfixable semantics.
+        const unfixable = issues.filter(i => !i.fixable && i.severity !== 'warn' && i.severity !== 'info');
         const fixable = issues.filter(i => i.fixable);
+        const warns = issues.filter(i => i.severity === 'warn');
+        const infos = options.verbose ? issues.filter(i => i.severity === 'info') : [];
 
-        if (issues.length > 0) {
+        if (unfixable.length + fixable.length + warns.length + infos.length > 0) {
             filesWithIssues++;
             console.log(`\x1b[33m${relativePath}\x1b[0m`);  // Yellow filename
 
+            const idTag = (issue) => issue.checkId ? `[${issue.checkId}] ` : '';
             for (const issue of unfixable) {
-                console.log(`  \x1b[31m✗\x1b[0m Line ${issue.line}: ${issue.message}`);
-                console.log(`    \x1b[90mThis CANNOT be auto-fixed - refactor the code\x1b[0m`);
+                console.log(`  \x1b[31m✗\x1b[0m Line ${issue.line}: ${idTag(issue)}${issue.message}`);
+                if (!issue.checkId) {
+                    console.log(`    \x1b[90mThis CANNOT be auto-fixed - refactor the code\x1b[0m`);
+                }
+            }
+
+            for (const issue of warns) {
+                console.log(`  \x1b[33m⚠\x1b[0m Line ${issue.line}: ${idTag(issue)}${issue.message}`);
+            }
+            for (const issue of infos) {
+                console.log(`  \x1b[90mℹ Line ${issue.line}: ${idTag(issue)}${issue.message}\x1b[0m`);
             }
 
             for (const issue of fixable) {
@@ -3160,6 +3150,7 @@ function runLintOnly(inputDir, options) {
 
             fixableCount += fixable.length;
             unfixableCount += unfixable.length;
+            templateWarnCount += warns.length;
         }
     }
 
@@ -3173,14 +3164,25 @@ function runLintOnly(inputDir, options) {
         }
     }
 
+    if (templateWarnCount > 0) {
+        console.log(`\x1b[33m⚠ ${templateWarnCount} template warning(s) - advisory, no effect on exit code\x1b[0m\n`);
+    }
+
     if (totalIssues === 0) {
-        if (options.strict) {
+        if (options.templatesOnly) {
+            console.log('\x1b[32m✓ No template binding issues found\x1b[0m\n');
+        } else if (options.strict) {
             console.log('\x1b[32m✓ No stale argument patterns found (ready for optimization)\x1b[0m\n');
         } else {
             console.log('\x1b[32m✓ No early dereference issues found (deployed code is safe)\x1b[0m\n');
         }
         return 0;
     } else {
+        if (options.templatesOnly) {
+            console.log(`\x1b[31m✗ Found ${totalIssues} template binding issue(s)\x1b[0m`);
+            console.log(`\n  Total: ${totalIssues} issue(s) in ${filesWithIssues} file(s)\n`);
+            return unfixableCount > 0 ? 2 : 1;
+        }
         if (options.strict) {
             // --strict mode: stale argument patterns
             console.log(`\x1b[31m✗ Found ${totalIssues} stale argument pattern(s)\x1b[0m`);

@@ -3,8 +3,8 @@ FROM node:20-alpine AS frontend-builder
 
 WORKDIR /build
 
-# Copy optimizer tools
-COPY tools/optimize.js tools/bundler-esm.js ./tools/
+# Copy optimizer tools (optimize.js imports template-lint.js, which imports html-parser.js)
+COPY tools/optimize.js tools/bundler-esm.js tools/template-lint.js tools/html-parser.js ./tools/
 
 # Copy frontend source
 COPY frontend/ ./frontend/
