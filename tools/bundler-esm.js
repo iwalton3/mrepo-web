@@ -1762,7 +1762,8 @@ function minifyCode(code, generateMap = false, fileMap = null) {
 
         // Collapse whitespace
         if (/\s/.test(char)) {
-            while (i < len && /\s/.test(code[i])) advance();
+            let hadNewline = false;
+            while (i < len && /\s/.test(code[i])) { if (code[i] === '\n') hadNewline = true; advance(); }
 
             if (i < len) {
                 const nextChar = code[i];
@@ -1774,6 +1775,15 @@ function minifyCode(code, generateMap = false, fileMap = null) {
                 if (needsSpace) {
                     emit(' ');
                     lastChar = ' ';
+                } else if (hadNewline && /[}\]`'"]/.test(lastChar) && /[a-zA-Z_$]/.test(nextChar)) {
+                    // Preserve an ASI-significant line break. A class field initializer
+                    // (`static props = {...}`, `static styles = ` + backtick template) ends
+                    // without a semicolon and relies on the newline to separate it from the
+                    // next class member (e.g. constructor). Collapsing it away would glue
+                    // `}constructor` into a syntax error. A newline (not `;`) is safe here even
+                    // before else/while/catch/finally.
+                    emit('\n');
+                    lastChar = '\n';
                 }
             }
             continue;

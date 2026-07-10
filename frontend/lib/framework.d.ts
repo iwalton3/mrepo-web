@@ -322,10 +322,126 @@ export interface ComponentOptions<
  *   }
  * });
  */
+/**
+ * Any class extending Component (loose construct signature so subclasses
+ * with concrete generics and required constructor params are accepted).
+ */
+export type ComponentClass = abstract new (...args: any[]) => Component<any, any, any>;
+
+export function defineComponent(
+  name: string,
+  componentClass: ComponentClass
+): CustomElementConstructor;
 export function defineComponent<P = any, S = any, St = any>(
   name: string,
   options: ComponentOptions<P, S, St>
 ): CustomElementConstructor;
+
+/**
+ * Base class for class-authored components.
+ *
+ * This declaration describes the RUNTIME `this` seen by your methods,
+ * template, and lifecycle hooks: the custom element itself (hence
+ * `extends HTMLElement` - all DOM APIs on `this` are real). defineComponent
+ * translates the class into the framework's internal format at registration;
+ * the class itself is never instantiated as a separate object.
+ *
+ * Authoring contract:
+ * - `static props` declares props with defaults (observed as attributes).
+ *   Do NOT declare props as class fields - they would shadow the generated
+ *   accessors (the framework removes such fields and warns).
+ * - `static stores` wires stores; access state via `this.stores.name`.
+ * - `static styles` provides scoped CSS. All three merge across inheritance.
+ * - Getters become computed properties: lazy, cached, auto-disposed. Keep
+ *   them pure derivations of state/stores/props. A getter that tracks no
+ *   reactive dependency (and never reads props) is re-evaluated on every
+ *   read instead of cached, since nothing could ever invalidate it.
+ * - Methods are auto-bound to the element.
+ * - The constructor runs at FIRST CONNECT (not element creation), after
+ *   attributes are parsed - so `props` has real values you can copy into
+ *   state. It runs once per element; reconnection does not re-run it.
+ *
+ * @example
+ * class TaskList extends Component<TaskProps, TaskState> {
+ *   static props = { title: 'Tasks' };
+ *
+ *   constructor(props: TaskProps & BuiltinProps) {
+ *     super(props);
+ *     this.state = { items: [], filter: props.title };
+ *   }
+ *
+ *   get remaining() { return this.state.items.filter(i => !i.done).length; }
+ *
+ *   addItem(name: string) { this.state.items.push({ name, done: false }); }
+ *
+ *   template() {
+ *     return html`<div>${this.props.title}: ${this.remaining} left</div>`;
+ *   }
+ * }
+ * export default defineComponent('task-list', TaskList);
+ */
+export abstract class Component<P = any, S = any, St = any> extends HTMLElement {
+  // Declared as P (not P & BuiltinProps) so `super(props)` type-checks when
+  // the subclass annotates `constructor(props: MyProps)`. At runtime the
+  // object also carries children/slots - annotate with BuiltinProps if needed.
+  constructor(props?: P);
+
+  /** Reactive props (read-only from the component's perspective) */
+  readonly props: P & BuiltinProps;
+
+  /** Reactive local state - assign a plain object in the constructor or as a field */
+  state: S;
+
+  /** Subscribed store states (unwrapped for direct access) */
+  stores: UnwrapStores<St>;
+
+  /** DOM element references via ref="name" attribute */
+  refs: Record<string, HTMLElement>;
+
+  /** Props with default values (observed as attributes). Merged across inheritance. */
+  static props?: Record<string, any>;
+
+  /** Scoped CSS. Concatenated parent-first across inheritance. */
+  static styles?: string;
+
+  /** Stores to wire up (pass Store objects; unwrapped on `this.stores`). */
+  static stores?: Record<string, Store<any>>;
+
+  /**
+   * Emit a change event for x-model binding.
+   * @param e - The original event (will have propagation stopped)
+   * @param value - The new value to emit
+   * @param propName - The prop name (default: 'value')
+   */
+  emitChange(e: Event | null, value: unknown, propName?: string): void;
+
+  /**
+   * Batched prop assignment: updates all backing values before firing any
+   * propsChanged callback. Fires one re-render for the batch.
+   */
+  setProps(newProps: Partial<P>): void;
+
+  /** Get a bound method by name */
+  $method<T extends (...args: any[]) => any>(name: string): T | undefined;
+
+  /** Template function returning an html`` tagged template */
+  abstract template(): HtmlTemplate;
+
+  /** Called after the component is added to the DOM */
+  mounted?(): void | Promise<void>;
+
+  /** Called when the component is removed from the DOM - clean up here */
+  unmounted?(): void;
+
+  /** Called after each render (before browser layout/paint) */
+  afterRender?(): void;
+
+  /** Called when a prop value changes - use newValue, not this.props */
+  propsChanged?(prop: string, newValue: unknown, oldValue: unknown): void;
+
+  /** Error boundary - return a fallback template when template() throws */
+  renderError?(error: Error): HtmlTemplate | void;
+}
 
 // =============================================================================
 // Reactivity System
