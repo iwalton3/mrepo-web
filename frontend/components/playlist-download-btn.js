@@ -180,15 +180,15 @@ export class PlaylistDownloadBtn extends Component {
             if (isFull) {
                 content = html`
                     <div class="download-btn offline full">
-                        <cl-button severity="success" size="small">
+                        <cl-button severity="success">
                             ✓ Offline (${formatBytes(storageSize)})
                         </cl-button>
-                        <cl-button severity="secondary" size="small"
+                        <cl-button severity="secondary"
                                    on-click="handleDownload"
                                    title="Sync playlist - download new songs">
                             🔄 Sync
                         </cl-button>
-                        <cl-button severity="danger" size="small"
+                        <cl-button severity="danger"
                                    on-click="handleDelete"
                                    disabled="${isDeleting}">
                             ${isDeleting ? 'Removing...' : '🗑 Remove'}
@@ -207,7 +207,7 @@ export class PlaylistDownloadBtn extends Component {
             // Not offline - show download button (full variant only)
             content = html`
                 <div class="download-btn full">
-                    <cl-button severity="secondary" size="small" on-click="handleDownload">
+                    <cl-button severity="secondary" on-click="handleDownload">
                         ⬇ Download Offline
                     </cl-button>
                     ${when(downloadError, html`

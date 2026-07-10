@@ -1747,12 +1747,12 @@ export class BrowsePage extends Component {
                         ${when(this.getCurrentDownloadedFolder(), () => {
                             const folder = this.getCurrentDownloadedFolder();
                             return html`
-                                <cl-button severity="success" size="small" disabled>
+                                <cl-button severity="success" disabled>
                                     ✓ Offline (${formatBytes(folder.totalSize)})
                                 </cl-button>
-                                <cl-button severity="secondary" size="small" on-click="handleRefreshCurrentFolder"
+                                <cl-button severity="secondary" on-click="handleRefreshCurrentFolder"
                                            disabled="${!this.stores.offline.isOnline}" title="Sync - download new songs">🔄</cl-button>
-                                <cl-button severity="danger" size="small" on-click="handleDeleteCurrentFolder"
+                                <cl-button severity="danger" on-click="handleDeleteCurrentFolder"
                                            disabled="${this.state.isDeletingFolder}" title="Remove offline">🗑</cl-button>
                             `;
                         }, () => html`

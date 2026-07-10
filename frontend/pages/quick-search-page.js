@@ -736,7 +736,7 @@ export class QuickSearchPage extends Component {
                             <span class="similar-song-title">${similarSong.title || 'Unknown'}</span>
                             <span class="similar-song-artist">${similarSong.artist || 'Unknown Artist'}</span>
                         </div>
-                        <cl-button severity="secondary" size="small" on-click="exitSimilarMode">
+                        <cl-button severity="secondary" on-click="exitSimilarMode">
                             ✕ Exit
                         </cl-button>
                     </div>
@@ -756,7 +756,7 @@ export class QuickSearchPage extends Component {
                         ${when(isLoading, html`
                             <cl-spinner size="small" class="search-spinner"></cl-spinner>
                         `)}
-                        <cl-button severity="primary" size="small" on-click="performAdvancedSearch">
+                        <cl-button severity="primary" on-click="performAdvancedSearch">
                             Search
                         </cl-button>
                     </div>

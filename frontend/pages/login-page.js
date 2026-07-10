@@ -110,9 +110,6 @@ export default defineComponent('login-page', {
                         `)}
 
                         <cl-button
-                            type="submit"
-                            variant="primary"
-                            size="large"
                             ?disabled="${loading}"
                             style="width: 100%"
                         >
