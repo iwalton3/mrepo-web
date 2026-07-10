@@ -4,7 +4,7 @@
  * Main application shell with responsive layout and routing.
  */
 
-import { defineComponent, html, when, each } from 'vdx/framework.js';
+import { defineComponent, html, when, each, Component } from 'vdx/framework.js';
 import { enableRouting, getRouter } from 'vdx/router.js';
 import { auth, playlists as playlistsApi } from './offline/offline-api.js';
 import { player, playerStore } from './stores/player-store.js';
@@ -31,11 +31,13 @@ const loadNotFound = () => import('./pages/not-found-page.js');
 // Import mini player
 import './components/mini-player.js';
 
-export default defineComponent('music-app', {
-    stores: { player: playerStore },
+export class MusicApp extends Component {
+    static stores = { player: playerStore }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             user: null,
             authenticated: false,
             isAdmin: false,
@@ -97,7 +99,7 @@ export default defineComponent('music-app', {
             ],
             activeItem: 'now-playing'
         };
-    },
+    }
 
     async mounted() {
         // Always use dark mode for music app
@@ -170,160 +172,158 @@ export default defineComponent('music-app', {
         } catch (e) {
             console.error('Failed to check auth:', e);
         }
-    },
+    }
 
-    methods: {
-        _setupRouting() {
-            const outlet = this.querySelector('router-outlet');
-            if (!outlet) {
-                console.error('music-app: <router-outlet> not found - routing not initialized, app will render blank. Check the template markup.');
-                return;
-            }
-
-            // enableRouting warns and merges on a second call; if the shell ever
-            // remounts, reattach the outlet to the existing router instead
-            const existing = getRouter();
-            if (existing) {
-                existing.setOutlet(outlet);
-                return;
-            }
-
-            enableRouting(outlet, {
-                // Main routes
-                '/': {
-                    component: 'now-playing-page',
-                    load: loadNowPlaying
-                },
-                '/visualizer/': {
-                    component: 'visualizer-page',
-                    load: loadVisualizer
-                },
-                '/browse/': {
-                    component: 'browse-page',
-                    load: loadBrowse
-                },
-                // Specific route MUST be registered before the greedy wildcard,
-                // otherwise the insertion-order pattern loop in _findRoute matches
-                // '/browse/:path*/' first and this route becomes unreachable.
-                '/browse/path/:encodedPath/': {
-                    component: 'browse-page',
-                    load: loadBrowse
-                },
-                '/browse/:path*/': {
-                    component: 'browse-page',
-                    load: loadBrowse
-                },
-                '/search/': {
-                    component: 'quick-search-page',
-                    load: loadSearch
-                },
-                '/radio/': {
-                    component: 'radio-page',
-                    load: loadRadio
-                },
-                '/playlists/': {
-                    component: 'playlists-page',
-                    load: loadPlaylists
-                },
-                '/playlists/:id/': {
-                    component: 'playlists-page',
-                    load: loadPlaylists
-                },
-                '/share/:token/': {
-                    component: 'playlists-page',
-                    load: loadPlaylists
-                },
-                '/history/': {
-                    component: 'history-page',
-                    load: loadHistory
-                },
-                '/settings/': {
-                    component: 'settings-page',
-                    load: loadSettings
-                },
-                '/eq/': {
-                    component: 'eq-page',
-                    load: loadEQ
-                },
-                // Deployment-specific routes (e.g. /login/ + /admin/ on the
-                // public build). Empty object on builds without them, so the
-                // public-only page files are never imported here.
-                ...(profile.auth.extraRoutes || {}),
-                '/loopsong/:uuid/': {
-                    component: 'loopsong-page',
-                    load: loadLoopSong
-                },
-
-                // Backward-compatibility redirects from /music/* to /*
-                '/music/': { redirect: '/' },
-                '/music/visualizer/': { redirect: '/visualizer/' },
-                '/music/browse/': { redirect: '/browse/' },
-                // Specific redirect before the greedy wildcard (same reason as above).
-                '/music/browse/path/:encodedPath/': { redirect: '/browse/path/$1/' },
-                '/music/browse/:path*/': { redirect: '/browse/$1/' },
-                '/music/search/': { redirect: '/search/' },
-                '/music/radio/': { redirect: '/radio/' },
-                '/music/playlists/': { redirect: '/playlists/' },
-                '/music/playlists/:id/': { redirect: '/playlists/$1/' },
-                '/music/share/:token/': { redirect: '/share/$1/' },
-                '/music/history/': { redirect: '/history/' },
-                '/music/settings/': { redirect: '/settings/' },
-                '/music/eq/': { redirect: '/eq/' },
-                '/music/loopsong/:uuid/': { redirect: '/loopsong/$1/' },
-
-                // Catch-all: unmatched routes fall back to this via _findRoute
-                // instead of silently rendering the root (Now Playing) page.
-                '/404': {
-                    component: 'not-found-page',
-                    load: loadNotFound
-                }
-            });
-        },
-
-        _updateActiveFromHash() {
-            const hash = window.location.hash || '#/';
-            // Sort by route length descending to match most specific route first
-            const sortedItems = [...this.state.menuItems].sort(
-                (a, b) => b.route.length - a.route.length
-            );
-            for (const item of sortedItems) {
-                if (hash.startsWith('#' + item.route)) {
-                    this.state.activeItem = item.key;
-                    break;
-                }
-            }
-        },
-
-        async handleLogout() {
-            try {
-                await auth.logout();
-            } catch (e) {
-                console.error('Logout failed:', e);
-            }
-            // Reload to reset all cached auth/user state
-            window.location.hash = '/';
-            window.location.reload();
-        },
-
-        handleActiveItemChange(e) {
-            const key = e.detail?.value;
-            if (!key) return;
-
-            // Find the menu item by key and navigate to its route
-            const item = this.state.menuItems.find(m => m.key === key);
-            if (item?.route) {
-                window.location.hash = item.route;
-                this.state.activeItem = key;
-            }
-        },
-
-        formatTime(seconds) {
-            if (!seconds || isNaN(seconds)) return '0:00';
-            const mins = Math.floor(seconds / 60);
-            const secs = Math.floor(seconds % 60);
-            return `${mins}:${secs.toString().padStart(2, '0')}`;
+    _setupRouting() {
+        const outlet = this.querySelector('router-outlet');
+        if (!outlet) {
+            console.error('music-app: <router-outlet> not found - routing not initialized, app will render blank. Check the template markup.');
+            return;
         }
-    },
+
+        // enableRouting warns and merges on a second call; if the shell ever
+        // remounts, reattach the outlet to the existing router instead
+        const existing = getRouter();
+        if (existing) {
+            existing.setOutlet(outlet);
+            return;
+        }
+
+        enableRouting(outlet, {
+            // Main routes
+            '/': {
+                component: 'now-playing-page',
+                load: loadNowPlaying
+            },
+            '/visualizer/': {
+                component: 'visualizer-page',
+                load: loadVisualizer
+            },
+            '/browse/': {
+                component: 'browse-page',
+                load: loadBrowse
+            },
+            // Specific route MUST be registered before the greedy wildcard,
+            // otherwise the insertion-order pattern loop in _findRoute matches
+            // '/browse/:path*/' first and this route becomes unreachable.
+            '/browse/path/:encodedPath/': {
+                component: 'browse-page',
+                load: loadBrowse
+            },
+            '/browse/:path*/': {
+                component: 'browse-page',
+                load: loadBrowse
+            },
+            '/search/': {
+                component: 'quick-search-page',
+                load: loadSearch
+            },
+            '/radio/': {
+                component: 'radio-page',
+                load: loadRadio
+            },
+            '/playlists/': {
+                component: 'playlists-page',
+                load: loadPlaylists
+            },
+            '/playlists/:id/': {
+                component: 'playlists-page',
+                load: loadPlaylists
+            },
+            '/share/:token/': {
+                component: 'playlists-page',
+                load: loadPlaylists
+            },
+            '/history/': {
+                component: 'history-page',
+                load: loadHistory
+            },
+            '/settings/': {
+                component: 'settings-page',
+                load: loadSettings
+            },
+            '/eq/': {
+                component: 'eq-page',
+                load: loadEQ
+            },
+            // Deployment-specific routes (e.g. /login/ + /admin/ on the
+            // public build). Empty object on builds without them, so the
+            // public-only page files are never imported here.
+            ...(profile.auth.extraRoutes || {}),
+            '/loopsong/:uuid/': {
+                component: 'loopsong-page',
+                load: loadLoopSong
+            },
+
+            // Backward-compatibility redirects from /music/* to /*
+            '/music/': { redirect: '/' },
+            '/music/visualizer/': { redirect: '/visualizer/' },
+            '/music/browse/': { redirect: '/browse/' },
+            // Specific redirect before the greedy wildcard (same reason as above).
+            '/music/browse/path/:encodedPath/': { redirect: '/browse/path/$1/' },
+            '/music/browse/:path*/': { redirect: '/browse/$1/' },
+            '/music/search/': { redirect: '/search/' },
+            '/music/radio/': { redirect: '/radio/' },
+            '/music/playlists/': { redirect: '/playlists/' },
+            '/music/playlists/:id/': { redirect: '/playlists/$1/' },
+            '/music/share/:token/': { redirect: '/share/$1/' },
+            '/music/history/': { redirect: '/history/' },
+            '/music/settings/': { redirect: '/settings/' },
+            '/music/eq/': { redirect: '/eq/' },
+            '/music/loopsong/:uuid/': { redirect: '/loopsong/$1/' },
+
+            // Catch-all: unmatched routes fall back to this via _findRoute
+            // instead of silently rendering the root (Now Playing) page.
+            '/404': {
+                component: 'not-found-page',
+                load: loadNotFound
+            }
+        });
+    }
+
+    _updateActiveFromHash() {
+        const hash = window.location.hash || '#/';
+        // Sort by route length descending to match most specific route first
+        const sortedItems = [...this.state.menuItems].sort(
+            (a, b) => b.route.length - a.route.length
+        );
+        for (const item of sortedItems) {
+            if (hash.startsWith('#' + item.route)) {
+                this.state.activeItem = item.key;
+                break;
+            }
+        }
+    }
+
+    async handleLogout() {
+        try {
+            await auth.logout();
+        } catch (e) {
+            console.error('Logout failed:', e);
+        }
+        // Reload to reset all cached auth/user state
+        window.location.hash = '/';
+        window.location.reload();
+    }
+
+    handleActiveItemChange(e) {
+        const key = e.detail?.value;
+        if (!key) return;
+
+        // Find the menu item by key and navigate to its route
+        const item = this.state.menuItems.find(m => m.key === key);
+        if (item?.route) {
+            window.location.hash = item.route;
+            this.state.activeItem = key;
+        }
+    }
+
+    formatTime(seconds) {
+        if (!seconds || isNaN(seconds)) return '0:00';
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+    }
 
     template() {
         const currentSong = this.stores.player.currentSong;
@@ -357,9 +357,9 @@ export default defineComponent('music-app', {
 
             <cl-toast position="top-right"></cl-toast>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
             height: 100%;
@@ -432,4 +432,6 @@ export default defineComponent('music-app', {
             }
         }
     `
-});
+}
+
+export default defineComponent('music-app', MusicApp);

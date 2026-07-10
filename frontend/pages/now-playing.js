@@ -9,7 +9,7 @@
  * - Volume control
  */
 
-import { defineComponent, html, when, each, memoEach, contain } from 'vdx/framework.js';
+import { defineComponent, html, when, each, memoEach, contain, Component } from 'vdx/framework.js';
 import { debounce, rafThrottle } from 'vdx/utils.js';
 import { createWindowing } from 'vdx/windowing.js';
 import { createRowGestures, gapToRemoveInsertIndex } from 'vdx/gestures.js';
@@ -26,10 +26,12 @@ import 'vdxui/overlay/dialog.js';
 
 const FAVORITES_PLAYLIST_NAME = 'Favorites';
 
-export default defineComponent('now-playing-page', {
-    stores: { player: playerStore, offline: offlineStore, eqPresets: eqPresetsStore },
+export class NowPlayingPage extends Component {
+    static stores = { player: playerStore, offline: offlineStore, eqPresets: eqPresetsStore }
 
-    data() {
+    constructor(props) {
+        super(props);
+
         // Windowed rendering for the queue list. Created in data() so the
         // controller's window state exists for the first render. The scroll
         // container (the .queue-scroll-wrapper) is wired in via
@@ -99,7 +101,7 @@ export default defineComponent('now-playing-page', {
                 }
             }
         });
-        return {
+        this.state = {
             showSaveDialog: false,
             playlistName: '',
             isSaving: false,
@@ -135,7 +137,7 @@ export default defineComponent('now-playing-page', {
             isExtending: false,
             extendError: null
         };
-    },
+    }
 
     async mounted() {
         // Remove shell padding for full-height queue view
@@ -215,7 +217,7 @@ export default defineComponent('now-playing-page', {
 
         // Initial scroll to current song - either now if queue is loaded, or when it loads
         this._tryInitialScroll();
-    },
+    }
 
     unmounted() {
         // Restore shell padding
@@ -253,986 +255,984 @@ export default defineComponent('now-playing-page', {
         if (this._onTempQueueExited) {
             window.removeEventListener('temp-queue-exited', this._onTempQueueExited);
         }
-    },
+    }
 
-    methods: {
-        /**
-         * Get visible queue items - filters out unavailable items when offline.
-         * Returns items with their original queue indices for playback.
-         * Memoized to avoid recalculating on every render.
-         */
-        getVisibleQueue() {
-            const queue = this.stores.player.queue;
-            const queueVersion = this.stores.player.queueVersion;
-            const isOffline = this.stores.offline.workOfflineMode || !this.stores.offline.isOnline;
+    /**
+     * Get visible queue items - filters out unavailable items when offline.
+     * Returns items with their original queue indices for playback.
+     * Memoized to avoid recalculating on every render.
+     */
+    getVisibleQueue() {
+        const queue = this.stores.player.queue;
+        const queueVersion = this.stores.player.queueVersion;
+        const isOffline = this.stores.offline.workOfflineMode || !this.stores.offline.isOnline;
 
-            // Cache key: queueVersion changes on queue modification
-            // Note: queueIndex is NOT included - it doesn't affect queue content
-            const cacheKey = `${queueVersion}-${isOffline}`;
+        // Cache key: queueVersion changes on queue modification
+        // Note: queueIndex is NOT included - it doesn't affect queue content
+        const cacheKey = `${queueVersion}-${isOffline}`;
 
-            // Return cached result if inputs haven't changed. This memo guards a
-            // genuinely hot path: count() calls this every scroll frame (via the
-            // windowing controller), so an O(n) rebuild over a queue of thousands
-            // per frame is worth avoiding. The key fields (queueVersion, offline)
-            // are the reactive signals that actually change the queue content.
-            if (this._visibleQueueKey === cacheKey && this._visibleQueueCache) {
-                return this._visibleQueueCache;
-            }
+        // Return cached result if inputs haven't changed. This memo guards a
+        // genuinely hot path: count() calls this every scroll frame (via the
+        // windowing controller), so an O(n) rebuild over a queue of thousands
+        // per frame is worth avoiding. The key fields (queueVersion, offline)
+        // are the reactive signals that actually change the queue content.
+        if (this._visibleQueueKey === cacheKey && this._visibleQueueCache) {
+            return this._visibleQueueCache;
+        }
 
-            // Fresh { item, index } wrappers each rebuild. memoEach uses
-            // { trustKey: true }, so item-reference identity is irrelevant and no
-            // stable-wrapper cache is needed.
-            let result;
-            if (!isOffline) {
-                // Online - show all items with their indices
-                result = queue.map((item, index) => ({ item, index }));
-            } else {
-                // Offline - only show items with metadata (have title)
-                result = queue
-                    .map((item, index) => ({ item, index }))
-                    .filter(({ item }) => item.title);
-            }
+        // Fresh { item, index } wrappers each rebuild. memoEach uses
+        // { trustKey: true }, so item-reference identity is irrelevant and no
+        // stable-wrapper cache is needed.
+        let result;
+        if (!isOffline) {
+            // Online - show all items with their indices
+            result = queue.map((item, index) => ({ item, index }));
+        } else {
+            // Offline - only show items with metadata (have title)
+            result = queue
+                .map((item, index) => ({ item, index }))
+                .filter(({ item }) => item.title);
+        }
 
-            // Cache the result (store directly to avoid triggering re-render)
-            // Use instance properties (not reactive state) for cache
-            this._visibleQueueCache = result;
-            this._visibleQueueKey = cacheKey;
+        // Cache the result (store directly to avoid triggering re-render)
+        // Use instance properties (not reactive state) for cache
+        this._visibleQueueCache = result;
+        this._visibleQueueKey = cacheKey;
 
-            return result;
-        },
+        return result;
+    }
 
-        getDisplayTitle(song) {
-            if (!song) return 'Unknown';
-            if (song.title) return song.title;
-            // Fallback to filename without extension
-            const path = song.virtual_file || song.file || '';
-            const filename = path.split('/').pop() || '';
-            return filename.replace(/\.[^.]+$/, '') || 'Unknown';
-        },
+    getDisplayTitle(song) {
+        if (!song) return 'Unknown';
+        if (song.title) return song.title;
+        // Fallback to filename without extension
+        const path = song.virtual_file || song.file || '';
+        const filename = path.split('/').pop() || '';
+        return filename.replace(/\.[^.]+$/, '') || 'Unknown';
+    }
 
-        // Selection mode methods
-        toggleSelectionMode() {
-            // No version bump: selection mode/state live in the memoEach key,
-            // so only rows whose key bits change re-render.
-            this.state.selectionMode = !this.state.selectionMode;
-            if (!this.state.selectionMode) {
-                this.clearSelection();
-            }
-        },
+    // Selection mode methods
+    toggleSelectionMode() {
+        // No version bump: selection mode/state live in the memoEach key,
+        // so only rows whose key bits change re-render.
+        this.state.selectionMode = !this.state.selectionMode;
+        if (!this.state.selectionMode) {
+            this.clearSelection();
+        }
+    }
 
-        isSelected(index) {
-            return this.state.selectedIndices.has(index);
-        },
+    isSelected(index) {
+        return this.state.selectedIndices.has(index);
+    }
 
-        toggleSelection(index, e) {
-            if (e) e.stopPropagation();
-            const newSet = new Set(this.state.selectedIndices);
+    toggleSelection(index, e) {
+        if (e) e.stopPropagation();
+        const newSet = new Set(this.state.selectedIndices);
 
-            // Shift+click for range selection
-            if (e && e.shiftKey && this._lastSelectedIndex !== undefined) {
-                const start = Math.min(this._lastSelectedIndex, index);
-                const end = Math.max(this._lastSelectedIndex, index);
-                for (let i = start; i <= end; i++) {
-                    newSet.add(i);
-                }
-            } else {
-                if (newSet.has(index)) {
-                    newSet.delete(index);
-                } else {
-                    newSet.add(index);
-                }
-                this._lastSelectedIndex = index;
-            }
-
-            this.state.selectedIndices = newSet;
-            // No version bump: the per-row selected bit in the memoEach key
-            // re-renders exactly the toggled row(s).
-        },
-
-        selectAll() {
-            const queue = this.stores.player.queue;
-            const newSet = new Set();
-            for (let i = 0; i < queue.length; i++) {
+        // Shift+click for range selection
+        if (e && e.shiftKey && this._lastSelectedIndex !== undefined) {
+            const start = Math.min(this._lastSelectedIndex, index);
+            const end = Math.max(this._lastSelectedIndex, index);
+            for (let i = start; i <= end; i++) {
                 newSet.add(i);
             }
-            this.state.selectedIndices = newSet;
-        },
+        } else {
+            if (newSet.has(index)) {
+                newSet.delete(index);
+            } else {
+                newSet.add(index);
+            }
+            this._lastSelectedIndex = index;
+        }
 
-        clearSelection() {
-            this.state.selectedIndices = new Set();
-            this._lastSelectedIndex = undefined;
-        },
+        this.state.selectedIndices = newSet;
+        // No version bump: the per-row selected bit in the memoEach key
+        // re-renders exactly the toggled row(s).
+    }
 
-        async handleDeleteSelected() {
-            const indices = [...this.state.selectedIndices];
-            if (indices.length === 0) return;
+    selectAll() {
+        const queue = this.stores.player.queue;
+        const newSet = new Set();
+        for (let i = 0; i < queue.length; i++) {
+            newSet.add(i);
+        }
+        this.state.selectedIndices = newSet;
+    }
 
-            await player.removeFromQueueBatch(indices);
+    clearSelection() {
+        this.state.selectedIndices = new Set();
+        this._lastSelectedIndex = undefined;
+    }
+
+    async handleDeleteSelected() {
+        const indices = [...this.state.selectedIndices];
+        if (indices.length === 0) return;
+
+        await player.removeFromQueueBatch(indices);
+        this.clearSelection();
+        this.state.selectionMode = false;
+    }
+
+    async handleAddSelectedToPlaylist(playlistId) {
+        const indices = [...this.state.selectedIndices];
+        if (indices.length === 0) return;
+
+        const queue = this.stores.player.queue;
+        const songs = indices.map(i => queue[i]).filter(Boolean);
+        const songUuids = songs.map(s => s.uuid);
+
+        try {
+            this.state.addingToPlaylist = true;
+            await playlistsApi.addSongsBatch(playlistId, songUuids);
+            this.state.showAddToPlaylist = false;
             this.clearSelection();
             this.state.selectionMode = false;
-        },
+        } catch (e) {
+            console.error('Failed to add songs to playlist:', e);
+        } finally {
+            this.state.addingToPlaylist = false;
+        }
+    }
 
-        async handleAddSelectedToPlaylist(playlistId) {
-            const indices = [...this.state.selectedIndices];
-            if (indices.length === 0) return;
+    handlePlayPause() {
+        player.togglePlayPause();
+    }
 
-            const queue = this.stores.player.queue;
-            const songs = indices.map(i => queue[i]).filter(Boolean);
-            const songUuids = songs.map(s => s.uuid);
+    handlePrevious() {
+        player.previous();
+    }
 
-            try {
-                this.state.addingToPlaylist = true;
-                await playlistsApi.addSongsBatch(playlistId, songUuids);
+    handleNext() {
+        player.next();
+    }
+
+    handleSkip() {
+        player.skip();
+    }
+
+    handleSeek(e) {
+        const value = e.detail?.value ?? e.target?.value;
+        if (value !== undefined) {
+            player.seek(parseFloat(value));
+        }
+    }
+
+    handleSeekWrapperClick(e) {
+        // If the click was on the slider itself, let it handle it
+        if (e.target.classList.contains('seek-slider')) return;
+
+        // Calculate seek position from click on wrapper
+        const wrapper = e.currentTarget;
+        const rect = wrapper.getBoundingClientRect();
+        const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        const duration = this.stores.player.duration;
+        if (duration) {
+            player.seek(percent * duration);
+        }
+    }
+
+    handleVolumeChange(e) {
+        const value = e.detail?.value ?? e.target?.value;
+        if (value !== undefined) {
+            this._debouncedSetVolume(parseFloat(value));
+        }
+    }
+
+    handleToggleMute() {
+        player.toggleMute();
+    }
+
+    handleToggleShuffle() {
+        player.toggleShuffle();
+    }
+
+    handleCycleRepeat() {
+        player.cycleRepeatMode();
+    }
+
+    handleQueueItemClick(index) {
+        // Don't play unavailable songs when offline
+        const queue = this.stores.player.queue;
+        if (index >= 0 && index < queue.length) {
+            const song = queue[index];
+            if (this.isUnavailableOffline(song?.uuid)) {
+                return;
+            }
+        }
+        player.playAtIndex(index);
+    }
+
+    /**
+     * Check if a song is unavailable in offline mode.
+     * Returns true if in offline mode and song is not cached.
+     */
+    isUnavailableOffline(uuid) {
+        if (!uuid) return false;
+        // Not in offline mode = nothing is unavailable
+        if (this.stores.offline.isOnline && !this.stores.offline.workOfflineMode) {
+            return false;
+        }
+        // In offline mode - check if song is cached
+        return !this.stores.offline.offlineSongUuids.has(uuid);
+    }
+
+    handleRemoveFromQueue(index, e) {
+        e.stopPropagation();
+        player.removeFromQueue(index);
+    }
+
+    formatTime(seconds) {
+        if (!seconds || isNaN(seconds)) return '0:00';
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    getRepeatIcon() {
+        const mode = this.stores.player.repeatMode;
+        switch (mode) {
+            case 'one': return '🔂';
+            case 'all': return '🔁';
+            default: return '➡️';
+        }
+    }
+
+    getRepeatTitle() {
+        const mode = this.stores.player.repeatMode;
+        switch (mode) {
+            case 'one': return 'Repeat: One';
+            case 'all': return 'Repeat: All';
+            default: return 'Repeat: Off';
+        }
+    }
+
+    /**
+     * Get the current playback mode.
+     * Returns: 'default' | 'shuffle' | 'repeat' | 'repeat-one'
+     */
+    getPlaybackMode() {
+        const shuffle = this.stores.player.shuffle;
+        const repeat = this.stores.player.repeatMode;
+
+        if (shuffle) return 'shuffle';
+        if (repeat === 'one') return 'repeat-one';
+        if (repeat === 'all') return 'repeat';
+        return 'default';
+    }
+
+    /**
+     * Get icon for the current playback mode.
+     */
+    getPlaybackModeIcon() {
+        switch (this.getPlaybackMode()) {
+            case 'shuffle': return '🔀';
+            case 'repeat': return '🔁';
+            case 'repeat-one': return '🔂';
+            default: return '➡️';
+        }
+    }
+
+    /**
+     * Get title for the current playback mode.
+     */
+    getPlaybackModeTitle() {
+        switch (this.getPlaybackMode()) {
+            case 'shuffle': return 'Shuffle';
+            case 'repeat': return 'Repeat All';
+            case 'repeat-one': return 'Repeat One';
+            default: return 'Default';
+        }
+    }
+
+    /**
+     * Toggle playback mode menu visibility.
+     */
+    togglePlaybackModeMenu() {
+        this.state.showPlaybackModeMenu = !this.state.showPlaybackModeMenu;
+        // Close other menus
+        this.state.showEQMenu = false;
+        this.state.showVolumePopup = false;
+    }
+
+    /**
+     * Close playback mode menu.
+     */
+    closePlaybackModeMenu() {
+        this.state.showPlaybackModeMenu = false;
+    }
+
+    /**
+     * Set a specific playback mode.
+     */
+    setPlaybackMode(mode) {
+        switch (mode) {
+            case 'default':
+                player.setShuffle(false);
+                player.setRepeatMode('none');
+                break;
+            case 'shuffle':
+                player.setShuffle(true);
+                player.setRepeatMode('none');
+                break;
+            case 'repeat':
+                player.setShuffle(false);
+                player.setRepeatMode('all');
+                break;
+            case 'repeat-one':
+                player.setShuffle(false);
+                player.setRepeatMode('one');
+                break;
+        }
+        this.state.showPlaybackModeMenu = false;
+    }
+
+    handleClearQueue() {
+        this.showConfirmDialog(
+            'Clear Queue',
+            'Clear the entire queue?',
+            'clearQueue'
+        );
+    }
+
+    async doClearQueue() {
+        await player.clearQueue();
+    }
+
+    showConfirmDialog(title, message, action) {
+        this.state.confirmDialog = { show: true, title, message, action };
+    }
+
+    handleConfirmDialogConfirm() {
+        const { action } = this.state.confirmDialog;
+        this.state.confirmDialog = { show: false, title: '', message: '', action: null };
+
+        if (action === 'clearQueue') {
+            this.doClearQueue();
+        }
+    }
+
+    handleConfirmDialogCancel() {
+        this.state.confirmDialog = { show: false, title: '', message: '', action: null };
+    }
+
+    handleShowSaveDialog() {
+        this.state.showSaveDialog = true;
+        this.state.playlistName = '';
+        this.state.saveError = null;
+    }
+
+    handleCloseSaveDialog() {
+        this.state.showSaveDialog = false;
+    }
+
+    handlePlaylistNameChange(e) {
+        this.state.playlistName = e.target.value;
+    }
+
+    async handleSaveAsPlaylist() {
+        const name = this.state.playlistName.trim();
+        if (!name) {
+            this.state.saveError = 'Please enter a playlist name';
+            return;
+        }
+
+        this.state.isSaving = true;
+        this.state.saveError = null;
+
+        try {
+            const result = await player.saveQueueAsPlaylist(name);
+            this.state.showSaveDialog = false;
+            const msg = result.queued
+                ? `Playlist "${result.name}" will be created when online.`
+                : `Playlist "${result.name}" created!`;
+            const toast = document.querySelector('cl-toast');
+            if (toast) toast.show({ severity: 'success', summary: 'Playlist Saved', detail: msg });
+        } catch (e) {
+            this.state.saveError = e.message || 'Failed to save playlist';
+        } finally {
+            this.state.isSaving = false;
+        }
+    }
+
+    // Extend queue with AI
+    showExtendQueueDialog() {
+        this.state.showExtendDialog = true;
+        this.state.extendError = null;
+    }
+
+    closeExtendDialog() {
+        this.state.showExtendDialog = false;
+    }
+
+    async handleExtendQueue() {
+        this.state.isExtending = true;
+        this.state.extendError = null;
+
+        try {
+            const isTempQueue = this.stores.player.tempQueueMode;
+            let addedCount = 0;
+
+            if (isTempQueue) {
+                // Temp queue mode: generate locally using seeds from local queue
+                const queue = this.stores.player.queue;
+                if (queue.length === 0) {
+                    this.state.extendError = 'Queue is empty';
+                    return;
+                }
+
+                // Use last 5 songs as seeds
+                const seedCount = Math.min(5, queue.length);
+                const seedUuids = queue.slice(-seedCount).map(s => s.uuid);
+                const existingUuids = new Set(queue.map(s => s.uuid));
+
+                // Generate similar songs (AI adapter, normalized -> { items })
+                const result = await offlineApi.ai.generatePlaylist(seedUuids, {
+                    size: this.state.extendCount + existingUuids.size, // Request extra to filter dupes
+                    diversity: this.state.extendDiversity
+                });
+
+                if (result.error) {
+                    this.state.extendError = result.error;
+                    return;
+                }
+
+                // Filter out songs already in queue
+                const newUuids = (result.items || [])
+                    .filter(item => !existingUuids.has(item.uuid))
+                    .slice(0, this.state.extendCount)
+                    .map(item => item.uuid);
+
+                if (newUuids.length === 0) {
+                    this.state.extendError = 'No new similar songs found';
+                    return;
+                }
+
+                // Fetch full song data
+                const songsResult = await offlineApi.songs.getBulk(newUuids);
+                const songs = songsResult.items || songsResult || [];
+
+                if (songs.length > 0) {
+                    await player.addToQueue(songs);
+                    addedCount = songs.length;
+                }
+            } else {
+                // Normal mode: use server-side extend
+                const result = await offlineApi.ai.extendQueue(
+                    this.state.extendCount,
+                    this.state.extendDiversity
+                );
+
+                if (result.error) {
+                    this.state.extendError = result.error;
+                    return;
+                }
+
+                // Reload queue from server
+                await player.reloadQueue();
+                addedCount = result.added?.length || 0;
+            }
+
+            // Force visible range recalculation after queue grows
+            // (the untracked queue array grew; refresh() re-clamps the window)
+            requestAnimationFrame(() => {
+                this._win.refresh();
+            });
+
+            this.state.showExtendDialog = false;
+            const toast = document.querySelector('cl-toast');
+            if (toast) {
+                toast.show({
+                    severity: 'success',
+                    summary: 'Queue Extended',
+                    detail: `Added ${addedCount} similar songs`
+                });
+            }
+        } catch (e) {
+            console.error('Failed to extend queue with AI:', e);
+            this.state.extendError = e.message || 'Failed to extend queue';
+        } finally {
+            this.state.isExtending = false;
+        }
+    }
+
+    async handleStartRadio() {
+        await player.startScaFromQueue();
+        // Queue may grow - recalculate visible range
+        requestAnimationFrame(() => this._win.refresh());
+    }
+
+    async handleStopRadio() {
+        await player.stopSca();
+    }
+
+    async handleToggleAiRadio() {
+        await player.toggleAiRadio();
+    }
+
+    async handleToggleTempQueue() {
+        await player.toggleTempQueueMode();
+        // Queue size changes - recalculate visible range
+        requestAnimationFrame(() => this._win.refresh());
+    }
+
+    async loadPlaylists() {
+        try {
+            // Use offline-api which handles caching favorites automatically
+            const result = await offlineApi.playlists.list();
+            // Handle different response formats
+            let playlistArray = [];
+            if (Array.isArray(result)) {
+                playlistArray = result;
+            } else if (result && Array.isArray(result.playlists)) {
+                playlistArray = result.playlists;
+            } else if (result && Array.isArray(result.items)) {
+                playlistArray = result.items;
+            }
+            this.state.userPlaylists = playlistArray;
+
+            // Find or create Favorites playlist
+            let favorites = playlistArray.find(
+                p => p.name === FAVORITES_PLAYLIST_NAME
+            );
+
+            if (!favorites) {
+                // Create favorites playlist (requires online)
+                favorites = await playlistsApi.create(FAVORITES_PLAYLIST_NAME, 'My favorite songs');
+                this.state.userPlaylists = [favorites, ...this.state.userPlaylists];
+            }
+
+            // Favorites are now managed by offline store - no need to track locally
+        } catch (e) {
+            console.error('Failed to load playlists:', e);
+        }
+    }
+
+    isFavorite() {
+        const song = this.stores.player.currentSong;
+        // Use offline store's cached favorites
+        return song && offlineApi.isFavorite(song.uuid);
+    }
+
+    async toggleFavorite() {
+        const song = this.stores.player.currentSong;
+        if (!song) return;
+
+        // Get favorites playlist ID, loading playlists if needed
+        let favoritesPlaylistId = offlineApi.getFavoritesPlaylistId();
+        if (!favoritesPlaylistId) {
+            // Try loading playlists first
+            await this.loadPlaylists();
+            favoritesPlaylistId = offlineApi.getFavoritesPlaylistId();
+        }
+
+        if (!favoritesPlaylistId) {
+            console.error('Could not determine favorites playlist');
+            return;
+        }
+
+        try {
+            if (this.isFavorite()) {
+                // Use offline-api which handles caching and queuing
+                await offlineApi.playlists.removeSong(favoritesPlaylistId, song.uuid);
+            } else {
+                await offlineApi.playlists.addSong(favoritesPlaylistId, song.uuid);
+            }
+        } catch (e) {
+            console.error('Failed to toggle favorite:', e);
+        }
+    }
+
+    handleShowAddToPlaylist() {
+        this.state.showAddToPlaylist = true;
+    }
+
+    handleCloseAddToPlaylist() {
+        this.state.showAddToPlaylist = false;
+    }
+
+    async addToPlaylist(playlistId) {
+        this.state.addingToPlaylist = true;
+        try {
+            // Selection mode: add all selected songs
+            if (this.state.selectionMode && this.state.selectedIndices.size > 0) {
+                const indices = [...this.state.selectedIndices];
+                const queue = this.stores.player.queue;
+                const songUuids = indices.map(i => queue[i]?.uuid).filter(Boolean);
+
+                if (songUuids.length > 0) {
+                    await offlineApi.playlists.addSongsBatch(playlistId, songUuids);
+                }
+
                 this.state.showAddToPlaylist = false;
                 this.clearSelection();
                 this.state.selectionMode = false;
-            } catch (e) {
-                console.error('Failed to add songs to playlist:', e);
-            } finally {
-                this.state.addingToPlaylist = false;
-            }
-        },
-
-        handlePlayPause() {
-            player.togglePlayPause();
-        },
-
-        handlePrevious() {
-            player.previous();
-        },
-
-        handleNext() {
-            player.next();
-        },
-
-        handleSkip() {
-            player.skip();
-        },
-
-        handleSeek(e) {
-            const value = e.detail?.value ?? e.target?.value;
-            if (value !== undefined) {
-                player.seek(parseFloat(value));
-            }
-        },
-
-        handleSeekWrapperClick(e) {
-            // If the click was on the slider itself, let it handle it
-            if (e.target.classList.contains('seek-slider')) return;
-
-            // Calculate seek position from click on wrapper
-            const wrapper = e.currentTarget;
-            const rect = wrapper.getBoundingClientRect();
-            const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-            const duration = this.stores.player.duration;
-            if (duration) {
-                player.seek(percent * duration);
-            }
-        },
-
-        handleVolumeChange(e) {
-            const value = e.detail?.value ?? e.target?.value;
-            if (value !== undefined) {
-                this._debouncedSetVolume(parseFloat(value));
-            }
-        },
-
-        handleToggleMute() {
-            player.toggleMute();
-        },
-
-        handleToggleShuffle() {
-            player.toggleShuffle();
-        },
-
-        handleCycleRepeat() {
-            player.cycleRepeatMode();
-        },
-
-        handleQueueItemClick(index) {
-            // Don't play unavailable songs when offline
-            const queue = this.stores.player.queue;
-            if (index >= 0 && index < queue.length) {
-                const song = queue[index];
-                if (this.isUnavailableOffline(song?.uuid)) {
-                    return;
-                }
-            }
-            player.playAtIndex(index);
-        },
-
-        /**
-         * Check if a song is unavailable in offline mode.
-         * Returns true if in offline mode and song is not cached.
-         */
-        isUnavailableOffline(uuid) {
-            if (!uuid) return false;
-            // Not in offline mode = nothing is unavailable
-            if (this.stores.offline.isOnline && !this.stores.offline.workOfflineMode) {
-                return false;
-            }
-            // In offline mode - check if song is cached
-            return !this.stores.offline.offlineSongUuids.has(uuid);
-        },
-
-        handleRemoveFromQueue(index, e) {
-            e.stopPropagation();
-            player.removeFromQueue(index);
-        },
-
-        formatTime(seconds) {
-            if (!seconds || isNaN(seconds)) return '0:00';
-            const mins = Math.floor(seconds / 60);
-            const secs = Math.floor(seconds % 60);
-            return `${mins}:${secs.toString().padStart(2, '0')}`;
-        },
-
-        getRepeatIcon() {
-            const mode = this.stores.player.repeatMode;
-            switch (mode) {
-                case 'one': return '🔂';
-                case 'all': return '🔁';
-                default: return '➡️';
-            }
-        },
-
-        getRepeatTitle() {
-            const mode = this.stores.player.repeatMode;
-            switch (mode) {
-                case 'one': return 'Repeat: One';
-                case 'all': return 'Repeat: All';
-                default: return 'Repeat: Off';
-            }
-        },
-
-        /**
-         * Get the current playback mode.
-         * Returns: 'default' | 'shuffle' | 'repeat' | 'repeat-one'
-         */
-        getPlaybackMode() {
-            const shuffle = this.stores.player.shuffle;
-            const repeat = this.stores.player.repeatMode;
-
-            if (shuffle) return 'shuffle';
-            if (repeat === 'one') return 'repeat-one';
-            if (repeat === 'all') return 'repeat';
-            return 'default';
-        },
-
-        /**
-         * Get icon for the current playback mode.
-         */
-        getPlaybackModeIcon() {
-            switch (this.getPlaybackMode()) {
-                case 'shuffle': return '🔀';
-                case 'repeat': return '🔁';
-                case 'repeat-one': return '🔂';
-                default: return '➡️';
-            }
-        },
-
-        /**
-         * Get title for the current playback mode.
-         */
-        getPlaybackModeTitle() {
-            switch (this.getPlaybackMode()) {
-                case 'shuffle': return 'Shuffle';
-                case 'repeat': return 'Repeat All';
-                case 'repeat-one': return 'Repeat One';
-                default: return 'Default';
-            }
-        },
-
-        /**
-         * Toggle playback mode menu visibility.
-         */
-        togglePlaybackModeMenu() {
-            this.state.showPlaybackModeMenu = !this.state.showPlaybackModeMenu;
-            // Close other menus
-            this.state.showEQMenu = false;
-            this.state.showVolumePopup = false;
-        },
-
-        /**
-         * Close playback mode menu.
-         */
-        closePlaybackModeMenu() {
-            this.state.showPlaybackModeMenu = false;
-        },
-
-        /**
-         * Set a specific playback mode.
-         */
-        setPlaybackMode(mode) {
-            switch (mode) {
-                case 'default':
-                    player.setShuffle(false);
-                    player.setRepeatMode('none');
-                    break;
-                case 'shuffle':
-                    player.setShuffle(true);
-                    player.setRepeatMode('none');
-                    break;
-                case 'repeat':
-                    player.setShuffle(false);
-                    player.setRepeatMode('all');
-                    break;
-                case 'repeat-one':
-                    player.setShuffle(false);
-                    player.setRepeatMode('one');
-                    break;
-            }
-            this.state.showPlaybackModeMenu = false;
-        },
-
-        handleClearQueue() {
-            this.showConfirmDialog(
-                'Clear Queue',
-                'Clear the entire queue?',
-                'clearQueue'
-            );
-        },
-
-        async doClearQueue() {
-            await player.clearQueue();
-        },
-
-        showConfirmDialog(title, message, action) {
-            this.state.confirmDialog = { show: true, title, message, action };
-        },
-
-        handleConfirmDialogConfirm() {
-            const { action } = this.state.confirmDialog;
-            this.state.confirmDialog = { show: false, title: '', message: '', action: null };
-
-            if (action === 'clearQueue') {
-                this.doClearQueue();
-            }
-        },
-
-        handleConfirmDialogCancel() {
-            this.state.confirmDialog = { show: false, title: '', message: '', action: null };
-        },
-
-        handleShowSaveDialog() {
-            this.state.showSaveDialog = true;
-            this.state.playlistName = '';
-            this.state.saveError = null;
-        },
-
-        handleCloseSaveDialog() {
-            this.state.showSaveDialog = false;
-        },
-
-        handlePlaylistNameChange(e) {
-            this.state.playlistName = e.target.value;
-        },
-
-        async handleSaveAsPlaylist() {
-            const name = this.state.playlistName.trim();
-            if (!name) {
-                this.state.saveError = 'Please enter a playlist name';
-                return;
-            }
-
-            this.state.isSaving = true;
-            this.state.saveError = null;
-
-            try {
-                const result = await player.saveQueueAsPlaylist(name);
-                this.state.showSaveDialog = false;
-                const msg = result.queued
-                    ? `Playlist "${result.name}" will be created when online.`
-                    : `Playlist "${result.name}" created!`;
-                const toast = document.querySelector('cl-toast');
-                if (toast) toast.show({ severity: 'success', summary: 'Playlist Saved', detail: msg });
-            } catch (e) {
-                this.state.saveError = e.message || 'Failed to save playlist';
-            } finally {
-                this.state.isSaving = false;
-            }
-        },
-
-        // Extend queue with AI
-        showExtendQueueDialog() {
-            this.state.showExtendDialog = true;
-            this.state.extendError = null;
-        },
-
-        closeExtendDialog() {
-            this.state.showExtendDialog = false;
-        },
-
-        async handleExtendQueue() {
-            this.state.isExtending = true;
-            this.state.extendError = null;
-
-            try {
-                const isTempQueue = this.stores.player.tempQueueMode;
-                let addedCount = 0;
-
-                if (isTempQueue) {
-                    // Temp queue mode: generate locally using seeds from local queue
-                    const queue = this.stores.player.queue;
-                    if (queue.length === 0) {
-                        this.state.extendError = 'Queue is empty';
-                        return;
-                    }
-
-                    // Use last 5 songs as seeds
-                    const seedCount = Math.min(5, queue.length);
-                    const seedUuids = queue.slice(-seedCount).map(s => s.uuid);
-                    const existingUuids = new Set(queue.map(s => s.uuid));
-
-                    // Generate similar songs (AI adapter, normalized -> { items })
-                    const result = await offlineApi.ai.generatePlaylist(seedUuids, {
-                        size: this.state.extendCount + existingUuids.size, // Request extra to filter dupes
-                        diversity: this.state.extendDiversity
-                    });
-
-                    if (result.error) {
-                        this.state.extendError = result.error;
-                        return;
-                    }
-
-                    // Filter out songs already in queue
-                    const newUuids = (result.items || [])
-                        .filter(item => !existingUuids.has(item.uuid))
-                        .slice(0, this.state.extendCount)
-                        .map(item => item.uuid);
-
-                    if (newUuids.length === 0) {
-                        this.state.extendError = 'No new similar songs found';
-                        return;
-                    }
-
-                    // Fetch full song data
-                    const songsResult = await offlineApi.songs.getBulk(newUuids);
-                    const songs = songsResult.items || songsResult || [];
-
-                    if (songs.length > 0) {
-                        await player.addToQueue(songs);
-                        addedCount = songs.length;
-                    }
-                } else {
-                    // Normal mode: use server-side extend
-                    const result = await offlineApi.ai.extendQueue(
-                        this.state.extendCount,
-                        this.state.extendDiversity
-                    );
-
-                    if (result.error) {
-                        this.state.extendError = result.error;
-                        return;
-                    }
-
-                    // Reload queue from server
-                    await player.reloadQueue();
-                    addedCount = result.added?.length || 0;
-                }
-
-                // Force visible range recalculation after queue grows
-                // (the untracked queue array grew; refresh() re-clamps the window)
-                requestAnimationFrame(() => {
-                    this._win.refresh();
-                });
-
-                this.state.showExtendDialog = false;
-                const toast = document.querySelector('cl-toast');
-                if (toast) {
-                    toast.show({
-                        severity: 'success',
-                        summary: 'Queue Extended',
-                        detail: `Added ${addedCount} similar songs`
-                    });
-                }
-            } catch (e) {
-                console.error('Failed to extend queue with AI:', e);
-                this.state.extendError = e.message || 'Failed to extend queue';
-            } finally {
-                this.state.isExtending = false;
-            }
-        },
-
-        async handleStartRadio() {
-            await player.startScaFromQueue();
-            // Queue may grow - recalculate visible range
-            requestAnimationFrame(() => this._win.refresh());
-        },
-
-        async handleStopRadio() {
-            await player.stopSca();
-        },
-
-        async handleToggleAiRadio() {
-            await player.toggleAiRadio();
-        },
-
-        async handleToggleTempQueue() {
-            await player.toggleTempQueueMode();
-            // Queue size changes - recalculate visible range
-            requestAnimationFrame(() => this._win.refresh());
-        },
-
-        async loadPlaylists() {
-            try {
-                // Use offline-api which handles caching favorites automatically
-                const result = await offlineApi.playlists.list();
-                // Handle different response formats
-                let playlistArray = [];
-                if (Array.isArray(result)) {
-                    playlistArray = result;
-                } else if (result && Array.isArray(result.playlists)) {
-                    playlistArray = result.playlists;
-                } else if (result && Array.isArray(result.items)) {
-                    playlistArray = result.items;
-                }
-                this.state.userPlaylists = playlistArray;
-
-                // Find or create Favorites playlist
-                let favorites = playlistArray.find(
-                    p => p.name === FAVORITES_PLAYLIST_NAME
-                );
-
-                if (!favorites) {
-                    // Create favorites playlist (requires online)
-                    favorites = await playlistsApi.create(FAVORITES_PLAYLIST_NAME, 'My favorite songs');
-                    this.state.userPlaylists = [favorites, ...this.state.userPlaylists];
-                }
-
-                // Favorites are now managed by offline store - no need to track locally
-            } catch (e) {
-                console.error('Failed to load playlists:', e);
-            }
-        },
-
-        isFavorite() {
-            const song = this.stores.player.currentSong;
-            // Use offline store's cached favorites
-            return song && offlineApi.isFavorite(song.uuid);
-        },
-
-        async toggleFavorite() {
-            const song = this.stores.player.currentSong;
-            if (!song) return;
-
-            // Get favorites playlist ID, loading playlists if needed
-            let favoritesPlaylistId = offlineApi.getFavoritesPlaylistId();
-            if (!favoritesPlaylistId) {
-                // Try loading playlists first
-                await this.loadPlaylists();
-                favoritesPlaylistId = offlineApi.getFavoritesPlaylistId();
-            }
-
-            if (!favoritesPlaylistId) {
-                console.error('Could not determine favorites playlist');
-                return;
-            }
-
-            try {
-                if (this.isFavorite()) {
-                    // Use offline-api which handles caching and queuing
-                    await offlineApi.playlists.removeSong(favoritesPlaylistId, song.uuid);
-                } else {
-                    await offlineApi.playlists.addSong(favoritesPlaylistId, song.uuid);
-                }
-            } catch (e) {
-                console.error('Failed to toggle favorite:', e);
-            }
-        },
-
-        handleShowAddToPlaylist() {
-            this.state.showAddToPlaylist = true;
-        },
-
-        handleCloseAddToPlaylist() {
-            this.state.showAddToPlaylist = false;
-        },
-
-        async addToPlaylist(playlistId) {
-            this.state.addingToPlaylist = true;
-            try {
-                // Selection mode: add all selected songs
-                if (this.state.selectionMode && this.state.selectedIndices.size > 0) {
-                    const indices = [...this.state.selectedIndices];
-                    const queue = this.stores.player.queue;
-                    const songUuids = indices.map(i => queue[i]?.uuid).filter(Boolean);
-
-                    if (songUuids.length > 0) {
-                        await offlineApi.playlists.addSongsBatch(playlistId, songUuids);
-                    }
-
-                    this.state.showAddToPlaylist = false;
-                    this.clearSelection();
-                    this.state.selectionMode = false;
-                } else {
-                    // Single song mode: add current song
-                    const song = this.stores.player.currentSong;
-                    if (!song) return;
-
-                    await offlineApi.playlists.addSong(playlistId, song.uuid);
-                    this.state.showAddToPlaylist = false;
-                }
-            } catch (e) {
-                console.error('Failed to add to playlist:', e);
-                const toast = document.querySelector('cl-toast');
-                if (toast) toast.show({ severity: 'error', summary: 'Error', detail: 'Failed to add to playlist' });
-            } finally {
-                this.state.addingToPlaylist = false;
-            }
-        },
-
-        // Jump-to navigation methods
-        handleJumpToFolder() {
-            const song = this.stores.player.currentSong;
-            if (!song) return;
-            // Use virtual_file (VFS path) if available, otherwise fall back to file
-            const filePath = song.virtual_file || song.file;
-            if (!filePath) return;
-            // Extract folder path from file path (remove filename)
-            const path = filePath.split('/').slice(0, -1).join('/') || '/';
-            window.location.hash = `/browse/path/${encodeURIComponent(path.replace(/^\//, ''))}/`;
-        },
-
-        handleJumpToAlbum() {
-            const song = this.stores.player.currentSong;
-            if (!song?.album) return;
-            // Navigate to hierarchy view filtered to artist + album
-            // Use encodeURIComponent to ensure spaces are %20 not +
-            let query = `album=${encodeURIComponent(song.album)}`;
-            if (song.artist) query = `artist=${encodeURIComponent(song.artist)}&${query}`;
-            window.location.hash = `/browse/?${query}`;
-        },
-
-        handleJumpToArtist() {
-            const song = this.stores.player.currentSong;
-            if (!song?.artist) return;
-            // Navigate to hierarchy view filtered to artist
-            // Use encodeURIComponent to ensure spaces are %20 not +
-            window.location.hash = `/browse/?artist=${encodeURIComponent(song.artist)}`;
-        },
-
-        // Queue reordering
-        handleMoveUp(index, e) {
-            e.stopPropagation();
-            if (index > 0) {
-                player.reorderQueue(index, index - 1);
-            }
-        },
-
-        handleMoveDown(index, e) {
-            e.stopPropagation();
-            const queue = this.stores.player.queue;
-            if (index < queue.length - 1) {
-                player.reorderQueue(index, index + 1);
-            }
-        },
-
-        _setupScrollListener() {
-            // The windowing controller (this._win) owns the range math and its
-            // own passive scroll/resize listeners. Here we (a) hand it the real
-            // scroll container once the ref resolves, and (b) attach a separate
-            // lightweight listener that keeps the jump-to-current button in sync
-            // as the user scrolls within the buffered window (the controller only
-            // fires onRange when the rendered range changes, which is too coarse
-            // for the button). Falls back to window capture if the wrapper is
-            // somehow absent, matching the prior behavior.
-            this._scrollHandler = rafThrottle(() => this._checkCurrentSongVisibility());
-
-            requestAnimationFrame(() => {
-                if (!this._isMounted) return;
-                const scrollWrapper = this.refs.queueScrollWrapper;
-                this._win.setScrollContainer(scrollWrapper || 'window');
-
-                if (scrollWrapper) {
-                    this._scrollTarget = scrollWrapper;
-                    scrollWrapper.addEventListener('scroll', this._scrollHandler, { passive: true });
-                } else {
-                    this._scrollTarget = window;
-                    window.addEventListener('scroll', this._scrollHandler, true);
-                }
-                this._checkCurrentSongVisibility();
-            });
-        },
-
-        /**
-         * Check if the current song is visible in the viewport.
-         * Updates showJumpToCurrent state accordingly.
-         */
-        _checkCurrentSongVisibility() {
-            const queueIndex = this.stores.player.queueIndex;
-            const visibleQueue = this.getVisibleQueue();
-            const scrollWrapper = this.refs.queueScrollWrapper;
-
-            if (queueIndex < 0 || visibleQueue.length === 0 || !scrollWrapper) {
-                this.state.showJumpToCurrent = false;
-                this._isCurrentInView = true;
-                return;
-            }
-
-            // Find the display index of the current song
-            const displayIndex = visibleQueue.findIndex(({ index }) => index === queueIndex);
-            if (displayIndex === -1) {
-                this.state.showJumpToCurrent = false;
-                this._isCurrentInView = true;
-                return;
-            }
-
-            const itemHeight = 48;
-            const headerHeight = 48;
-            const scrollTop = scrollWrapper.scrollTop;
-            const viewportHeight = scrollWrapper.clientHeight;
-
-            // Calculate where the current item is relative to scroll position
-            const itemTop = headerHeight + (displayIndex * itemHeight);
-            const itemBottom = itemTop + itemHeight;
-
-            // Check if item is in the visible scroll area
-            const isInView = itemTop >= scrollTop && itemBottom <= (scrollTop + viewportHeight);
-
-            // Update both instance variable (for subscription) and state (for UI)
-            this._isCurrentInView = isInView;
-            this.state.showJumpToCurrent = !isInView && visibleQueue.length > 0;
-
-            // Determine scroll direction: is current song above or below visible area?
-            if (!isInView) {
-                this.state.jumpDirection = itemTop < scrollTop ? 'up' : 'down';
-            }
-        },
-
-        /**
-         * Try to perform initial scroll to current song.
-         * If queue is loaded and DOM is ready, scroll immediately.
-         * Otherwise this will be called again when queue loads.
-         */
-        _tryInitialScroll(retryCount = 0) {
-            if (this._initialScrollDone) return;
-
-            const queue = this.stores.player.queue;
-            const queueIndex = this.stores.player.queueIndex;
-
-            // Queue not loaded yet - wait for subscription to call us again
-            if (queue.length === 0 || queueIndex < 0) return;
-
-            // Wait for DOM to update after queue loads
-            requestAnimationFrame(() => {
-                const scrollWrapper = this.refs.queueScrollWrapper;
-
-                // Check if scroll wrapper is ready (visible with height)
-                if (!scrollWrapper || scrollWrapper.clientHeight === 0) {
-                    // DOM not ready yet, retry a few times
-                    if (retryCount < 10) {
-                        setTimeout(() => this._tryInitialScroll(retryCount + 1), 50);
-                    }
-                    return;
-                }
-
-                this._initialScrollDone = true;
-                // Scroll to the current song, then update visible range for the new position
-                this._scrollToCurrentSong(false);
-                // Force immediate update of visible range after instant scroll
-                this._win.refresh();
-                this._checkCurrentSongVisibility();
-            });
-        },
-
-        /**
-         * Scroll the queue to center the current song.
-         * @param {boolean} smooth - Use smooth scrolling animation
-         */
-        _scrollToCurrentSong(smooth = true) {
-            const queueIndex = this.stores.player.queueIndex;
-            const visibleQueue = this.getVisibleQueue();
-            const scrollWrapper = this.refs.queueScrollWrapper;
-            if (queueIndex < 0 || visibleQueue.length === 0 || !scrollWrapper) return;
-
-            // Find the display index of the current song
-            const displayIndex = visibleQueue.findIndex(({ index }) => index === queueIndex);
-            if (displayIndex === -1) return;
-
-            const itemHeight = 48;
-            const headerHeight = 48;
-            const viewportHeight = scrollWrapper.clientHeight;
-
-            // Calculate scroll position to center the item
-            const itemOffset = headerHeight + (displayIndex * itemHeight);
-            const centerOffset = (viewportHeight - itemHeight) / 2;
-            const scrollTarget = itemOffset - centerOffset;
-
-            scrollWrapper.scrollTo({
-                top: Math.max(0, scrollTarget),
-                behavior: smooth ? 'smooth' : 'instant'
-            });
-
-            // Update visibility tracking after scroll
-            this._isCurrentInView = true;
-            this.state.showJumpToCurrent = false;
-        },
-
-        /**
-         * Handle jump to current button click.
-         */
-        handleJumpToCurrent() {
-            // In shuffle mode, use instant jump
-            const useSmooth = !this.stores.player.shuffle;
-            this._scrollToCurrentSong(useSmooth);
-        },
-
-        /**
-         * Track user interaction with the queue (prevents auto-scroll).
-         */
-        _trackQueueInteraction() {
-            this._lastQueueInteraction = Date.now();
-        },
-
-        /**
-         * Toggle EQ menu visibility.
-         */
-        toggleEQMenu() {
-            this.state.showEQMenu = !this.state.showEQMenu;
-            this.state.showSortMenu = false; // Close other menus
-        },
-
-        /**
-         * Close EQ menu.
-         */
-        closeEQMenu() {
-            this.state.showEQMenu = false;
-        },
-
-        /**
-         * Toggle volume popup visibility.
-         */
-        toggleVolumePopup() {
-            this.state.showVolumePopup = !this.state.showVolumePopup;
-            this.state.showEQMenu = false; // Close other menus
-        },
-
-        /**
-         * Close volume popup.
-         */
-        closeVolumePopup() {
-            this.state.showVolumePopup = false;
-        },
-
-        toggleSortMenu() {
-            this.state.showSortMenu = !this.state.showSortMenu;
-        },
-
-        closeSortMenu() {
-            this.state.showSortMenu = false;
-        },
-
-        async handleSortQueue(sortBy, order = 'asc') {
-            this.state.isSorting = true;
-            this.state.showSortMenu = false;
-
-            try {
-                // Use player.sortQueue which handles both temp queue and normal modes
-                await player.sortQueue(sortBy, order);
-            } catch (e) {
-                console.error('Failed to sort queue:', e);
-            } finally {
-                this.state.isSorting = false;
-            }
-        },
-
-        handleEQChange(e) {
-            const value = e.target.value;
-
-            if (value === '__off__') {
-                // Turn off EQ
-                player.setEQEnabled(false);
-            } else if (value === '__custom__' || value === '') {
-                // Custom mode - just ensure EQ is enabled
-                eqPresetsStore.setActivePreset(null);
-                if (!this.stores.player.eqEnabled) {
-                    player.setEQEnabled(true);
-                }
             } else {
-                // Select a preset
-                eqPresetsStore.setActivePreset(value);
+                // Single song mode: add current song
+                const song = this.stores.player.currentSong;
+                if (!song) return;
 
-                // Apply the preset to the player
-                const isPEQMode = localStorage.getItem('music-eq-advanced') === 'true';
-                if (isPEQMode) {
-                    const bands = eqPresetsStore.getActiveBands();
-                    player.setParametricEQ(bands, this._calculateAutoPreamp(bands));
-                }
-
-                // Ensure EQ is enabled
-                if (!this.stores.player.eqEnabled) {
-                    player.setEQEnabled(true);
-                }
+                await offlineApi.playlists.addSong(playlistId, song.uuid);
+                this.state.showAddToPlaylist = false;
             }
-        },
-
-        _calculateAutoPreamp(bands) {
-            if (!bands || bands.length === 0) return 0;
-
-            // Create temporary AudioContext if needed
-            if (!this._tempAudioContext) {
-                try {
-                    this._tempAudioContext = new (window.AudioContext || window.webkitAudioContext)();
-                } catch (e) {
-                    // Fallback to simple calculation if no AudioContext
-                    const maxGain = bands.reduce((max, band) => {
-                        if (['peaking', 'lowshelf', 'highshelf'].includes(band.type) && band.gain > 0) {
-                            return Math.max(max, band.gain);
-                        }
-                        return max;
-                    }, 0);
-                    return maxGain > 0 ? -maxGain : 0;
-                }
-            }
-
-            // Calculate combined frequency response and find peak
-            const numPoints = 256;
-            const minFreq = 20;
-            const maxFreq = 20000;
-            const logMin = Math.log10(minFreq);
-            const logMax = Math.log10(maxFreq);
-
-            // Generate log-spaced frequencies
-            const frequencies = new Float32Array(numPoints);
-            for (let i = 0; i < numPoints; i++) {
-                const logFreq = logMin + (i / (numPoints - 1)) * (logMax - logMin);
-                frequencies[i] = Math.pow(10, logFreq);
-            }
-
-            // Combined magnitude in dB
-            const combinedMag = new Float32Array(numPoints).fill(0);
-
-            for (const band of bands) {
-                const filter = this._tempAudioContext.createBiquadFilter();
-                filter.type = band.type;
-                filter.frequency.value = band.frequency;
-                filter.gain.value = band.gain;
-                if (['peaking', 'notch', 'bandpass', 'allpass', 'lowpass', 'highpass'].includes(band.type)) {
-                    filter.Q.value = band.q || 1.0;
-                }
-
-                const magResponse = new Float32Array(numPoints);
-                const phaseResponse = new Float32Array(numPoints);
-                filter.getFrequencyResponse(frequencies, magResponse, phaseResponse);
-
-                for (let i = 0; i < numPoints; i++) {
-                    combinedMag[i] += 20 * Math.log10(magResponse[i]);
-                }
-            }
-
-            // Find peak of combined response
-            let peakDb = 0;
-            for (let i = 0; i < numPoints; i++) {
-                if (combinedMag[i] > peakDb) {
-                    peakDb = combinedMag[i];
-                }
-            }
-
-            // Round to 0.1 dB precision
-            return peakDb > 0 ? -Math.ceil(peakDb * 10) / 10 : 0;
+        } catch (e) {
+            console.error('Failed to add to playlist:', e);
+            const toast = document.querySelector('cl-toast');
+            if (toast) toast.show({ severity: 'error', summary: 'Error', detail: 'Failed to add to playlist' });
+        } finally {
+            this.state.addingToPlaylist = false;
         }
-    },
+    }
+
+    // Jump-to navigation methods
+    handleJumpToFolder() {
+        const song = this.stores.player.currentSong;
+        if (!song) return;
+        // Use virtual_file (VFS path) if available, otherwise fall back to file
+        const filePath = song.virtual_file || song.file;
+        if (!filePath) return;
+        // Extract folder path from file path (remove filename)
+        const path = filePath.split('/').slice(0, -1).join('/') || '/';
+        window.location.hash = `/browse/path/${encodeURIComponent(path.replace(/^\//, ''))}/`;
+    }
+
+    handleJumpToAlbum() {
+        const song = this.stores.player.currentSong;
+        if (!song?.album) return;
+        // Navigate to hierarchy view filtered to artist + album
+        // Use encodeURIComponent to ensure spaces are %20 not +
+        let query = `album=${encodeURIComponent(song.album)}`;
+        if (song.artist) query = `artist=${encodeURIComponent(song.artist)}&${query}`;
+        window.location.hash = `/browse/?${query}`;
+    }
+
+    handleJumpToArtist() {
+        const song = this.stores.player.currentSong;
+        if (!song?.artist) return;
+        // Navigate to hierarchy view filtered to artist
+        // Use encodeURIComponent to ensure spaces are %20 not +
+        window.location.hash = `/browse/?artist=${encodeURIComponent(song.artist)}`;
+    }
+
+    // Queue reordering
+    handleMoveUp(index, e) {
+        e.stopPropagation();
+        if (index > 0) {
+            player.reorderQueue(index, index - 1);
+        }
+    }
+
+    handleMoveDown(index, e) {
+        e.stopPropagation();
+        const queue = this.stores.player.queue;
+        if (index < queue.length - 1) {
+            player.reorderQueue(index, index + 1);
+        }
+    }
+
+    _setupScrollListener() {
+        // The windowing controller (this._win) owns the range math and its
+        // own passive scroll/resize listeners. Here we (a) hand it the real
+        // scroll container once the ref resolves, and (b) attach a separate
+        // lightweight listener that keeps the jump-to-current button in sync
+        // as the user scrolls within the buffered window (the controller only
+        // fires onRange when the rendered range changes, which is too coarse
+        // for the button). Falls back to window capture if the wrapper is
+        // somehow absent, matching the prior behavior.
+        this._scrollHandler = rafThrottle(() => this._checkCurrentSongVisibility());
+
+        requestAnimationFrame(() => {
+            if (!this._isMounted) return;
+            const scrollWrapper = this.refs.queueScrollWrapper;
+            this._win.setScrollContainer(scrollWrapper || 'window');
+
+            if (scrollWrapper) {
+                this._scrollTarget = scrollWrapper;
+                scrollWrapper.addEventListener('scroll', this._scrollHandler, { passive: true });
+            } else {
+                this._scrollTarget = window;
+                window.addEventListener('scroll', this._scrollHandler, true);
+            }
+            this._checkCurrentSongVisibility();
+        });
+    }
+
+    /**
+     * Check if the current song is visible in the viewport.
+     * Updates showJumpToCurrent state accordingly.
+     */
+    _checkCurrentSongVisibility() {
+        const queueIndex = this.stores.player.queueIndex;
+        const visibleQueue = this.getVisibleQueue();
+        const scrollWrapper = this.refs.queueScrollWrapper;
+
+        if (queueIndex < 0 || visibleQueue.length === 0 || !scrollWrapper) {
+            this.state.showJumpToCurrent = false;
+            this._isCurrentInView = true;
+            return;
+        }
+
+        // Find the display index of the current song
+        const displayIndex = visibleQueue.findIndex(({ index }) => index === queueIndex);
+        if (displayIndex === -1) {
+            this.state.showJumpToCurrent = false;
+            this._isCurrentInView = true;
+            return;
+        }
+
+        const itemHeight = 48;
+        const headerHeight = 48;
+        const scrollTop = scrollWrapper.scrollTop;
+        const viewportHeight = scrollWrapper.clientHeight;
+
+        // Calculate where the current item is relative to scroll position
+        const itemTop = headerHeight + (displayIndex * itemHeight);
+        const itemBottom = itemTop + itemHeight;
+
+        // Check if item is in the visible scroll area
+        const isInView = itemTop >= scrollTop && itemBottom <= (scrollTop + viewportHeight);
+
+        // Update both instance variable (for subscription) and state (for UI)
+        this._isCurrentInView = isInView;
+        this.state.showJumpToCurrent = !isInView && visibleQueue.length > 0;
+
+        // Determine scroll direction: is current song above or below visible area?
+        if (!isInView) {
+            this.state.jumpDirection = itemTop < scrollTop ? 'up' : 'down';
+        }
+    }
+
+    /**
+     * Try to perform initial scroll to current song.
+     * If queue is loaded and DOM is ready, scroll immediately.
+     * Otherwise this will be called again when queue loads.
+     */
+    _tryInitialScroll(retryCount = 0) {
+        if (this._initialScrollDone) return;
+
+        const queue = this.stores.player.queue;
+        const queueIndex = this.stores.player.queueIndex;
+
+        // Queue not loaded yet - wait for subscription to call us again
+        if (queue.length === 0 || queueIndex < 0) return;
+
+        // Wait for DOM to update after queue loads
+        requestAnimationFrame(() => {
+            const scrollWrapper = this.refs.queueScrollWrapper;
+
+            // Check if scroll wrapper is ready (visible with height)
+            if (!scrollWrapper || scrollWrapper.clientHeight === 0) {
+                // DOM not ready yet, retry a few times
+                if (retryCount < 10) {
+                    setTimeout(() => this._tryInitialScroll(retryCount + 1), 50);
+                }
+                return;
+            }
+
+            this._initialScrollDone = true;
+            // Scroll to the current song, then update visible range for the new position
+            this._scrollToCurrentSong(false);
+            // Force immediate update of visible range after instant scroll
+            this._win.refresh();
+            this._checkCurrentSongVisibility();
+        });
+    }
+
+    /**
+     * Scroll the queue to center the current song.
+     * @param {boolean} smooth - Use smooth scrolling animation
+     */
+    _scrollToCurrentSong(smooth = true) {
+        const queueIndex = this.stores.player.queueIndex;
+        const visibleQueue = this.getVisibleQueue();
+        const scrollWrapper = this.refs.queueScrollWrapper;
+        if (queueIndex < 0 || visibleQueue.length === 0 || !scrollWrapper) return;
+
+        // Find the display index of the current song
+        const displayIndex = visibleQueue.findIndex(({ index }) => index === queueIndex);
+        if (displayIndex === -1) return;
+
+        const itemHeight = 48;
+        const headerHeight = 48;
+        const viewportHeight = scrollWrapper.clientHeight;
+
+        // Calculate scroll position to center the item
+        const itemOffset = headerHeight + (displayIndex * itemHeight);
+        const centerOffset = (viewportHeight - itemHeight) / 2;
+        const scrollTarget = itemOffset - centerOffset;
+
+        scrollWrapper.scrollTo({
+            top: Math.max(0, scrollTarget),
+            behavior: smooth ? 'smooth' : 'instant'
+        });
+
+        // Update visibility tracking after scroll
+        this._isCurrentInView = true;
+        this.state.showJumpToCurrent = false;
+    }
+
+    /**
+     * Handle jump to current button click.
+     */
+    handleJumpToCurrent() {
+        // In shuffle mode, use instant jump
+        const useSmooth = !this.stores.player.shuffle;
+        this._scrollToCurrentSong(useSmooth);
+    }
+
+    /**
+     * Track user interaction with the queue (prevents auto-scroll).
+     */
+    _trackQueueInteraction() {
+        this._lastQueueInteraction = Date.now();
+    }
+
+    /**
+     * Toggle EQ menu visibility.
+     */
+    toggleEQMenu() {
+        this.state.showEQMenu = !this.state.showEQMenu;
+        this.state.showSortMenu = false; // Close other menus
+    }
+
+    /**
+     * Close EQ menu.
+     */
+    closeEQMenu() {
+        this.state.showEQMenu = false;
+    }
+
+    /**
+     * Toggle volume popup visibility.
+     */
+    toggleVolumePopup() {
+        this.state.showVolumePopup = !this.state.showVolumePopup;
+        this.state.showEQMenu = false; // Close other menus
+    }
+
+    /**
+     * Close volume popup.
+     */
+    closeVolumePopup() {
+        this.state.showVolumePopup = false;
+    }
+
+    toggleSortMenu() {
+        this.state.showSortMenu = !this.state.showSortMenu;
+    }
+
+    closeSortMenu() {
+        this.state.showSortMenu = false;
+    }
+
+    async handleSortQueue(sortBy, order = 'asc') {
+        this.state.isSorting = true;
+        this.state.showSortMenu = false;
+
+        try {
+            // Use player.sortQueue which handles both temp queue and normal modes
+            await player.sortQueue(sortBy, order);
+        } catch (e) {
+            console.error('Failed to sort queue:', e);
+        } finally {
+            this.state.isSorting = false;
+        }
+    }
+
+    handleEQChange(e) {
+        const value = e.target.value;
+
+        if (value === '__off__') {
+            // Turn off EQ
+            player.setEQEnabled(false);
+        } else if (value === '__custom__' || value === '') {
+            // Custom mode - just ensure EQ is enabled
+            eqPresetsStore.setActivePreset(null);
+            if (!this.stores.player.eqEnabled) {
+                player.setEQEnabled(true);
+            }
+        } else {
+            // Select a preset
+            eqPresetsStore.setActivePreset(value);
+
+            // Apply the preset to the player
+            const isPEQMode = localStorage.getItem('music-eq-advanced') === 'true';
+            if (isPEQMode) {
+                const bands = eqPresetsStore.getActiveBands();
+                player.setParametricEQ(bands, this._calculateAutoPreamp(bands));
+            }
+
+            // Ensure EQ is enabled
+            if (!this.stores.player.eqEnabled) {
+                player.setEQEnabled(true);
+            }
+        }
+    }
+
+    _calculateAutoPreamp(bands) {
+        if (!bands || bands.length === 0) return 0;
+
+        // Create temporary AudioContext if needed
+        if (!this._tempAudioContext) {
+            try {
+                this._tempAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+            } catch (e) {
+                // Fallback to simple calculation if no AudioContext
+                const maxGain = bands.reduce((max, band) => {
+                    if (['peaking', 'lowshelf', 'highshelf'].includes(band.type) && band.gain > 0) {
+                        return Math.max(max, band.gain);
+                    }
+                    return max;
+                }, 0);
+                return maxGain > 0 ? -maxGain : 0;
+            }
+        }
+
+        // Calculate combined frequency response and find peak
+        const numPoints = 256;
+        const minFreq = 20;
+        const maxFreq = 20000;
+        const logMin = Math.log10(minFreq);
+        const logMax = Math.log10(maxFreq);
+
+        // Generate log-spaced frequencies
+        const frequencies = new Float32Array(numPoints);
+        for (let i = 0; i < numPoints; i++) {
+            const logFreq = logMin + (i / (numPoints - 1)) * (logMax - logMin);
+            frequencies[i] = Math.pow(10, logFreq);
+        }
+
+        // Combined magnitude in dB
+        const combinedMag = new Float32Array(numPoints).fill(0);
+
+        for (const band of bands) {
+            const filter = this._tempAudioContext.createBiquadFilter();
+            filter.type = band.type;
+            filter.frequency.value = band.frequency;
+            filter.gain.value = band.gain;
+            if (['peaking', 'notch', 'bandpass', 'allpass', 'lowpass', 'highpass'].includes(band.type)) {
+                filter.Q.value = band.q || 1.0;
+            }
+
+            const magResponse = new Float32Array(numPoints);
+            const phaseResponse = new Float32Array(numPoints);
+            filter.getFrequencyResponse(frequencies, magResponse, phaseResponse);
+
+            for (let i = 0; i < numPoints; i++) {
+                combinedMag[i] += 20 * Math.log10(magResponse[i]);
+            }
+        }
+
+        // Find peak of combined response
+        let peakDb = 0;
+        for (let i = 0; i < numPoints; i++) {
+            if (combinedMag[i] > peakDb) {
+                peakDb = combinedMag[i];
+            }
+        }
+
+        // Round to 0.1 dB precision
+        return peakDb > 0 ? -Math.ceil(peakDb * 10) / 10 : 0;
+    }
 
     template() {
         const song = this.stores.player.currentSong;
@@ -1655,9 +1655,9 @@ export default defineComponent('now-playing-page', {
                 `)}
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: flex;
             flex-direction: column;
@@ -2711,4 +2711,6 @@ export default defineComponent('now-playing-page', {
             }
         }
     `
-});
+}
+
+export default defineComponent('now-playing-page', NowPlayingPage);

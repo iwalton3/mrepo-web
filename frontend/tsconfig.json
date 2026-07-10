@@ -9,7 +9,13 @@
     "skipLibCheck": true,
     "strict": false,
     "noImplicitAny": false,
-    "declaration": false
+    "declaration": false,
+    "baseUrl": ".",
+    "paths": {
+      "vdx/*": ["./lib/*"],
+      "vdxui/*": ["./componentlib/*"],
+      "#profile": ["./profile.js"]
+    }
   },
   "include": [
     "./**/*.js"

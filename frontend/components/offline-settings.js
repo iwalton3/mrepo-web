@@ -5,7 +5,7 @@
  * and list of offline playlists.
  */
 
-import { defineComponent, html, when, each } from 'vdx/framework.js';
+import { defineComponent, html, when, each, Component } from 'vdx/framework.js';
 import offlineStore, {
     setWorkOfflineMode,
     formatBytes,
@@ -20,11 +20,13 @@ import * as offlineDb from '../offline/offline-db.js';
 import 'vdxui/overlay/dialog.js';
 import 'vdxui/button/button.js';
 
-export default defineComponent('offline-settings', {
-    stores: { offline: offlineStore },
+export class OfflineSettings extends Component {
+    static stores = { offline: offlineStore }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             offlinePlaylists: [],
             offlineFolders: [],
             individualSongs: [],  // Songs downloaded individually, not part of any playlist/folder
@@ -45,455 +47,453 @@ export default defineComponent('offline-settings', {
             pendingDeleteFolder: null,
             pendingDeleteSong: null
         };
-    },
+    }
 
     async mounted() {
         await this.loadData();
         await this.checkPersistentStorage();
-    },
+    }
 
-    methods: {
-        async loadData() {
-            this.state.isLoading = true;
-            try {
-                await initializeOfflineStore();
-                this.state.offlinePlaylists = await getOfflinePlaylists();
-                this.state.offlineFolders = await getOfflineFolders();
-                await this.loadIndividualSongs();
-                await refreshDiskUsage();
-            } catch (e) {
-                console.error('Failed to load offline data:', e);
-            }
-            this.state.isLoading = false;
-        },
+    async loadData() {
+        this.state.isLoading = true;
+        try {
+            await initializeOfflineStore();
+            this.state.offlinePlaylists = await getOfflinePlaylists();
+            this.state.offlineFolders = await getOfflineFolders();
+            await this.loadIndividualSongs();
+            await refreshDiskUsage();
+        } catch (e) {
+            console.error('Failed to load offline data:', e);
+        }
+        this.state.isLoading = false;
+    }
 
-        async loadIndividualSongs() {
-            try {
-                // Get individually downloaded files (with downloadSource and size)
-                const individualFiles = await offlineDb.getIndividuallyDownloadedFiles();
-                if (individualFiles.length === 0) {
-                    this.state.individualSongs = [];
-                    return;
-                }
-
-                // Get metadata for these songs
-                const uuids = individualFiles.map(f => f.uuid);
-                const metadata = await offlineDb.getSongsMetadata(uuids);
-
-                // Build maps for downloadSource and size
-                const sourceMap = new Map(individualFiles.map(f => [f.uuid, f.downloadSource]));
-                const sizeMap = new Map(individualFiles.map(f => [f.uuid, f.size || 0]));
-
-                // Add downloadSource and size to each metadata item
-                this.state.individualSongs = metadata
-                    .filter(m => m && !m.unavailable)
-                    .map(m => ({
-                        ...m,
-                        downloadSource: sourceMap.get(m.uuid) || { type: 'browse', path: 'Unknown' },
-                        fileSize: sizeMap.get(m.uuid) || 0
-                    }));
-            } catch (e) {
-                console.error('Failed to load individual songs:', e);
+    async loadIndividualSongs() {
+        try {
+            // Get individually downloaded files (with downloadSource and size)
+            const individualFiles = await offlineDb.getIndividuallyDownloadedFiles();
+            if (individualFiles.length === 0) {
                 this.state.individualSongs = [];
-            }
-        },
-
-        // Group individual songs by download source
-        getGroupedIndividualSongs() {
-            const songs = this.state.individualSongs;
-            if (!songs.length) return [];
-
-            // Helper to get display name for a download source
-            const getSourceName = (source) => {
-                if (!source) return 'Unknown';
-                if (source.type === 'playlist') {
-                    return `Playlist: ${source.playlistName || 'Unknown'}`;
-                }
-                return source.path || 'Unknown';
-            };
-
-            // Group by download source
-            const groups = new Map();
-            for (const song of songs) {
-                const sourceName = getSourceName(song.downloadSource);
-                if (!groups.has(sourceName)) {
-                    groups.set(sourceName, { songs: [], totalSize: 0 });
-                }
-                const group = groups.get(sourceName);
-                group.songs.push(song);
-                group.totalSize += song.fileSize || 0;
+                return;
             }
 
-            // Convert to array sorted by name
-            return Array.from(groups.entries())
-                .sort((a, b) => a[0].localeCompare(b[0]))
-                .map(([path, { songs: groupSongs, totalSize }]) => ({ path, songs: groupSongs, totalSize }));
-        },
+            // Get metadata for these songs
+            const uuids = individualFiles.map(f => f.uuid);
+            const metadata = await offlineDb.getSongsMetadata(uuids);
 
-        toggleGroupExpanded(path) {
-            const expanded = new Set(this.state.expandedGroups || []);
-            if (expanded.has(path)) {
-                expanded.delete(path);
-            } else {
-                expanded.add(path);
+            // Build maps for downloadSource and size
+            const sourceMap = new Map(individualFiles.map(f => [f.uuid, f.downloadSource]));
+            const sizeMap = new Map(individualFiles.map(f => [f.uuid, f.size || 0]));
+
+            // Add downloadSource and size to each metadata item
+            this.state.individualSongs = metadata
+                .filter(m => m && !m.unavailable)
+                .map(m => ({
+                    ...m,
+                    downloadSource: sourceMap.get(m.uuid) || { type: 'browse', path: 'Unknown' },
+                    fileSize: sizeMap.get(m.uuid) || 0
+                }));
+        } catch (e) {
+            console.error('Failed to load individual songs:', e);
+            this.state.individualSongs = [];
+        }
+    }
+
+    // Group individual songs by download source
+    getGroupedIndividualSongs() {
+        const songs = this.state.individualSongs;
+        if (!songs.length) return [];
+
+        // Helper to get display name for a download source
+        const getSourceName = (source) => {
+            if (!source) return 'Unknown';
+            if (source.type === 'playlist') {
+                return `Playlist: ${source.playlistName || 'Unknown'}`;
             }
-            this.state.expandedGroups = expanded;
-        },
+            return source.path || 'Unknown';
+        };
 
-        async handleDeleteGroupSongs(group) {
-            const count = group.songs.length;
-            this.state.confirmDialog = {
-                show: true,
-                title: 'Delete All Songs from Source',
-                message: `Delete ${count} song${count === 1 ? '' : 's'} downloaded from "${group.path}"? This will remove the audio files but keep them in your library.`,
-                severity: 'danger',
-                confirmLabel: 'Delete All',
-                action: async () => {
-                    this.state.deletingGroupPath = group.path;
-                    try {
-                        for (const song of group.songs) {
-                            await deleteSong(song.uuid);
-                        }
-                        await this.loadIndividualSongs();
-                        await refreshDiskUsage();
-                    } catch (e) {
-                        console.error('Failed to delete group songs:', e);
-                    }
-                    this.state.deletingGroupPath = null;
-                }
-            };
-        },
+        // Group by download source
+        const groups = new Map();
+        for (const song of songs) {
+            const sourceName = getSourceName(song.downloadSource);
+            if (!groups.has(sourceName)) {
+                groups.set(sourceName, { songs: [], totalSize: 0 });
+            }
+            const group = groups.get(sourceName);
+            group.songs.push(song);
+            group.totalSize += song.fileSize || 0;
+        }
 
-        async handleWorkOfflineToggle(e) {
-            const enabled = e.target.checked;
-            setWorkOfflineMode(enabled);
+        // Convert to array sorted by name
+        return Array.from(groups.entries())
+            .sort((a, b) => a[0].localeCompare(b[0]))
+            .map(([path, { songs: groupSongs, totalSize }]) => ({ path, songs: groupSongs, totalSize }));
+    }
 
-            // If disabling work offline and we're online, trigger sync
-            if (!enabled && navigator.onLine) {
-                this.state.isSyncing = true;
-                this.state.syncStatus = 'Syncing...';
+    toggleGroupExpanded(path) {
+        const expanded = new Set(this.state.expandedGroups || []);
+        if (expanded.has(path)) {
+            expanded.delete(path);
+        } else {
+            expanded.add(path);
+        }
+        this.state.expandedGroups = expanded;
+    }
+
+    async handleDeleteGroupSongs(group) {
+        const count = group.songs.length;
+        this.state.confirmDialog = {
+            show: true,
+            title: 'Delete All Songs from Source',
+            message: `Delete ${count} song${count === 1 ? '' : 's'} downloaded from "${group.path}"? This will remove the audio files but keep them in your library.`,
+            severity: 'danger',
+            confirmLabel: 'Delete All',
+            action: async () => {
+                this.state.deletingGroupPath = group.path;
                 try {
-                    const result = await fullSync();
-                    if (result && result.synced !== undefined) {
-                        this.state.syncStatus = `Synced ${result.synced} changes`;
-                    } else {
-                        this.state.syncStatus = 'Synced';
+                    for (const song of group.songs) {
+                        await deleteSong(song.uuid);
                     }
+                    await this.loadIndividualSongs();
+                    await refreshDiskUsage();
                 } catch (e) {
-                    console.error('Auto-sync failed:', e);
-                    this.state.syncStatus = 'Sync failed';
+                    console.error('Failed to delete group songs:', e);
                 }
-                this.state.isSyncing = false;
-                // Clear status after a delay
-                setTimeout(() => { this.state.syncStatus = ''; }, 3000);
+                this.state.deletingGroupPath = null;
             }
-        },
+        };
+    }
 
-        async handleSync() {
+    async handleWorkOfflineToggle(e) {
+        const enabled = e.target.checked;
+        setWorkOfflineMode(enabled);
+
+        // If disabling work offline and we're online, trigger sync
+        if (!enabled && navigator.onLine) {
             this.state.isSyncing = true;
             this.state.syncStatus = 'Syncing...';
-
             try {
                 const result = await fullSync();
                 if (result && result.synced !== undefined) {
                     this.state.syncStatus = `Synced ${result.synced} changes`;
                 } else {
-                    this.state.syncStatus = 'Sync complete';
+                    this.state.syncStatus = 'Synced';
                 }
             } catch (e) {
+                console.error('Auto-sync failed:', e);
                 this.state.syncStatus = 'Sync failed';
             }
-
             this.state.isSyncing = false;
-            setTimeout(() => this.state.syncStatus = '', 3000);
-        },
-
-        handleDiscardChanges() {
-            this.showConfirmDialog(
-                'Discard Pending Changes',
-                'Discard all pending offline changes? These changes will be lost and cannot be recovered.',
-                'discardChanges',
-                'Discard'
-            );
-        },
-
-        async doDiscardChanges() {
-            this.state.isSyncing = true;
-            try {
-                const result = await discardPendingWrites();
-                this.state.syncStatus = `Discarded ${result.discarded} changes`;
-            } catch (e) {
-                this.state.syncStatus = 'Failed to discard';
-            }
-            this.state.isSyncing = false;
-            setTimeout(() => this.state.syncStatus = '', 3000);
-        },
-
-        handleDeletePlaylist(playlist) {
-            this.state.pendingDeletePlaylist = playlist;
-            this.showConfirmDialog(
-                'Remove Offline Playlist',
-                `Remove "${playlist.name}" from offline storage? This will free up ${formatBytes(playlist.totalSize)}.`,
-                'deletePlaylist',
-                'Remove'
-            );
-        },
-
-        async doDeletePlaylist() {
-            const playlist = this.state.pendingDeletePlaylist;
-            if (!playlist) return;
-
-            try {
-                await deleteOfflinePlaylist(playlist.id);
-                this.state.offlinePlaylists = await getOfflinePlaylists();
-                // Notify playlists page to refresh
-                notifyPlaylistsChanged();
-            } catch (e) {
-                console.error('Failed to delete offline playlist:', e);
-            }
-            this.state.pendingDeletePlaylist = null;
-        },
-
-        handleDeleteFolder(folder) {
-            this.state.pendingDeleteFolder = folder;
-            this.showConfirmDialog(
-                'Remove Offline Folder',
-                `Remove "${folder.name}" from offline storage? This will free up ${formatBytes(folder.totalSize)}. Songs not in other playlists or folders will be deleted.`,
-                'deleteFolder',
-                'Remove'
-            );
-        },
-
-        async doDeleteFolder() {
-            const folder = this.state.pendingDeleteFolder;
-            if (!folder) return;
-
-            this.state.deletingFolderId = folder.id;
-            try {
-                await deleteOfflineFolderDownload(folder.id);
-                this.state.offlineFolders = await getOfflineFolders();
-            } catch (e) {
-                console.error('Failed to delete offline folder:', e);
-            }
-            this.state.deletingFolderId = null;
-            this.state.pendingDeleteFolder = null;
-        },
-
-        handleDeleteIndividualSong(song) {
-            this.state.pendingDeleteSong = song;
-            this.showConfirmDialog(
-                'Remove Downloaded Song',
-                `Remove "${song.title}" by ${song.artist} from offline storage?`,
-                'deleteSong',
-                'Remove'
-            );
-        },
-
-        async doDeleteSong() {
-            const song = this.state.pendingDeleteSong;
-            if (!song) return;
-
-            this.state.deletingIndividualUuid = song.uuid;
-            try {
-                await deleteSong(song.uuid);
-                await this.loadIndividualSongs();
-                await refreshDiskUsage();
-            } catch (e) {
-                console.error('Failed to delete individual song:', e);
-            }
-            this.state.deletingIndividualUuid = null;
-            this.state.pendingDeleteSong = null;
-        },
-
-        getFolderIcon(folder) {
-            return folder.type === 'path' ? '📁' : '🏷️';
-        },
-
-        async handleCleanup() {
-            this.state.isClearing = true;
-            try {
-                const result = await cleanupOrphanedFiles();
-                const toast = document.querySelector('cl-toast');
-                if (result.removedCount > 0) {
-                    if (toast) toast.show({ severity: 'success', summary: 'Cleanup Complete', detail: `Cleaned up ${result.removedCount} orphaned files, freed ${formatBytes(result.freedBytes)}` });
-                } else {
-                    if (toast) toast.show({ severity: 'info', summary: 'Cleanup', detail: 'No orphaned files found' });
-                }
-            } catch (e) {
-                console.error('Failed to cleanup:', e);
-            }
-            this.state.isClearing = false;
-        },
-
-        async handleRefreshPlaylistMetadata(playlist) {
-            if (!navigator.onLine) {
-                const toast = document.querySelector('cl-toast');
-                if (toast) toast.show({ severity: 'error', summary: 'Offline', detail: 'Cannot refresh metadata while offline' });
-                return;
-            }
-
-            this.state.refreshingPlaylistId = playlist.id;
-            this.state.syncStatus = 'Refreshing metadata...';
-
-            try {
-                const result = await refreshPlaylistMetadata(playlist.id, (progress) => {
-                    this.state.syncStatus = `Refreshing... ${progress.current}/${progress.total}`;
-                });
-
-                if (result.success) {
-                    this.state.syncStatus = `Updated ${result.updated} songs`;
-                    await computeOfflineFilterSets();
-                } else {
-                    this.state.syncStatus = 'Refresh failed: ' + (result.reason || 'Unknown error');
-                }
-            } catch (e) {
-                console.error('Metadata refresh failed:', e);
-                this.state.syncStatus = 'Refresh failed';
-            }
-
-            this.state.refreshingPlaylistId = null;
-            setTimeout(() => this.state.syncStatus = '', 3000);
-        },
-
-        async handleRefreshAllMetadata() {
-            if (!navigator.onLine) {
-                const toast = document.querySelector('cl-toast');
-                if (toast) toast.show({ severity: 'error', summary: 'Offline', detail: 'Cannot refresh metadata while offline' });
-                return;
-            }
-
-            this.state.isRefreshingMetadata = true;
-            this.state.syncStatus = 'Refreshing all metadata...';
-
-            try {
-                const result = await refreshAllMetadata((progress) => {
-                    this.state.syncStatus = `Refreshing... ${progress.current}/${progress.total}`;
-                });
-
-                if (result.success) {
-                    this.state.syncStatus = `Updated ${result.updated} songs`;
-                    await computeOfflineFilterSets();
-                } else {
-                    this.state.syncStatus = 'Refresh failed: ' + (result.reason || 'Unknown error');
-                }
-            } catch (e) {
-                console.error('Full metadata refresh failed:', e);
-                this.state.syncStatus = 'Refresh failed';
-            }
-
-            this.state.isRefreshingMetadata = false;
-            setTimeout(() => this.state.syncStatus = '', 3000);
-        },
-
-        async checkPersistentStorage() {
-            if (navigator.storage && navigator.storage.persisted) {
-                this.state.isPersisted = await navigator.storage.persisted();
-                this.state.canRequestPersist = !this.state.isPersisted && !!navigator.storage.persist;
-            }
-        },
-
-        async handleRequestPersist() {
-            if (!navigator.storage || !navigator.storage.persist) return;
-
-            try {
-                const granted = await navigator.storage.persist();
-                this.state.isPersisted = granted;
-                this.state.canRequestPersist = !granted;
-
-                // Refresh storage estimate to show updated quota
-                await refreshDiskUsage();
-
-                const toast = document.querySelector('cl-toast');
-                if (granted) {
-                    if (toast) toast.show({ severity: 'success', summary: 'Storage Granted', detail: 'Persistent storage granted! Your offline data will be preserved.' });
-                } else {
-                    if (toast) toast.show({ severity: 'warn', summary: 'Storage Denied', detail: 'Persistent storage was not granted. The browser may clear offline data when storage is low.' });
-                }
-            } catch (e) {
-                console.error('Failed to request persistent storage:', e);
-            }
-        },
-
-        handleClearAll() {
-            this.showConfirmDialog(
-                'Clear All Offline Data',
-                'Clear ALL offline data? This will remove all cached playlists, songs, and settings.',
-                'clearAll',
-                'Clear All'
-            );
-        },
-
-        async doClearAll() {
-            this.state.isClearing = true;
-            try {
-                await offlineDb.clearAllData();
-                await this.loadData();
-            } catch (e) {
-                console.error('Failed to clear all data:', e);
-            }
-            this.state.isClearing = false;
-        },
-
-        showConfirmDialog(title, message, action, confirmLabel = 'Confirm') {
-            this.state.confirmDialog = { show: true, title, message, action, confirmLabel, severity: 'danger' };
-        },
-
-        handleConfirmDialogConfirm() {
-            const { action } = this.state.confirmDialog;
-            this.state.confirmDialog = { show: false, title: '', message: '', action: null, confirmLabel: 'Confirm', severity: 'danger' };
-
-            if (action === 'deletePlaylist') {
-                this.doDeletePlaylist();
-            } else if (action === 'deleteFolder') {
-                this.doDeleteFolder();
-            } else if (action === 'deleteSong') {
-                this.doDeleteSong();
-            } else if (action === 'clearAll') {
-                this.doClearAll();
-            } else if (action === 'discardChanges') {
-                this.doDiscardChanges();
-            }
-        },
-
-        handleConfirmDialogCancel() {
-            this.state.confirmDialog = { show: false, title: '', message: '', action: null, confirmLabel: 'Confirm', severity: 'danger' };
-            this.state.pendingDeletePlaylist = null;
-            this.state.pendingDeleteFolder = null;
-            this.state.pendingDeleteSong = null;
-        },
-
-        formatLastSync() {
-            const lastSync = this.stores.offline.lastSyncTime;
-            if (!lastSync) return 'Never';
-
-            const diff = Date.now() - lastSync;
-            if (diff < 60000) return 'Just now';
-            if (diff < 3600000) return `${Math.floor(diff / 60000)} minutes ago`;
-            if (diff < 86400000) return `${Math.floor(diff / 3600000)} hours ago`;
-            return new Date(lastSync).toLocaleDateString();
-        },
-
-        getCacheStatusText() {
-            const status = this.stores.offline.cacheStatus;
-            const progress = this.stores.offline.cacheProgress;
-
-            switch (status) {
-                case 'checking':
-                    return 'Checking cache...';
-                case 'caching':
-                    if (progress) {
-                        return `Caching: ${progress.current}/${progress.total}`;
-                    }
-                    return 'Caching...';
-                case 'ready':
-                    return `Ready (v${this.stores.offline.cacheVersion || '?'})`;
-                case 'error':
-                    return 'Cache error';
-                default:
-                    return 'Unknown';
-            }
+            // Clear status after a delay
+            setTimeout(() => { this.state.syncStatus = ''; }, 3000);
         }
-    },
+    }
+
+    async handleSync() {
+        this.state.isSyncing = true;
+        this.state.syncStatus = 'Syncing...';
+
+        try {
+            const result = await fullSync();
+            if (result && result.synced !== undefined) {
+                this.state.syncStatus = `Synced ${result.synced} changes`;
+            } else {
+                this.state.syncStatus = 'Sync complete';
+            }
+        } catch (e) {
+            this.state.syncStatus = 'Sync failed';
+        }
+
+        this.state.isSyncing = false;
+        setTimeout(() => this.state.syncStatus = '', 3000);
+    }
+
+    handleDiscardChanges() {
+        this.showConfirmDialog(
+            'Discard Pending Changes',
+            'Discard all pending offline changes? These changes will be lost and cannot be recovered.',
+            'discardChanges',
+            'Discard'
+        );
+    }
+
+    async doDiscardChanges() {
+        this.state.isSyncing = true;
+        try {
+            const result = await discardPendingWrites();
+            this.state.syncStatus = `Discarded ${result.discarded} changes`;
+        } catch (e) {
+            this.state.syncStatus = 'Failed to discard';
+        }
+        this.state.isSyncing = false;
+        setTimeout(() => this.state.syncStatus = '', 3000);
+    }
+
+    handleDeletePlaylist(playlist) {
+        this.state.pendingDeletePlaylist = playlist;
+        this.showConfirmDialog(
+            'Remove Offline Playlist',
+            `Remove "${playlist.name}" from offline storage? This will free up ${formatBytes(playlist.totalSize)}.`,
+            'deletePlaylist',
+            'Remove'
+        );
+    }
+
+    async doDeletePlaylist() {
+        const playlist = this.state.pendingDeletePlaylist;
+        if (!playlist) return;
+
+        try {
+            await deleteOfflinePlaylist(playlist.id);
+            this.state.offlinePlaylists = await getOfflinePlaylists();
+            // Notify playlists page to refresh
+            notifyPlaylistsChanged();
+        } catch (e) {
+            console.error('Failed to delete offline playlist:', e);
+        }
+        this.state.pendingDeletePlaylist = null;
+    }
+
+    handleDeleteFolder(folder) {
+        this.state.pendingDeleteFolder = folder;
+        this.showConfirmDialog(
+            'Remove Offline Folder',
+            `Remove "${folder.name}" from offline storage? This will free up ${formatBytes(folder.totalSize)}. Songs not in other playlists or folders will be deleted.`,
+            'deleteFolder',
+            'Remove'
+        );
+    }
+
+    async doDeleteFolder() {
+        const folder = this.state.pendingDeleteFolder;
+        if (!folder) return;
+
+        this.state.deletingFolderId = folder.id;
+        try {
+            await deleteOfflineFolderDownload(folder.id);
+            this.state.offlineFolders = await getOfflineFolders();
+        } catch (e) {
+            console.error('Failed to delete offline folder:', e);
+        }
+        this.state.deletingFolderId = null;
+        this.state.pendingDeleteFolder = null;
+    }
+
+    handleDeleteIndividualSong(song) {
+        this.state.pendingDeleteSong = song;
+        this.showConfirmDialog(
+            'Remove Downloaded Song',
+            `Remove "${song.title}" by ${song.artist} from offline storage?`,
+            'deleteSong',
+            'Remove'
+        );
+    }
+
+    async doDeleteSong() {
+        const song = this.state.pendingDeleteSong;
+        if (!song) return;
+
+        this.state.deletingIndividualUuid = song.uuid;
+        try {
+            await deleteSong(song.uuid);
+            await this.loadIndividualSongs();
+            await refreshDiskUsage();
+        } catch (e) {
+            console.error('Failed to delete individual song:', e);
+        }
+        this.state.deletingIndividualUuid = null;
+        this.state.pendingDeleteSong = null;
+    }
+
+    getFolderIcon(folder) {
+        return folder.type === 'path' ? '📁' : '🏷️';
+    }
+
+    async handleCleanup() {
+        this.state.isClearing = true;
+        try {
+            const result = await cleanupOrphanedFiles();
+            const toast = document.querySelector('cl-toast');
+            if (result.removedCount > 0) {
+                if (toast) toast.show({ severity: 'success', summary: 'Cleanup Complete', detail: `Cleaned up ${result.removedCount} orphaned files, freed ${formatBytes(result.freedBytes)}` });
+            } else {
+                if (toast) toast.show({ severity: 'info', summary: 'Cleanup', detail: 'No orphaned files found' });
+            }
+        } catch (e) {
+            console.error('Failed to cleanup:', e);
+        }
+        this.state.isClearing = false;
+    }
+
+    async handleRefreshPlaylistMetadata(playlist) {
+        if (!navigator.onLine) {
+            const toast = document.querySelector('cl-toast');
+            if (toast) toast.show({ severity: 'error', summary: 'Offline', detail: 'Cannot refresh metadata while offline' });
+            return;
+        }
+
+        this.state.refreshingPlaylistId = playlist.id;
+        this.state.syncStatus = 'Refreshing metadata...';
+
+        try {
+            const result = await refreshPlaylistMetadata(playlist.id, (progress) => {
+                this.state.syncStatus = `Refreshing... ${progress.current}/${progress.total}`;
+            });
+
+            if (result.success) {
+                this.state.syncStatus = `Updated ${result.updated} songs`;
+                await computeOfflineFilterSets();
+            } else {
+                this.state.syncStatus = 'Refresh failed: ' + (result.reason || 'Unknown error');
+            }
+        } catch (e) {
+            console.error('Metadata refresh failed:', e);
+            this.state.syncStatus = 'Refresh failed';
+        }
+
+        this.state.refreshingPlaylistId = null;
+        setTimeout(() => this.state.syncStatus = '', 3000);
+    }
+
+    async handleRefreshAllMetadata() {
+        if (!navigator.onLine) {
+            const toast = document.querySelector('cl-toast');
+            if (toast) toast.show({ severity: 'error', summary: 'Offline', detail: 'Cannot refresh metadata while offline' });
+            return;
+        }
+
+        this.state.isRefreshingMetadata = true;
+        this.state.syncStatus = 'Refreshing all metadata...';
+
+        try {
+            const result = await refreshAllMetadata((progress) => {
+                this.state.syncStatus = `Refreshing... ${progress.current}/${progress.total}`;
+            });
+
+            if (result.success) {
+                this.state.syncStatus = `Updated ${result.updated} songs`;
+                await computeOfflineFilterSets();
+            } else {
+                this.state.syncStatus = 'Refresh failed: ' + (result.reason || 'Unknown error');
+            }
+        } catch (e) {
+            console.error('Full metadata refresh failed:', e);
+            this.state.syncStatus = 'Refresh failed';
+        }
+
+        this.state.isRefreshingMetadata = false;
+        setTimeout(() => this.state.syncStatus = '', 3000);
+    }
+
+    async checkPersistentStorage() {
+        if (navigator.storage && navigator.storage.persisted) {
+            this.state.isPersisted = await navigator.storage.persisted();
+            this.state.canRequestPersist = !this.state.isPersisted && !!navigator.storage.persist;
+        }
+    }
+
+    async handleRequestPersist() {
+        if (!navigator.storage || !navigator.storage.persist) return;
+
+        try {
+            const granted = await navigator.storage.persist();
+            this.state.isPersisted = granted;
+            this.state.canRequestPersist = !granted;
+
+            // Refresh storage estimate to show updated quota
+            await refreshDiskUsage();
+
+            const toast = document.querySelector('cl-toast');
+            if (granted) {
+                if (toast) toast.show({ severity: 'success', summary: 'Storage Granted', detail: 'Persistent storage granted! Your offline data will be preserved.' });
+            } else {
+                if (toast) toast.show({ severity: 'warn', summary: 'Storage Denied', detail: 'Persistent storage was not granted. The browser may clear offline data when storage is low.' });
+            }
+        } catch (e) {
+            console.error('Failed to request persistent storage:', e);
+        }
+    }
+
+    handleClearAll() {
+        this.showConfirmDialog(
+            'Clear All Offline Data',
+            'Clear ALL offline data? This will remove all cached playlists, songs, and settings.',
+            'clearAll',
+            'Clear All'
+        );
+    }
+
+    async doClearAll() {
+        this.state.isClearing = true;
+        try {
+            await offlineDb.clearAllData();
+            await this.loadData();
+        } catch (e) {
+            console.error('Failed to clear all data:', e);
+        }
+        this.state.isClearing = false;
+    }
+
+    showConfirmDialog(title, message, action, confirmLabel = 'Confirm') {
+        this.state.confirmDialog = { show: true, title, message, action, confirmLabel, severity: 'danger' };
+    }
+
+    handleConfirmDialogConfirm() {
+        const { action } = this.state.confirmDialog;
+        this.state.confirmDialog = { show: false, title: '', message: '', action: null, confirmLabel: 'Confirm', severity: 'danger' };
+
+        if (action === 'deletePlaylist') {
+            this.doDeletePlaylist();
+        } else if (action === 'deleteFolder') {
+            this.doDeleteFolder();
+        } else if (action === 'deleteSong') {
+            this.doDeleteSong();
+        } else if (action === 'clearAll') {
+            this.doClearAll();
+        } else if (action === 'discardChanges') {
+            this.doDiscardChanges();
+        }
+    }
+
+    handleConfirmDialogCancel() {
+        this.state.confirmDialog = { show: false, title: '', message: '', action: null, confirmLabel: 'Confirm', severity: 'danger' };
+        this.state.pendingDeletePlaylist = null;
+        this.state.pendingDeleteFolder = null;
+        this.state.pendingDeleteSong = null;
+    }
+
+    formatLastSync() {
+        const lastSync = this.stores.offline.lastSyncTime;
+        if (!lastSync) return 'Never';
+
+        const diff = Date.now() - lastSync;
+        if (diff < 60000) return 'Just now';
+        if (diff < 3600000) return `${Math.floor(diff / 60000)} minutes ago`;
+        if (diff < 86400000) return `${Math.floor(diff / 3600000)} hours ago`;
+        return new Date(lastSync).toLocaleDateString();
+    }
+
+    getCacheStatusText() {
+        const status = this.stores.offline.cacheStatus;
+        const progress = this.stores.offline.cacheProgress;
+
+        switch (status) {
+            case 'checking':
+                return 'Checking cache...';
+            case 'caching':
+                if (progress) {
+                    return `Caching: ${progress.current}/${progress.total}`;
+                }
+                return 'Caching...';
+            case 'ready':
+                return `Ready (v${this.stores.offline.cacheVersion || '?'})`;
+            case 'error':
+                return 'Cache error';
+            default:
+                return 'Unknown';
+        }
+    }
 
     template() {
         const { offlinePlaylists, offlineFolders, individualSongs, isLoading, isSyncing, isClearing, isRefreshingMetadata, refreshingPlaylistId, deletingFolderId, deletingIndividualUuid, syncStatus, isPersisted, canRequestPersist, confirmDialog } = this.state;
@@ -743,9 +743,9 @@ export default defineComponent('offline-settings', {
                 `)}
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -1387,4 +1387,6 @@ export default defineComponent('offline-settings', {
             cursor: not-allowed;
         }
     `
-});
+}
+
+export default defineComponent('offline-settings', OfflineSettings);

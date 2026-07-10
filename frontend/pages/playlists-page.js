@@ -8,7 +8,7 @@
  * - Sharing functionality
  */
 
-import { defineComponent, html, when, each, memoEach, untracked } from 'vdx/framework.js';
+import { defineComponent, html, when, each, memoEach, untracked, Component } from 'vdx/framework.js';
 import { createWindowing } from 'vdx/windowing.js';
 import { createRowGestures } from 'vdx/gestures.js';
 import { songs as songsApi, playlists as playlistsApi, auth, ai } from '../offline/offline-api.js';
@@ -23,12 +23,14 @@ import 'vdxui/button/button.js';
 import 'vdxui/overlay/dialog.js';
 import 'vdxui/misc/spinner.js';
 
-export default defineComponent('playlists-page', {
-    props: {
+export class PlaylistsPage extends Component {
+    static props = {
         params: {}  // { id } for playlist detail, { token } for shared
-    },
+    }
 
-    data() {
+    constructor(props) {
+        super(props);
+
         // Windowing controller owns the visible-range state and scroll/resize
         // plumbing. Created in data() so its state exists for the first render.
         // The detail view scrolls the window; measured against the songs spacer.
@@ -99,7 +101,7 @@ export default defineComponent('playlists-page', {
             }
         });
 
-        return {
+        this.state = {
             view: 'list',           // 'list', 'detail', 'shared'
             tab: 'my',              // 'my', 'public'
             myPlaylists: [],
@@ -159,7 +161,7 @@ export default defineComponent('playlists-page', {
             isCloning: false,
             cloneError: null
         };
-    },
+    }
 
     async mounted() {
         this._isMounted = true;
@@ -207,7 +209,7 @@ export default defineComponent('playlists-page', {
         if (!token && id) {
             this.loadPlaylistDetail(id);
         }
-    },
+    }
 
     unmounted() {
         this._isMounted = false;
@@ -219,7 +221,7 @@ export default defineComponent('playlists-page', {
         if (this._playlistsChangedHandler) {
             window.removeEventListener('playlists-changed', this._playlistsChangedHandler);
         }
-    },
+    }
 
     async propsChanged(prop, newValue, oldValue) {
         if (prop === 'params') {
@@ -247,929 +249,928 @@ export default defineComponent('playlists-page', {
                 this.loadPlaylists(true);
             }
         }
-    },
+    }
 
-    methods: {
-        // Selection mode methods
-        toggleSelectionMode() {
-            // No playlistVersion bump: selection mode/state live in the
-            // memoEach key, so only rows whose key bits change re-render.
-            this.state.selectionMode = !this.state.selectionMode;
-            if (!this.state.selectionMode) {
-                this.clearSelection();
-            }
-        },
-
-        isSelected(index) {
-            return this.state.selectedIndices.has(index);
-        },
-
-        toggleSelection(index, e) {
-            if (e) e.stopPropagation();
-            const newSet = new Set(this.state.selectedIndices);
-
-            // Shift+click for range selection
-            if (e && e.shiftKey && this._lastSelectedIndex !== undefined) {
-                const start = Math.min(this._lastSelectedIndex, index);
-                const end = Math.max(this._lastSelectedIndex, index);
-                for (let i = start; i <= end; i++) {
-                    newSet.add(i);
-                }
-            } else {
-                if (newSet.has(index)) {
-                    newSet.delete(index);
-                } else {
-                    newSet.add(index);
-                }
-                this._lastSelectedIndex = index;
-            }
-
-            this.state.selectedIndices = newSet;
-            // No version bump: the per-row selected bit in the memoEach key
-            // re-renders exactly the toggled row(s).
-        },
-
-        selectAll() {
-            const songs = this.state.playlistSongs;
-            const newSet = new Set();
-            for (let i = 0; i < songs.length; i++) {
-                if (songs[i]) newSet.add(i);
-            }
-            this.state.selectedIndices = newSet;
-        },
-
-        clearSelection() {
-            this.state.selectedIndices = new Set();
-            this._lastSelectedIndex = undefined;
-        },
-
-        async handleDeleteSelected() {
-            if (!this.state.currentPlaylist) return;
-            const indices = [...this.state.selectedIndices];
-            if (indices.length === 0) return;
-
-            const songs = this.state.playlistSongs;
-            // Keep uuids and indices aligned: `indices` addresses the exact rows
-            // (duplicate-safe removal of only the selected copies); `songUuids`
-            // is kept for the legacy/verification path.
-            const validIndices = indices.filter(i => songs[i]?.uuid);
-            const songUuids = validIndices.map(i => songs[i].uuid);
-
-            if (songUuids.length === 0) return;
-
-            try {
-                await playlistsApi.removeSongs(this.state.currentPlaylist.id, songUuids, validIndices);
-
-                // Update local state
-                const newSongs = this.state.playlistSongs.filter((_, i) => !this.state.selectedIndices.has(i));
-                this.state.playlistSongs = newSongs;
-                this.state.totalCount = newSongs.length;
-                this.state.playlistVersion++;
-
-                this.clearSelection();
-                this.state.selectionMode = false;
-            } catch (e) {
-                console.error('Failed to delete selected songs:', e);
-            }
-        },
-
-        async handleAddSelectedToQueue() {
-            const indices = [...this.state.selectedIndices];
-            if (indices.length === 0) return;
-
-            const songs = this.state.playlistSongs;
-            const selectedSongs = indices.map(i => songs[i]).filter(Boolean);
-
-            try {
-                await player.addToQueue(selectedSongs);
-                this.clearSelection();
-                this.state.selectionMode = false;
-            } catch (e) {
-                console.error('Failed to add to queue:', e);
-            }
-        },
-
-        async handleDownloadSelected() {
-            const indices = [...this.state.selectedIndices];
-            if (indices.length === 0) return;
-
-            const songs = this.state.playlistSongs;
-            const selectedSongs = indices.map(i => songs[i]).filter(Boolean);
-
-            // Filter out already offline songs first
-            const notOffline = selectedSongs.filter(s =>
-                s && s.uuid &&
-                !offlineStore.state.offlineSongUuids.has(s.uuid)
-            );
-
-            if (notOffline.length === 0) {
-                const toast = document.querySelector('cl-toast');
-                if (toast) toast.show({ severity: 'info', summary: 'Info', detail: 'All selected songs are already downloaded' });
-                return;
-            }
-
-            // Fetch full metadata for songs missing type field or with type='file' (VFS items)
-            const needsMetadata = notOffline.filter(s => (!s.type || s.type === 'file') && s.uuid);
-            let metadataMap = new Map();
-
-            if (needsMetadata.length > 0) {
-                try {
-                    const uuids = needsMetadata.map(s => s.uuid);
-                    const fullSongs = await songsApi.getBulk(uuids);
-                    metadataMap = new Map(fullSongs.map(s => [s.uuid, s]));
-                } catch (e) {
-                    console.error('[Playlists] Failed to fetch song metadata:', e);
-                }
-            }
-
-            // Get full metadata for each song, then filter by type
-            const downloadable = notOffline
-                .map(item => (item.type && item.type !== 'file') ? item : (metadataMap.get(item.uuid) || item))
-                .filter(s => canCacheOffline(s.type));
-
-            if (downloadable.length === 0) {
-                const toast = document.querySelector('cl-toast');
-                if (toast) toast.show({ severity: 'info', summary: 'Info', detail: 'No downloadable songs selected (transcode-only formats)' });
-                return;
-            }
-
-            // Build downloadSource from playlist context
-            const playlist = this.state.currentPlaylist;
-            const playlistId = playlist?.id;
-            const downloadSource = playlistId
-                ? { type: 'playlist', playlistId, playlistName: playlist.name || 'Playlist' }
-                : null;
-
-            this.state.isDownloadingSelection = true;
-
-            for (let i = 0; i < downloadable.length; i++) {
-                const song = downloadable[i];
-                setDownloadProgress({
-                    playlistId: 'selection',
-                    playlistName: 'Selected Songs',
-                    current: i,
-                    total: downloadable.length,
-                    currentSongName: song.title
-                });
-                // Don't pass playlistId - these are individual downloads, not playlist downloads
-                // downloadSource tracks where they came from for the UI
-                await downloadSong(song, null, null, downloadSource);
-            }
-
-            setDownloadProgress(null);
-            await computeOfflineFilterSets();
-            this.state.isDownloadingSelection = false;
+    // Selection mode methods
+    toggleSelectionMode() {
+        // No playlistVersion bump: selection mode/state live in the
+        // memoEach key, so only rows whose key bits change re-render.
+        this.state.selectionMode = !this.state.selectionMode;
+        if (!this.state.selectionMode) {
             this.clearSelection();
-            this.state.selectionMode = false;
-        },
+        }
+    }
 
-        getDisplayTitle(song) {
-            if (!song) return 'Unknown';
-            if (song.title) return song.title;
-            // Fallback to filename without extension
-            const path = song.virtual_file || song.file || '';
-            const filename = path.split('/').pop() || '';
-            return filename.replace(/\.[^.]+$/, '') || 'Unknown';
-        },
+    isSelected(index) {
+        return this.state.selectedIndices.has(index);
+    }
 
-        getSongCountDisplay(availableCount, playlist) {
-            const isOffline = shouldShowOfflineWarnings();
-            const originalCount = playlist?.song_count || 0;
+    toggleSelection(index, e) {
+        if (e) e.stopPropagation();
+        const newSet = new Set(this.state.selectedIndices);
 
-            if (!isOffline) {
-                return `${availableCount} songs`;
+        // Shift+click for range selection
+        if (e && e.shiftKey && this._lastSelectedIndex !== undefined) {
+            const start = Math.min(this._lastSelectedIndex, index);
+            const end = Math.max(this._lastSelectedIndex, index);
+            for (let i = start; i <= end; i++) {
+                newSet.add(i);
             }
-
-            // In offline mode, show availability info
-            if (availableCount === 0 && originalCount > 0) {
-                return `No songs available offline (${originalCount} total)`;
-            } else if (availableCount > 0 && originalCount > availableCount) {
-                return `${availableCount}/${originalCount} songs available offline`;
-            } else if (availableCount > 0) {
-                return `${availableCount} songs`;
+        } else {
+            if (newSet.has(index)) {
+                newSet.delete(index);
+            } else {
+                newSet.add(index);
             }
-            return 'No songs';
-        },
-
-        getEmptyMessage(playlist) {
-            const isOffline = shouldShowOfflineWarnings();
-            const originalCount = playlist?.song_count || 0;
-
-            if (isOffline && originalCount > 0) {
-                return `${originalCount} songs unavailable offline`;
-            }
-            return 'No songs in playlist';
-        },
-
-        async loadPlaylists(forceRefresh = false) {
-            // Request-ID guard: concurrent loads (mount, playlists-changed, propsChanged)
-            // must not let a slower response overwrite a newer one.
-            const requestId = this._listRequestId = (this._listRequestId || 0) + 1;
-            this.state.isLoading = true;
-            try {
-                if (this.state.isAuthenticated) {
-                    const result = await playlistsApi.list(forceRefresh);
-                    if (this._listRequestId !== requestId) return;  // Stale
-                    this.state.myPlaylists = result.items || [];
-                }
-            } catch (e) {
-                console.error('Failed to load playlists:', e);
-            } finally {
-                if (this._listRequestId === requestId) this.state.isLoading = false;
-            }
-        },
-
-        async loadPublicPlaylists() {
-            if (this.state.publicPlaylists.length > 0) return;
-
-            this.state.isLoading = true;
-            try {
-                const result = await playlistsApi.public({ limit: 50 });
-                this.state.publicPlaylists = result.items || [];
-                this.state.hasMore = result.hasMore;
-            } catch (e) {
-                console.error('Failed to load public playlists:', e);
-            } finally {
-                this.state.isLoading = false;
-            }
-        },
-
-        async loadPlaylistDetail(id) {
-            // Request-ID guard shared with loadSharedPlaylist (both fill the same detail
-            // view). Navigating /playlists/5/ → /playlists/7/ quickly must not let the
-            // slower response overwrite the newer playlist's data.
-            const requestId = this._detailRequestId = (this._detailRequestId || 0) + 1;
-            this.state.isLoading = true;
-            this.state.detailError = null;
-            this.state.cursor = null;
-            // Clear selection when switching playlists
-            this.state.selectionMode = false;
-            this.state.selectedIndices = new Set();
-            try {
-                // Get first batch with totalCount
-                const result = await playlistsApi.getSongs(id, { limit: 100 });
-                if (this._detailRequestId !== requestId) return;  // Stale
-                const totalCount = result.totalCount || result.items.length;
-
-                // Create sparse array and fill first batch
-                const songs = new Array(totalCount).fill(null);
-                result.items.forEach((item, i) => {
-                    songs[i] = item;
-                });
-
-                this.state.playlistSongs = songs;
-                this.state.totalCount = totalCount;
-                this.state.cursor = result.nextCursor;
-                this.state.hasMore = result.hasMore;
-
-                // Find playlist info from our lists (check both my playlists and public)
-                let found = this.state.myPlaylists.find(p => p.id == id)
-                    || this.state.publicPlaylists.find(p => p.id == id);
-
-                // If not found and public playlists not loaded, try loading them
-                if (!found && this.state.publicPlaylists.length === 0) {
-                    try {
-                        const publicResult = await playlistsApi.public({ limit: 50 });
-                        if (this._detailRequestId !== requestId) return;  // Stale
-                        this.state.publicPlaylists = publicResult.items || [];
-                        found = this.state.publicPlaylists.find(p => p.id == id);
-                    } catch (e) {
-                        console.warn('Failed to load public playlists:', e);
-                    }
-                }
-
-                if (found) {
-                    this.state.currentPlaylist = found;
-                } else {
-                    // Create minimal placeholder so page at least renders
-                    this.state.currentPlaylist = { id, name: 'Playlist', song_count: totalCount };
-                }
-
-                // Recompute the window once the new list has rendered
-                requestAnimationFrame(() => this._win.refresh());
-
-                // Start background loading of remaining items
-                if (result.hasMore) {
-                    this._loadRemainingInBackground(id, result.nextCursor);
-                }
-            } catch (e) {
-                if (this._detailRequestId !== requestId) return;  // Stale
-                console.error('Failed to load playlist:', e);
-                this.state.detailError = "Couldn't load playlist — check your connection.";
-            } finally {
-                if (this._detailRequestId === requestId) this.state.isLoading = false;
-            }
-        },
-
-        async loadSharedPlaylist(token) {
-            // Shares the detail request-ID counter with loadPlaylistDetail (same view).
-            const requestId = this._detailRequestId = (this._detailRequestId || 0) + 1;
-            this.state.isLoading = true;
-            this.state.detailError = null;
-            this.state.cursor = null;
-            try {
-                const playlist = await playlistsApi.byToken(token);
-                if (this._detailRequestId !== requestId) return;  // Stale
-                if (playlist.error) {
-                    this.state.detailError = 'This shared playlist link is invalid or has expired.';
-                    return;
-                }
-                this.state.currentPlaylist = playlist;
-
-                // Token-scoped songs endpoint: the share view is typically
-                // anonymous, and getSongs requires a logged-in user.
-                const result = await playlistsApi.getSongsByToken(token, { limit: 100 });
-                if (this._detailRequestId !== requestId) return;  // Stale
-                if (result.error) {
-                    this.state.detailError = 'This shared playlist link is invalid or has expired.';
-                    return;
-                }
-                const totalCount = result.totalCount || result.items.length;
-
-                // Create sparse array
-                const songs = new Array(totalCount).fill(null);
-                result.items.forEach((item, i) => {
-                    songs[i] = item;
-                });
-
-                this.state.playlistSongs = songs;
-                this.state.totalCount = totalCount;
-                this.state.cursor = result.nextCursor;
-                this.state.hasMore = result.hasMore;
-
-                // Recompute the window once the new list has rendered
-                requestAnimationFrame(() => this._win.refresh());
-
-                if (result.hasMore) {
-                    this._loadRemainingInBackground(playlist.id, result.nextCursor, token);
-                }
-            } catch (e) {
-                if (this._detailRequestId !== requestId) return;  // Stale
-                console.error('Failed to load shared playlist:', e);
-                this.state.detailError = 'This shared playlist link is invalid or has expired.';
-            } finally {
-                if (this._detailRequestId === requestId) this.state.isLoading = false;
-            }
-        },
-
-        async loadMoreSongs() {
-            if (!this.state.currentPlaylist || this.state.isLoading || !this.state.hasMore) return;
-
-            this.state.isLoading = true;
-            try {
-                const result = await playlistsApi.getSongs(this.state.currentPlaylist.id, {
-                    cursor: this.state.cursor,
-                    limit: 100
-                });
-
-                this.state.playlistSongs = [...this.state.playlistSongs, ...result.items];
-                this.state.cursor = result.nextCursor;
-                this.state.hasMore = result.hasMore;
-
-                // Re-setup infinite scroll after loading more
-                this._setupInfiniteScroll();
-            } catch (e) {
-                console.error('Failed to load more songs:', e);
-            } finally {
-                this.state.isLoading = false;
-            }
-        },
-
-        handleTabChange(tab) {
-            this.state.tab = tab;
-            if (tab === 'public') {
-                this.loadPublicPlaylists();
-            }
-        },
-
-        handlePlaylistClick(playlist) {
-            window.location.hash = `/playlists/${playlist.id}/`;
-        },
-
-        handleBackToList() {
-            this.state.view = 'list';
-            this.state.currentPlaylist = null;
-            this.state.detailError = null;
-            this.state.playlistSongs = [];
-            // Clear selection when leaving detail view
-            this.state.selectionMode = false;
-            this.state.selectedIndices = new Set();
-            window.location.hash = '/playlists/';
-        },
-
-        openCreateDialog() {
-            this.state.showCreateDialog = true;
-            this.state.newPlaylistName = '';
-            this.state.newPlaylistDesc = '';
-            this.state.newPlaylistPublic = false;
-        },
-
-        closeCreateDialog() {
-            this.state.showCreateDialog = false;
-        },
-
-        async handleCreatePlaylist() {
-            if (!this.state.newPlaylistName.trim()) return;
-
-            try {
-                const result = await playlistsApi.create(
-                    this.state.newPlaylistName,
-                    this.state.newPlaylistDesc,
-                    this.state.newPlaylistPublic
-                );
-                if (!result.error) {
-                    this.state.showCreateDialog = false;
-                    this.loadPlaylists();
-                }
-            } catch (e) {
-                console.error('Failed to create playlist:', e);
-            }
-        },
-
-        handleDeletePlaylist(playlist, e) {
-            e.stopPropagation();
-            this.state.pendingDeletePlaylist = playlist;
-            this.showConfirmDialog(
-                'Delete Playlist',
-                `Delete "${playlist.name}"?`,
-                'deletePlaylist'
-            );
-        },
-
-        async doDeletePlaylist() {
-            const playlist = this.state.pendingDeletePlaylist;
-            if (!playlist) return;
-
-            try {
-                await playlistsApi.delete(playlist.id);
-                this.loadPlaylists();
-            } catch (err) {
-                console.error('Failed to delete playlist:', err);
-            }
-            this.state.pendingDeletePlaylist = null;
-        },
-
-        showConfirmDialog(title, message, action) {
-            this.state.confirmDialog = { show: true, title, message, action };
-        },
-
-        handleConfirmDialogConfirm() {
-            const { action } = this.state.confirmDialog;
-            this.state.confirmDialog = { show: false, title: '', message: '', action: null };
-
-            if (action === 'deletePlaylist') {
-                this.doDeletePlaylist();
-            }
-        },
-
-        handleConfirmDialogCancel() {
-            this.state.confirmDialog = { show: false, title: '', message: '', action: null };
-            this.state.pendingDeletePlaylist = null;
-        },
-
-        async handleShare() {
-            if (!this.state.currentPlaylist) return;
-            try {
-                const result = await playlistsApi.share(this.state.currentPlaylist.id);
-                this.state.shareToken = result.share_token;
-                this.state.showShareDialog = true;
-            } catch (e) {
-                console.error('Failed to get share token:', e);
-            }
-        },
-
-        // AI Extend methods
-        showExtendDialog() {
-            this.state.showExtendDialog = true;
-            this.state.extendError = null;
-        },
-
-        closeExtendDialog() {
-            this.state.showExtendDialog = false;
-            this.state.extendError = null;
-        },
-
-        // Rename playlist
-        showRenamePlaylistDialog() {
-            if (!this.state.currentPlaylist) return;
-            this.state.renameNewName = this.state.currentPlaylist.name;
-            this.state.renameError = null;
-            this.state.showRenameDialog = true;
-        },
-
-        closeRenameDialog() {
-            this.state.showRenameDialog = false;
-            this.state.renameError = null;
-        },
-
-        async handleRenamePlaylist() {
-            const name = this.state.renameNewName.trim();
-            if (!name) {
-                this.state.renameError = 'Please enter a name';
-                return;
-            }
-            if (name === this.state.currentPlaylist.name) {
-                this.state.showRenameDialog = false;
-                return;
-            }
-
-            this.state.isRenaming = true;
-            this.state.renameError = null;
-
-            try {
-                await playlistsApi.update(this.state.currentPlaylist.id, { name });
-                this.state.currentPlaylist.name = name;
-                this.state.showRenameDialog = false;
-                await this.loadPlaylists(true);
-                const toast = document.querySelector('cl-toast');
-                if (toast) {
-                    toast.show({ severity: 'success', summary: 'Renamed', detail: `Playlist renamed to "${name}"` });
-                }
-            } catch (e) {
-                this.state.renameError = e.message || 'Failed to rename playlist';
-            } finally {
-                this.state.isRenaming = false;
-            }
-        },
-
-        // Clone playlist
-        showClonePlaylistDialog() {
-            if (!this.state.currentPlaylist) return;
-            this.state.cloneNewName = `${this.state.currentPlaylist.name} (Copy)`;
-            this.state.cloneError = null;
-            this.state.showCloneDialog = true;
-        },
-
-        closeCloneDialog() {
-            this.state.showCloneDialog = false;
-            this.state.cloneError = null;
-        },
-
-        async handleClonePlaylist() {
-            const name = this.state.cloneNewName.trim();
-            if (!name) {
-                this.state.cloneError = 'Please enter a name';
-                return;
-            }
-
-            this.state.isCloning = true;
-            this.state.cloneError = null;
-
-            try {
-                const result = await playlistsApi.clone(this.state.currentPlaylist.id, name);
-                this.state.showCloneDialog = false;
-                await this.loadPlaylists(true);
-                const toast = document.querySelector('cl-toast');
-                if (toast) {
-                    toast.show({ severity: 'success', summary: 'Cloned', detail: `Created "${result.name}"` });
-                }
-                // Navigate to the new playlist
-                window.location.hash = `#/playlists/${result.id}/`;
-            } catch (e) {
-                this.state.cloneError = e.message || 'Failed to clone playlist';
-            } finally {
-                this.state.isCloning = false;
-            }
-        },
-
-        async handleExtendPlaylist() {
-            if (!this.state.currentPlaylist || this.state.isExtending) return;
-
-            this.state.isExtending = true;
-            this.state.extendError = null;
-
-            try {
-                const result = await ai.extendPlaylist(
-                    this.state.currentPlaylist.id,
-                    this.state.extendCount,
-                    this.state.extendDiversity
-                );
-
-                if (result.error) {
-                    this.state.extendError = result.error;
-                    return;
-                }
-
-                // Success - close dialog and reload playlist
-                this.state.showExtendDialog = false;
-                const addedCount = result.added?.length || result.added_count || 0;
-                const toast = document.querySelector('cl-toast');
-                if (toast) {
-                    toast.show({
-                        severity: 'success',
-                        summary: 'Extended',
-                        detail: `Added ${addedCount} similar songs`
-                    });
-                }
-
-                // Reload playlist
-                await this.loadPlaylistDetail(this.state.currentPlaylist.id);
-            } catch (e) {
-                console.error('Failed to extend playlist:', e);
-                this.state.extendError = e.message || 'Failed to extend playlist';
-            } finally {
-                this.state.isExtending = false;
-            }
-        },
-
-        closeShareDialog() {
-            this.state.showShareDialog = false;
-        },
-
-        copyShareLink() {
-            // Use pathname to preserve /apps/music/ path
-            const basePath = window.location.pathname.replace(/\/$/, '');
-            const url = `${window.location.origin}${basePath}/#/share/${this.state.shareToken}/`;
-            navigator.clipboard.writeText(url).then(() => {
-                const toast = document.querySelector('cl-toast');
-                if (toast) toast.show({ severity: 'success', summary: 'Copied', detail: 'Link copied to clipboard!' });
-            });
-        },
-
-        async handleClone() {
-            if (!this.state.currentPlaylist) return;
-            try {
-                const result = await playlistsApi.clone(this.state.currentPlaylist.id);
-                if (!result.error) {
-                    const toast = document.querySelector('cl-toast');
-                    if (toast) toast.show({ severity: 'success', summary: 'Cloned', detail: `Playlist cloned as "${result.name}"` });
-                    this.loadPlaylists();
-                }
-            } catch (e) {
-                console.error('Failed to clone playlist:', e);
-            }
-        },
-
-        async handleTogglePublic() {
-            if (!this.state.currentPlaylist) return;
-            const newValue = !this.state.currentPlaylist.is_public;
-            try {
-                const result = await playlistsApi.update(this.state.currentPlaylist.id, { isPublic: newValue });
-                if (!result.error) {
-                    // Update local state
-                    this.state.currentPlaylist = {
-                        ...this.state.currentPlaylist,
-                        is_public: newValue
-                    };
-                    // Update in myPlaylists list
-                    this.state.myPlaylists = this.state.myPlaylists.map(p =>
-                        p.id === this.state.currentPlaylist.id
-                            ? { ...p, is_public: newValue }
-                            : p
-                    );
-                }
-            } catch (e) {
-                console.error('Failed to update playlist:', e);
-            }
-        },
-
-        toggleSortMenu() {
-            this.state.showSortMenu = !this.state.showSortMenu;
-        },
-
-        closeSortMenu() {
-            this.state.showSortMenu = false;
-        },
-
-        async handleSortPlaylist(sortBy, order = 'asc') {
-            if (!this.state.currentPlaylist) return;
-            this.state.isSorting = true;
-            this.state.showSortMenu = false;
-
-            try {
-                await playlistsApi.sort(this.state.currentPlaylist.id, sortBy, order);
-                // Reload the playlist from server after sorting
-                await this.loadPlaylistDetail(this.state.currentPlaylist.id);
-            } catch (e) {
-                console.error('Failed to sort playlist:', e);
-            } finally {
-                this.state.isSorting = false;
-            }
-        },
-
-        handleSongClick(song) {
-            // Don't play unavailable songs when offline
-            if (this.isUnavailableOffline(song)) {
-                return;
-            }
-            player.addToQueue(song, true);
-        },
-
-        /**
-         * Check if a song is unavailable in offline mode.
-         * Returns true if:
-         * - Song has explicit unavailable flag (placeholder from getSongsMetadata)
-         * - In offline mode and song is not cached
-         */
-        isUnavailableOffline(song) {
-            if (!song) return false;
-            // Check explicit unavailable flag (placeholder from getSongsMetadata)
-            if (song.unavailable) return true;
-            // Not in offline mode = nothing is unavailable
-            if (offlineStore.state.isOnline && !offlineStore.state.workOfflineMode) {
-                return false;
-            }
-            // In offline mode - check if song is cached
-            return !offlineStore.state.offlineSongUuids.has(song.uuid);
-        },
-
-        handleSongContextMenu(song, e) {
-            e.preventDefault();
-            e.stopPropagation();
-            showSongContextMenu(song, e.clientX, e.clientY);
-        },
-
-        async handlePlayAll() {
-            if (!this.state.currentPlaylist) return;
-            await player.clearQueue();
-            await player.addByPlaylist(this.state.currentPlaylist.id, false);
-        },
-
-        async handleShuffleAll() {
-            if (!this.state.currentPlaylist) return;
-            await player.clearQueue();
-            await player.addByPlaylist(this.state.currentPlaylist.id, true);
-        },
-
-        async handleStartRadio() {
-            if (!this.state.currentPlaylist) return;
-            await player.startScaFromPlaylist(this.state.currentPlaylist.id);
-        },
-
-        async handleRemoveSong(song, index, e) {
-            e.stopPropagation();
-            if (!this.state.currentPlaylist) return;
-            try {
-                // Duplicate-safe: address the exact row by its index so only the
-                // clicked copy is removed, even when the same song repeats.
-                await playlistsApi.removeSong(this.state.currentPlaylist.id, song.uuid, index);
-                this.state.playlistSongs = this.state.playlistSongs.filter((_, i) => i !== index);
-                this.state.totalCount = this.state.playlistSongs.length;
-                this.state.playlistVersion++;  // Invalidate memoEach cache
-            } catch (e) {
-                console.error('Failed to remove song:', e);
-            }
-        },
-
-        // Playlist song reordering
-        async handlePlaylistMoveUp(index, e) {
-            e.stopPropagation();
-            if (index > 0) {
-                await this.reorderPlaylistSongs(index, index - 1);
-            }
-        },
-
-        async handlePlaylistMoveDown(index, e) {
-            e.stopPropagation();
-            if (index < this.state.playlistSongs.length - 1) {
-                // reorderPlaylistSongs treats toIndex as a gap (insertIndex =
-                // to-1 when moving down), so moving down one row needs gap
-                // index+2 - (index, index+1) re-inserts in place (no-op)
-                await this.reorderPlaylistSongs(index, index + 2);
-            }
-        },
-
-        async reorderPlaylistSongs(fromIndex, toIndex) {
-            if (!this.state.currentPlaylist) return;
-            // The sparse array still has unloaded (null) rows while background
-            // loading runs; building the full positions payload needs every
-            // row. Ignore the reorder instead of throwing on null.uuid.
-            if (this.state.playlistSongs.some(x => !x)) {
-                console.warn('Reorder ignored: playlist songs still loading');
-                return;
-            }
-            const songs = [...this.state.playlistSongs];
-            const [moved] = songs.splice(fromIndex, 1);
-            // When moving down, adjust for the index shift after removal
-            const insertIndex = fromIndex < toIndex ? toIndex - 1 : toIndex;
-            songs.splice(insertIndex, 0, moved);
-
-            // Optimistically update UI
-            this.state.playlistSongs = songs;
-            this.state.playlistVersion++;  // Invalidate memoEach cache for correct numbering
-
-            // Build positions array for API - backend expects [{uuid, position}, ...]
-            const positions = songs.map((s, i) => ({ uuid: s.uuid, position: i }));
-
-            try {
-                await playlistsApi.reorder(this.state.currentPlaylist.id, positions);
-            } catch (e) {
-                console.error('Failed to reorder playlist:', e);
-                // Reload to restore correct state
-                this.loadPlaylistDetail(this.state.currentPlaylist.id);
-            }
-        },
-
-        async reorderPlaylistSongsBatch(indices, targetIndex) {
-            if (!this.state.currentPlaylist) return;
-            // The sparse array still has unloaded (null) rows while background
-            // loading runs; building the full positions payload needs every
-            // row. Ignore the reorder instead of throwing on null.uuid.
-            if (this.state.playlistSongs.some(x => !x)) {
-                console.warn('Reorder ignored: playlist songs still loading');
-                return;
-            }
-            // Move all items at indices to targetIndex, maintaining relative order
-            const sortedIndices = [...indices].sort((a, b) => a - b);
-            const songs = [...this.state.playlistSongs];
-            const items = sortedIndices.map(i => songs[i]);
-
-            // Remove items from highest index first to preserve indices
-            for (const idx of [...sortedIndices].reverse()) {
-                songs.splice(idx, 1);
-            }
-
-            // Calculate adjusted target (accounting for removed items before target)
-            let adjustedTarget = targetIndex;
-            for (const idx of sortedIndices) {
-                if (idx < targetIndex) adjustedTarget--;
-            }
-            // Clamp to valid range
-            adjustedTarget = Math.max(0, Math.min(adjustedTarget, songs.length));
-
-            // Insert all items at target position
-            songs.splice(adjustedTarget, 0, ...items);
-
-            // Optimistically update UI
-            this.state.playlistSongs = songs;
+            this._lastSelectedIndex = index;
+        }
+
+        this.state.selectedIndices = newSet;
+        // No version bump: the per-row selected bit in the memoEach key
+        // re-renders exactly the toggled row(s).
+    }
+
+    selectAll() {
+        const songs = this.state.playlistSongs;
+        const newSet = new Set();
+        for (let i = 0; i < songs.length; i++) {
+            if (songs[i]) newSet.add(i);
+        }
+        this.state.selectedIndices = newSet;
+    }
+
+    clearSelection() {
+        this.state.selectedIndices = new Set();
+        this._lastSelectedIndex = undefined;
+    }
+
+    async handleDeleteSelected() {
+        if (!this.state.currentPlaylist) return;
+        const indices = [...this.state.selectedIndices];
+        if (indices.length === 0) return;
+
+        const songs = this.state.playlistSongs;
+        // Keep uuids and indices aligned: `indices` addresses the exact rows
+        // (duplicate-safe removal of only the selected copies); `songUuids`
+        // is kept for the legacy/verification path.
+        const validIndices = indices.filter(i => songs[i]?.uuid);
+        const songUuids = validIndices.map(i => songs[i].uuid);
+
+        if (songUuids.length === 0) return;
+
+        try {
+            await playlistsApi.removeSongs(this.state.currentPlaylist.id, songUuids, validIndices);
+
+            // Update local state
+            const newSongs = this.state.playlistSongs.filter((_, i) => !this.state.selectedIndices.has(i));
+            this.state.playlistSongs = newSongs;
+            this.state.totalCount = newSongs.length;
             this.state.playlistVersion++;
 
-            // Build positions array for API
-            const positions = songs.map((s, i) => ({ uuid: s.uuid, position: i }));
+            this.clearSelection();
+            this.state.selectionMode = false;
+        } catch (e) {
+            console.error('Failed to delete selected songs:', e);
+        }
+    }
 
+    async handleAddSelectedToQueue() {
+        const indices = [...this.state.selectedIndices];
+        if (indices.length === 0) return;
+
+        const songs = this.state.playlistSongs;
+        const selectedSongs = indices.map(i => songs[i]).filter(Boolean);
+
+        try {
+            await player.addToQueue(selectedSongs);
+            this.clearSelection();
+            this.state.selectionMode = false;
+        } catch (e) {
+            console.error('Failed to add to queue:', e);
+        }
+    }
+
+    async handleDownloadSelected() {
+        const indices = [...this.state.selectedIndices];
+        if (indices.length === 0) return;
+
+        const songs = this.state.playlistSongs;
+        const selectedSongs = indices.map(i => songs[i]).filter(Boolean);
+
+        // Filter out already offline songs first
+        const notOffline = selectedSongs.filter(s =>
+            s && s.uuid &&
+            !offlineStore.state.offlineSongUuids.has(s.uuid)
+        );
+
+        if (notOffline.length === 0) {
+            const toast = document.querySelector('cl-toast');
+            if (toast) toast.show({ severity: 'info', summary: 'Info', detail: 'All selected songs are already downloaded' });
+            return;
+        }
+
+        // Fetch full metadata for songs missing type field or with type='file' (VFS items)
+        const needsMetadata = notOffline.filter(s => (!s.type || s.type === 'file') && s.uuid);
+        let metadataMap = new Map();
+
+        if (needsMetadata.length > 0) {
             try {
-                await playlistsApi.reorder(this.state.currentPlaylist.id, positions);
+                const uuids = needsMetadata.map(s => s.uuid);
+                const fullSongs = await songsApi.getBulk(uuids);
+                metadataMap = new Map(fullSongs.map(s => [s.uuid, s]));
             } catch (e) {
-                console.error('Failed to batch reorder playlist:', e);
-                // Reload to restore correct state
-                this.loadPlaylistDetail(this.state.currentPlaylist.id);
+                console.error('[Playlists] Failed to fetch song metadata:', e);
             }
-        },
+        }
 
-        toggleAddSongs() {
-            this.state.showAddSongs = !this.state.showAddSongs;
-            if (!this.state.showAddSongs) {
-                this.state.searchQuery = '';
-                this.state.searchResults = [];
+        // Get full metadata for each song, then filter by type
+        const downloadable = notOffline
+            .map(item => (item.type && item.type !== 'file') ? item : (metadataMap.get(item.uuid) || item))
+            .filter(s => canCacheOffline(s.type));
+
+        if (downloadable.length === 0) {
+            const toast = document.querySelector('cl-toast');
+            if (toast) toast.show({ severity: 'info', summary: 'Info', detail: 'No downloadable songs selected (transcode-only formats)' });
+            return;
+        }
+
+        // Build downloadSource from playlist context
+        const playlist = this.state.currentPlaylist;
+        const playlistId = playlist?.id;
+        const downloadSource = playlistId
+            ? { type: 'playlist', playlistId, playlistName: playlist.name || 'Playlist' }
+            : null;
+
+        this.state.isDownloadingSelection = true;
+
+        for (let i = 0; i < downloadable.length; i++) {
+            const song = downloadable[i];
+            setDownloadProgress({
+                playlistId: 'selection',
+                playlistName: 'Selected Songs',
+                current: i,
+                total: downloadable.length,
+                currentSongName: song.title
+            });
+            // Don't pass playlistId - these are individual downloads, not playlist downloads
+            // downloadSource tracks where they came from for the UI
+            await downloadSong(song, null, null, downloadSource);
+        }
+
+        setDownloadProgress(null);
+        await computeOfflineFilterSets();
+        this.state.isDownloadingSelection = false;
+        this.clearSelection();
+        this.state.selectionMode = false;
+    }
+
+    getDisplayTitle(song) {
+        if (!song) return 'Unknown';
+        if (song.title) return song.title;
+        // Fallback to filename without extension
+        const path = song.virtual_file || song.file || '';
+        const filename = path.split('/').pop() || '';
+        return filename.replace(/\.[^.]+$/, '') || 'Unknown';
+    }
+
+    getSongCountDisplay(availableCount, playlist) {
+        const isOffline = shouldShowOfflineWarnings();
+        const originalCount = playlist?.song_count || 0;
+
+        if (!isOffline) {
+            return `${availableCount} songs`;
+        }
+
+        // In offline mode, show availability info
+        if (availableCount === 0 && originalCount > 0) {
+            return `No songs available offline (${originalCount} total)`;
+        } else if (availableCount > 0 && originalCount > availableCount) {
+            return `${availableCount}/${originalCount} songs available offline`;
+        } else if (availableCount > 0) {
+            return `${availableCount} songs`;
+        }
+        return 'No songs';
+    }
+
+    getEmptyMessage(playlist) {
+        const isOffline = shouldShowOfflineWarnings();
+        const originalCount = playlist?.song_count || 0;
+
+        if (isOffline && originalCount > 0) {
+            return `${originalCount} songs unavailable offline`;
+        }
+        return 'No songs in playlist';
+    }
+
+    async loadPlaylists(forceRefresh = false) {
+        // Request-ID guard: concurrent loads (mount, playlists-changed, propsChanged)
+        // must not let a slower response overwrite a newer one.
+        const requestId = this._listRequestId = (this._listRequestId || 0) + 1;
+        this.state.isLoading = true;
+        try {
+            if (this.state.isAuthenticated) {
+                const result = await playlistsApi.list(forceRefresh);
+                if (this._listRequestId !== requestId) return;  // Stale
+                this.state.myPlaylists = result.items || [];
             }
-        },
+        } catch (e) {
+            console.error('Failed to load playlists:', e);
+        } finally {
+            if (this._listRequestId === requestId) this.state.isLoading = false;
+        }
+    }
 
-        handleSearchInput(e) {
-            this.state.searchQuery = e.target.value;
-        },
+    async loadPublicPlaylists() {
+        if (this.state.publicPlaylists.length > 0) return;
 
-        async handleSearch(e) {
-            e?.preventDefault?.();
-            const query = this.state.searchQuery.trim();
-            if (!query) return;
+        this.state.isLoading = true;
+        try {
+            const result = await playlistsApi.public({ limit: 50 });
+            this.state.publicPlaylists = result.items || [];
+            this.state.hasMore = result.hasMore;
+        } catch (e) {
+            console.error('Failed to load public playlists:', e);
+        } finally {
+            this.state.isLoading = false;
+        }
+    }
 
-            this.state.searchLoading = true;
-            try {
-                const result = await songsApi.search(query, { limit: 50 });
-                this.state.searchResults = result.items || [];
-            } catch (e) {
-                console.error('Search failed:', e);
-            } finally {
-                this.state.searchLoading = false;
+    async loadPlaylistDetail(id) {
+        // Request-ID guard shared with loadSharedPlaylist (both fill the same detail
+        // view). Navigating /playlists/5/ → /playlists/7/ quickly must not let the
+        // slower response overwrite the newer playlist's data.
+        const requestId = this._detailRequestId = (this._detailRequestId || 0) + 1;
+        this.state.isLoading = true;
+        this.state.detailError = null;
+        this.state.cursor = null;
+        // Clear selection when switching playlists
+        this.state.selectionMode = false;
+        this.state.selectedIndices = new Set();
+        try {
+            // Get first batch with totalCount
+            const result = await playlistsApi.getSongs(id, { limit: 100 });
+            if (this._detailRequestId !== requestId) return;  // Stale
+            const totalCount = result.totalCount || result.items.length;
+
+            // Create sparse array and fill first batch
+            const songs = new Array(totalCount).fill(null);
+            result.items.forEach((item, i) => {
+                songs[i] = item;
+            });
+
+            this.state.playlistSongs = songs;
+            this.state.totalCount = totalCount;
+            this.state.cursor = result.nextCursor;
+            this.state.hasMore = result.hasMore;
+
+            // Find playlist info from our lists (check both my playlists and public)
+            let found = this.state.myPlaylists.find(p => p.id == id)
+                || this.state.publicPlaylists.find(p => p.id == id);
+
+            // If not found and public playlists not loaded, try loading them
+            if (!found && this.state.publicPlaylists.length === 0) {
+                try {
+                    const publicResult = await playlistsApi.public({ limit: 50 });
+                    if (this._detailRequestId !== requestId) return;  // Stale
+                    this.state.publicPlaylists = publicResult.items || [];
+                    found = this.state.publicPlaylists.find(p => p.id == id);
+                } catch (e) {
+                    console.warn('Failed to load public playlists:', e);
+                }
             }
-        },
 
-        handleSearchKeyDown(e) {
-            if (e.key === 'Enter') {
-                this.handleSearch();
+            if (found) {
+                this.state.currentPlaylist = found;
+            } else {
+                // Create minimal placeholder so page at least renders
+                this.state.currentPlaylist = { id, name: 'Playlist', song_count: totalCount };
             }
-        },
 
-        async handleAddSongToPlaylist(song, e) {
-            e.stopPropagation();
-            if (!this.state.currentPlaylist) return;
-            try {
-                await playlistsApi.addSong(this.state.currentPlaylist.id, song.uuid);
-                // Duplicates are a first-class feature: always append the copy
-                // just added, even if the song is already in the playlist.
-                this.state.playlistSongs = [...this.state.playlistSongs, song];
-                this.state.totalCount = this.state.playlistSongs.length;
-                this.state.playlistVersion++;
-            } catch (e) {
-                console.error('Failed to add song:', e);
+            // Recompute the window once the new list has rendered
+            requestAnimationFrame(() => this._win.refresh());
+
+            // Start background loading of remaining items
+            if (result.hasMore) {
+                this._loadRemainingInBackground(id, result.nextCursor);
             }
-        },
+        } catch (e) {
+            if (this._detailRequestId !== requestId) return;  // Stale
+            console.error('Failed to load playlist:', e);
+            this.state.detailError = "Couldn't load playlist — check your connection.";
+        } finally {
+            if (this._detailRequestId === requestId) this.state.isLoading = false;
+        }
+    }
 
-        isSongInPlaylist(song) {
-            return this.state.playlistSongs.some(s => s.uuid === song.uuid);
-        },
+    async loadSharedPlaylist(token) {
+        // Shares the detail request-ID counter with loadPlaylistDetail (same view).
+        const requestId = this._detailRequestId = (this._detailRequestId || 0) + 1;
+        this.state.isLoading = true;
+        this.state.detailError = null;
+        this.state.cursor = null;
+        try {
+            const playlist = await playlistsApi.byToken(token);
+            if (this._detailRequestId !== requestId) return;  // Stale
+            if (playlist.error) {
+                this.state.detailError = 'This shared playlist link is invalid or has expired.';
+                return;
+            }
+            this.state.currentPlaylist = playlist;
 
-        // Render function for song list item
-        renderSongItem(song, index) {
-            const view = this.state.view;
-            const playlistSongs = this.state.playlistSongs;
-            const selectionMode = this.state.selectionMode;
-            const isSelected = this.isSelected(index);
-            const g = this._g;
+            // Token-scoped songs endpoint: the share view is typically
+            // anonymous, and getSongs requires a logged-in user.
+            const result = await playlistsApi.getSongsByToken(token, { limit: 100 });
+            if (this._detailRequestId !== requestId) return;  // Stale
+            if (result.error) {
+                this.state.detailError = 'This shared playlist link is invalid or has expired.';
+                return;
+            }
+            const totalCount = result.totalCount || result.items.length;
 
-            // Placeholder for unloaded items
-            if (!song) {
-                return html`
+            // Create sparse array
+            const songs = new Array(totalCount).fill(null);
+            result.items.forEach((item, i) => {
+                songs[i] = item;
+            });
+
+            this.state.playlistSongs = songs;
+            this.state.totalCount = totalCount;
+            this.state.cursor = result.nextCursor;
+            this.state.hasMore = result.hasMore;
+
+            // Recompute the window once the new list has rendered
+            requestAnimationFrame(() => this._win.refresh());
+
+            if (result.hasMore) {
+                this._loadRemainingInBackground(playlist.id, result.nextCursor, token);
+            }
+        } catch (e) {
+            if (this._detailRequestId !== requestId) return;  // Stale
+            console.error('Failed to load shared playlist:', e);
+            this.state.detailError = 'This shared playlist link is invalid or has expired.';
+        } finally {
+            if (this._detailRequestId === requestId) this.state.isLoading = false;
+        }
+    }
+
+    async loadMoreSongs() {
+        if (!this.state.currentPlaylist || this.state.isLoading || !this.state.hasMore) return;
+
+        this.state.isLoading = true;
+        try {
+            const result = await playlistsApi.getSongs(this.state.currentPlaylist.id, {
+                cursor: this.state.cursor,
+                limit: 100
+            });
+
+            this.state.playlistSongs = [...this.state.playlistSongs, ...result.items];
+            this.state.cursor = result.nextCursor;
+            this.state.hasMore = result.hasMore;
+
+            // Re-setup infinite scroll after loading more
+            this._setupInfiniteScroll();
+        } catch (e) {
+            console.error('Failed to load more songs:', e);
+        } finally {
+            this.state.isLoading = false;
+        }
+    }
+
+    handleTabChange(tab) {
+        this.state.tab = tab;
+        if (tab === 'public') {
+            this.loadPublicPlaylists();
+        }
+    }
+
+    handlePlaylistClick(playlist) {
+        window.location.hash = `/playlists/${playlist.id}/`;
+    }
+
+    handleBackToList() {
+        this.state.view = 'list';
+        this.state.currentPlaylist = null;
+        this.state.detailError = null;
+        this.state.playlistSongs = [];
+        // Clear selection when leaving detail view
+        this.state.selectionMode = false;
+        this.state.selectedIndices = new Set();
+        window.location.hash = '/playlists/';
+    }
+
+    openCreateDialog() {
+        this.state.showCreateDialog = true;
+        this.state.newPlaylistName = '';
+        this.state.newPlaylistDesc = '';
+        this.state.newPlaylistPublic = false;
+    }
+
+    closeCreateDialog() {
+        this.state.showCreateDialog = false;
+    }
+
+    async handleCreatePlaylist() {
+        if (!this.state.newPlaylistName.trim()) return;
+
+        try {
+            const result = await playlistsApi.create(
+                this.state.newPlaylistName,
+                this.state.newPlaylistDesc,
+                this.state.newPlaylistPublic
+            );
+            if (!result.error) {
+                this.state.showCreateDialog = false;
+                this.loadPlaylists();
+            }
+        } catch (e) {
+            console.error('Failed to create playlist:', e);
+        }
+    }
+
+    handleDeletePlaylist(playlist, e) {
+        e.stopPropagation();
+        this.state.pendingDeletePlaylist = playlist;
+        this.showConfirmDialog(
+            'Delete Playlist',
+            `Delete "${playlist.name}"?`,
+            'deletePlaylist'
+        );
+    }
+
+    async doDeletePlaylist() {
+        const playlist = this.state.pendingDeletePlaylist;
+        if (!playlist) return;
+
+        try {
+            await playlistsApi.delete(playlist.id);
+            this.loadPlaylists();
+        } catch (err) {
+            console.error('Failed to delete playlist:', err);
+        }
+        this.state.pendingDeletePlaylist = null;
+    }
+
+    showConfirmDialog(title, message, action) {
+        this.state.confirmDialog = { show: true, title, message, action };
+    }
+
+    handleConfirmDialogConfirm() {
+        const { action } = this.state.confirmDialog;
+        this.state.confirmDialog = { show: false, title: '', message: '', action: null };
+
+        if (action === 'deletePlaylist') {
+            this.doDeletePlaylist();
+        }
+    }
+
+    handleConfirmDialogCancel() {
+        this.state.confirmDialog = { show: false, title: '', message: '', action: null };
+        this.state.pendingDeletePlaylist = null;
+    }
+
+    async handleShare() {
+        if (!this.state.currentPlaylist) return;
+        try {
+            const result = await playlistsApi.share(this.state.currentPlaylist.id);
+            this.state.shareToken = result.share_token;
+            this.state.showShareDialog = true;
+        } catch (e) {
+            console.error('Failed to get share token:', e);
+        }
+    }
+
+    // AI Extend methods
+    showExtendDialog() {
+        this.state.showExtendDialog = true;
+        this.state.extendError = null;
+    }
+
+    closeExtendDialog() {
+        this.state.showExtendDialog = false;
+        this.state.extendError = null;
+    }
+
+    // Rename playlist
+    showRenamePlaylistDialog() {
+        if (!this.state.currentPlaylist) return;
+        this.state.renameNewName = this.state.currentPlaylist.name;
+        this.state.renameError = null;
+        this.state.showRenameDialog = true;
+    }
+
+    closeRenameDialog() {
+        this.state.showRenameDialog = false;
+        this.state.renameError = null;
+    }
+
+    async handleRenamePlaylist() {
+        const name = this.state.renameNewName.trim();
+        if (!name) {
+            this.state.renameError = 'Please enter a name';
+            return;
+        }
+        if (name === this.state.currentPlaylist.name) {
+            this.state.showRenameDialog = false;
+            return;
+        }
+
+        this.state.isRenaming = true;
+        this.state.renameError = null;
+
+        try {
+            await playlistsApi.update(this.state.currentPlaylist.id, { name });
+            this.state.currentPlaylist.name = name;
+            this.state.showRenameDialog = false;
+            await this.loadPlaylists(true);
+            const toast = document.querySelector('cl-toast');
+            if (toast) {
+                toast.show({ severity: 'success', summary: 'Renamed', detail: `Playlist renamed to "${name}"` });
+            }
+        } catch (e) {
+            this.state.renameError = e.message || 'Failed to rename playlist';
+        } finally {
+            this.state.isRenaming = false;
+        }
+    }
+
+    // Clone playlist
+    showClonePlaylistDialog() {
+        if (!this.state.currentPlaylist) return;
+        this.state.cloneNewName = `${this.state.currentPlaylist.name} (Copy)`;
+        this.state.cloneError = null;
+        this.state.showCloneDialog = true;
+    }
+
+    closeCloneDialog() {
+        this.state.showCloneDialog = false;
+        this.state.cloneError = null;
+    }
+
+    async handleClonePlaylist() {
+        const name = this.state.cloneNewName.trim();
+        if (!name) {
+            this.state.cloneError = 'Please enter a name';
+            return;
+        }
+
+        this.state.isCloning = true;
+        this.state.cloneError = null;
+
+        try {
+            const result = await playlistsApi.clone(this.state.currentPlaylist.id, name);
+            this.state.showCloneDialog = false;
+            await this.loadPlaylists(true);
+            const toast = document.querySelector('cl-toast');
+            if (toast) {
+                toast.show({ severity: 'success', summary: 'Cloned', detail: `Created "${result.name}"` });
+            }
+            // Navigate to the new playlist
+            window.location.hash = `#/playlists/${result.id}/`;
+        } catch (e) {
+            this.state.cloneError = e.message || 'Failed to clone playlist';
+        } finally {
+            this.state.isCloning = false;
+        }
+    }
+
+    async handleExtendPlaylist() {
+        if (!this.state.currentPlaylist || this.state.isExtending) return;
+
+        this.state.isExtending = true;
+        this.state.extendError = null;
+
+        try {
+            const result = await ai.extendPlaylist(
+                this.state.currentPlaylist.id,
+                this.state.extendCount,
+                this.state.extendDiversity
+            );
+
+            if (result.error) {
+                this.state.extendError = result.error;
+                return;
+            }
+
+            // Success - close dialog and reload playlist
+            this.state.showExtendDialog = false;
+            const addedCount = result.added?.length || result.added_count || 0;
+            const toast = document.querySelector('cl-toast');
+            if (toast) {
+                toast.show({
+                    severity: 'success',
+                    summary: 'Extended',
+                    detail: `Added ${addedCount} similar songs`
+                });
+            }
+
+            // Reload playlist
+            await this.loadPlaylistDetail(this.state.currentPlaylist.id);
+        } catch (e) {
+            console.error('Failed to extend playlist:', e);
+            this.state.extendError = e.message || 'Failed to extend playlist';
+        } finally {
+            this.state.isExtending = false;
+        }
+    }
+
+    closeShareDialog() {
+        this.state.showShareDialog = false;
+    }
+
+    copyShareLink() {
+        // Use pathname to preserve /apps/music/ path
+        const basePath = window.location.pathname.replace(/\/$/, '');
+        const url = `${window.location.origin}${basePath}/#/share/${this.state.shareToken}/`;
+        navigator.clipboard.writeText(url).then(() => {
+            const toast = document.querySelector('cl-toast');
+            if (toast) toast.show({ severity: 'success', summary: 'Copied', detail: 'Link copied to clipboard!' });
+        });
+    }
+
+    async handleClone() {
+        if (!this.state.currentPlaylist) return;
+        try {
+            const result = await playlistsApi.clone(this.state.currentPlaylist.id);
+            if (!result.error) {
+                const toast = document.querySelector('cl-toast');
+                if (toast) toast.show({ severity: 'success', summary: 'Cloned', detail: `Playlist cloned as "${result.name}"` });
+                this.loadPlaylists();
+            }
+        } catch (e) {
+            console.error('Failed to clone playlist:', e);
+        }
+    }
+
+    async handleTogglePublic() {
+        if (!this.state.currentPlaylist) return;
+        const newValue = !this.state.currentPlaylist.is_public;
+        try {
+            const result = await playlistsApi.update(this.state.currentPlaylist.id, { isPublic: newValue });
+            if (!result.error) {
+                // Update local state
+                this.state.currentPlaylist = {
+                    ...this.state.currentPlaylist,
+                    is_public: newValue
+                };
+                // Update in myPlaylists list
+                this.state.myPlaylists = this.state.myPlaylists.map(p =>
+                    p.id === this.state.currentPlaylist.id
+                        ? { ...p, is_public: newValue }
+                        : p
+                );
+            }
+        } catch (e) {
+            console.error('Failed to update playlist:', e);
+        }
+    }
+
+    toggleSortMenu() {
+        this.state.showSortMenu = !this.state.showSortMenu;
+    }
+
+    closeSortMenu() {
+        this.state.showSortMenu = false;
+    }
+
+    async handleSortPlaylist(sortBy, order = 'asc') {
+        if (!this.state.currentPlaylist) return;
+        this.state.isSorting = true;
+        this.state.showSortMenu = false;
+
+        try {
+            await playlistsApi.sort(this.state.currentPlaylist.id, sortBy, order);
+            // Reload the playlist from server after sorting
+            await this.loadPlaylistDetail(this.state.currentPlaylist.id);
+        } catch (e) {
+            console.error('Failed to sort playlist:', e);
+        } finally {
+            this.state.isSorting = false;
+        }
+    }
+
+    handleSongClick(song) {
+        // Don't play unavailable songs when offline
+        if (this.isUnavailableOffline(song)) {
+            return;
+        }
+        player.addToQueue(song, true);
+    }
+
+    /**
+     * Check if a song is unavailable in offline mode.
+     * Returns true if:
+     * - Song has explicit unavailable flag (placeholder from getSongsMetadata)
+     * - In offline mode and song is not cached
+     */
+    isUnavailableOffline(song) {
+        if (!song) return false;
+        // Check explicit unavailable flag (placeholder from getSongsMetadata)
+        if (song.unavailable) return true;
+        // Not in offline mode = nothing is unavailable
+        if (offlineStore.state.isOnline && !offlineStore.state.workOfflineMode) {
+            return false;
+        }
+        // In offline mode - check if song is cached
+        return !offlineStore.state.offlineSongUuids.has(song.uuid);
+    }
+
+    handleSongContextMenu(song, e) {
+        e.preventDefault();
+        e.stopPropagation();
+        showSongContextMenu(song, e.clientX, e.clientY);
+    }
+
+    async handlePlayAll() {
+        if (!this.state.currentPlaylist) return;
+        await player.clearQueue();
+        await player.addByPlaylist(this.state.currentPlaylist.id, false);
+    }
+
+    async handleShuffleAll() {
+        if (!this.state.currentPlaylist) return;
+        await player.clearQueue();
+        await player.addByPlaylist(this.state.currentPlaylist.id, true);
+    }
+
+    async handleStartRadio() {
+        if (!this.state.currentPlaylist) return;
+        await player.startScaFromPlaylist(this.state.currentPlaylist.id);
+    }
+
+    async handleRemoveSong(song, index, e) {
+        e.stopPropagation();
+        if (!this.state.currentPlaylist) return;
+        try {
+            // Duplicate-safe: address the exact row by its index so only the
+            // clicked copy is removed, even when the same song repeats.
+            await playlistsApi.removeSong(this.state.currentPlaylist.id, song.uuid, index);
+            this.state.playlistSongs = this.state.playlistSongs.filter((_, i) => i !== index);
+            this.state.totalCount = this.state.playlistSongs.length;
+            this.state.playlistVersion++;  // Invalidate memoEach cache
+        } catch (e) {
+            console.error('Failed to remove song:', e);
+        }
+    }
+
+    // Playlist song reordering
+    async handlePlaylistMoveUp(index, e) {
+        e.stopPropagation();
+        if (index > 0) {
+            await this.reorderPlaylistSongs(index, index - 1);
+        }
+    }
+
+    async handlePlaylistMoveDown(index, e) {
+        e.stopPropagation();
+        if (index < this.state.playlistSongs.length - 1) {
+            // reorderPlaylistSongs treats toIndex as a gap (insertIndex =
+            // to-1 when moving down), so moving down one row needs gap
+            // index+2 - (index, index+1) re-inserts in place (no-op)
+            await this.reorderPlaylistSongs(index, index + 2);
+        }
+    }
+
+    async reorderPlaylistSongs(fromIndex, toIndex) {
+        if (!this.state.currentPlaylist) return;
+        // The sparse array still has unloaded (null) rows while background
+        // loading runs; building the full positions payload needs every
+        // row. Ignore the reorder instead of throwing on null.uuid.
+        if (this.state.playlistSongs.some(x => !x)) {
+            console.warn('Reorder ignored: playlist songs still loading');
+            return;
+        }
+        const songs = [...this.state.playlistSongs];
+        const [moved] = songs.splice(fromIndex, 1);
+        // When moving down, adjust for the index shift after removal
+        const insertIndex = fromIndex < toIndex ? toIndex - 1 : toIndex;
+        songs.splice(insertIndex, 0, moved);
+
+        // Optimistically update UI
+        this.state.playlistSongs = songs;
+        this.state.playlistVersion++;  // Invalidate memoEach cache for correct numbering
+
+        // Build positions array for API - backend expects [{uuid, position}, ...]
+        const positions = songs.map((s, i) => ({ uuid: s.uuid, position: i }));
+
+        try {
+            await playlistsApi.reorder(this.state.currentPlaylist.id, positions);
+        } catch (e) {
+            console.error('Failed to reorder playlist:', e);
+            // Reload to restore correct state
+            this.loadPlaylistDetail(this.state.currentPlaylist.id);
+        }
+    }
+
+    async reorderPlaylistSongsBatch(indices, targetIndex) {
+        if (!this.state.currentPlaylist) return;
+        // The sparse array still has unloaded (null) rows while background
+        // loading runs; building the full positions payload needs every
+        // row. Ignore the reorder instead of throwing on null.uuid.
+        if (this.state.playlistSongs.some(x => !x)) {
+            console.warn('Reorder ignored: playlist songs still loading');
+            return;
+        }
+        // Move all items at indices to targetIndex, maintaining relative order
+        const sortedIndices = [...indices].sort((a, b) => a - b);
+        const songs = [...this.state.playlistSongs];
+        const items = sortedIndices.map(i => songs[i]);
+
+        // Remove items from highest index first to preserve indices
+        for (const idx of [...sortedIndices].reverse()) {
+            songs.splice(idx, 1);
+        }
+
+        // Calculate adjusted target (accounting for removed items before target)
+        let adjustedTarget = targetIndex;
+        for (const idx of sortedIndices) {
+            if (idx < targetIndex) adjustedTarget--;
+        }
+        // Clamp to valid range
+        adjustedTarget = Math.max(0, Math.min(adjustedTarget, songs.length));
+
+        // Insert all items at target position
+        songs.splice(adjustedTarget, 0, ...items);
+
+        // Optimistically update UI
+        this.state.playlistSongs = songs;
+        this.state.playlistVersion++;
+
+        // Build positions array for API
+        const positions = songs.map((s, i) => ({ uuid: s.uuid, position: i }));
+
+        try {
+            await playlistsApi.reorder(this.state.currentPlaylist.id, positions);
+        } catch (e) {
+            console.error('Failed to batch reorder playlist:', e);
+            // Reload to restore correct state
+            this.loadPlaylistDetail(this.state.currentPlaylist.id);
+        }
+    }
+
+    toggleAddSongs() {
+        this.state.showAddSongs = !this.state.showAddSongs;
+        if (!this.state.showAddSongs) {
+            this.state.searchQuery = '';
+            this.state.searchResults = [];
+        }
+    }
+
+    handleSearchInput(e) {
+        this.state.searchQuery = e.target.value;
+    }
+
+    async handleSearch(e) {
+        e?.preventDefault?.();
+        const query = this.state.searchQuery.trim();
+        if (!query) return;
+
+        this.state.searchLoading = true;
+        try {
+            const result = await songsApi.search(query, { limit: 50 });
+            this.state.searchResults = result.items || [];
+        } catch (e) {
+            console.error('Search failed:', e);
+        } finally {
+            this.state.searchLoading = false;
+        }
+    }
+
+    handleSearchKeyDown(e) {
+        if (e.key === 'Enter') {
+            this.handleSearch();
+        }
+    }
+
+    async handleAddSongToPlaylist(song, e) {
+        e.stopPropagation();
+        if (!this.state.currentPlaylist) return;
+        try {
+            await playlistsApi.addSong(this.state.currentPlaylist.id, song.uuid);
+            // Duplicates are a first-class feature: always append the copy
+            // just added, even if the song is already in the playlist.
+            this.state.playlistSongs = [...this.state.playlistSongs, song];
+            this.state.totalCount = this.state.playlistSongs.length;
+            this.state.playlistVersion++;
+        } catch (e) {
+            console.error('Failed to add song:', e);
+        }
+    }
+
+    isSongInPlaylist(song) {
+        return this.state.playlistSongs.some(s => s.uuid === song.uuid);
+    }
+
+    // Render function for song list item
+    renderSongItem(song, index) {
+        const view = this.state.view;
+        const playlistSongs = this.state.playlistSongs;
+        const selectionMode = this.state.selectionMode;
+        const isSelected = this.isSelected(index);
+        const g = this._g;
+
+        // Placeholder for unloaded items
+        if (!song) {
+            return html`
                     <div class="song-item loading-placeholder">
                         <span class="song-num">${index + 1}</span>
                         <div class="song-info">
@@ -1177,9 +1178,9 @@ export default defineComponent('playlists-page', {
                         </div>
                     </div>
                 `;
-            }
+        }
 
-            return html`
+        return html`
                 <div class="song-item ${selectionMode ? 'selectable' : ''} ${isSelected ? 'selected' : ''} ${this.isUnavailableOffline(song) ? 'unavailable' : ''}"
                      data-uuid="${song.uuid}"
                      data-index="${index}"
@@ -1207,9 +1208,9 @@ export default defineComponent('playlists-page', {
                         <div class="song-title">${song.disc_number > 1 || song.track_number ? html`<span class="track-number">${song.disc_number > 1 ? `${song.disc_number}-` : ''}${song.track_number ? String(song.track_number).padStart(2, '0') : ''}</span>` : ''}${this.getDisplayTitle(song)}</div>
                         <div class="song-meta">
                             ${when(song.artist,
-                                () => html`<a class="meta-link" on-click="${(e) => { e.stopPropagation(); if (!selectionMode) navigateToArtist(song.artist); }}">${song.artist}</a>`,
-                                () => html`<span class="song-artist">Unknown</span>`
-                            )}
+                            () => html`<a class="meta-link" on-click="${(e) => { e.stopPropagation(); if (!selectionMode) navigateToArtist(song.artist); }}">${song.artist}</a>`,
+                            () => html`<span class="song-artist">Unknown</span>`
+                        )}
                             ${when(song.album, () => html`
                                 <span> • </span>
                                 <a class="meta-link" on-click="${(e) => { e.stopPropagation(); if (!selectionMode) navigateToAlbum(song.artist, song.album); }}">${song.album}</a>
@@ -1227,156 +1228,155 @@ export default defineComponent('playlists-page', {
                     `)}
                 </div>
             `;
-        },
+    }
 
-        // Import methods
-        openImportDialog() {
-            this.state.showImportDialog = true;
-            this.state.importMode = 'new';
-            this.state.importTargetPlaylist = null;
-            this.state.importNewName = '';
-            this.state.importFile = null;
-            this.state.importProgress = null;
-            this.state.importError = null;
-        },
+    // Import methods
+    openImportDialog() {
+        this.state.showImportDialog = true;
+        this.state.importMode = 'new';
+        this.state.importTargetPlaylist = null;
+        this.state.importNewName = '';
+        this.state.importFile = null;
+        this.state.importProgress = null;
+        this.state.importError = null;
+    }
 
-        closeImportDialog() {
-            this.state.showImportDialog = false;
-            this.state.importProgress = null;
-            this.state.importError = null;
-        },
+    closeImportDialog() {
+        this.state.showImportDialog = false;
+        this.state.importProgress = null;
+        this.state.importError = null;
+    }
 
-        handleImportModeChange(mode) {
-            this.state.importMode = mode;
-        },
+    handleImportModeChange(mode) {
+        this.state.importMode = mode;
+    }
 
-        handleImportTargetChange(e) {
-            this.state.importTargetPlaylist = e.target.value;
-        },
+    handleImportTargetChange(e) {
+        this.state.importTargetPlaylist = e.target.value;
+    }
 
-        handleImportNameChange(e) {
-            this.state.importNewName = e.target.value;
-        },
+    handleImportNameChange(e) {
+        this.state.importNewName = e.target.value;
+    }
 
-        handleImportFileChange(e) {
-            // Store file outside reactive state to avoid proxy issues with Blob methods
-            this._importFile = e.target.files[0] || null;
-            this.state.importFile = this._importFile ? this._importFile.name : null;
-            this.state.importError = null;
-        },
+    handleImportFileChange(e) {
+        // Store file outside reactive state to avoid proxy issues with Blob methods
+        this._importFile = e.target.files[0] || null;
+        this.state.importFile = this._importFile ? this._importFile.name : null;
+        this.state.importError = null;
+    }
 
-        parsePlaylistFile(content) {
-            // Parse TSV file - extract UUID from first column of each line
-            const lines = content.split('\n');
-            const uuids = [];
+    parsePlaylistFile(content) {
+        // Parse TSV file - extract UUID from first column of each line
+        const lines = content.split('\n');
+        const uuids = [];
 
-            for (const line of lines) {
-                const trimmed = line.trim();
-                if (!trimmed) continue;
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
 
-                // Get everything before the first tab (or the whole line if no tab)
-                const tabIndex = trimmed.indexOf('\t');
-                const uuid = tabIndex >= 0 ? trimmed.substring(0, tabIndex) : trimmed;
+            // Get everything before the first tab (or the whole line if no tab)
+            const tabIndex = trimmed.indexOf('\t');
+            const uuid = tabIndex >= 0 ? trimmed.substring(0, tabIndex) : trimmed;
 
-                // Basic UUID validation (should be hex chars and dashes)
-                if (uuid && /^[0-9a-f-]+$/i.test(uuid)) {
-                    uuids.push(uuid);
-                }
-            }
-
-            return uuids;
-        },
-
-        async handleImport() {
-            if (!this._importFile) {
-                this.state.importError = 'Please select a file';
-                return;
-            }
-
-            if (this.state.importMode === 'new' && !this.state.importNewName.trim()) {
-                this.state.importError = 'Please enter a playlist name';
-                return;
-            }
-
-            if (this.state.importMode === 'append' && !this.state.importTargetPlaylist) {
-                this.state.importError = 'Please select a playlist';
-                return;
-            }
-
-            try {
-                // Read and parse file (use _importFile which is the actual File object)
-                const content = await this._importFile.text();
-                const uuids = this.parsePlaylistFile(content);
-
-                if (uuids.length === 0) {
-                    this.state.importError = 'No valid UUIDs found in file';
-                    return;
-                }
-
-                let playlistId;
-
-                if (this.state.importMode === 'new') {
-                    // Create new playlist
-                    const result = await playlistsApi.create(this.state.importNewName.trim());
-                    if (result.error) {
-                        this.state.importError = result.error;
-                        return;
-                    }
-                    playlistId = result.id;
-                } else {
-                    playlistId = this.state.importTargetPlaylist;
-                }
-
-                // Add songs in batches
-                this.state.importProgress = { completed: 0, total: uuids.length };
-
-                await playlistsApi.addSongsBatch(playlistId, uuids, 500, (completed, total) => {
-                    this.state.importProgress = { completed, total };
-                });
-
-                // Done - close dialog and refresh
-                this.state.showImportDialog = false;
-                this.state.importProgress = null;
-                this.loadPlaylists();
-
-            } catch (e) {
-                console.error('Import failed:', e);
-                this.state.importError = e.message || 'Import failed';
-            }
-        },
-
-        async _loadRemainingInBackground(playlistId, cursor, shareToken = null) {
-            // Load remaining items in background with larger batches. In the
-            // shared (anonymous) view the token-scoped endpoint is used -
-            // getSongs requires a logged-in user.
-            let currentCursor = cursor;
-            let offset = this.state.playlistSongs.filter(s => s !== null).length;
-
-            while (currentCursor) {
-                try {
-                    const opts = { cursor: currentCursor, limit: 500 };  // Larger batches for background loading
-                    const result = shareToken
-                        ? await playlistsApi.getSongsByToken(shareToken, opts)
-                        : await playlistsApi.getSongs(playlistId, opts);
-                    if (result.error) break;
-
-                    // Update sparse array
-                    const songs = [...this.state.playlistSongs];
-                    result.items.forEach((item, i) => {
-                        songs[offset + i] = item;
-                    });
-                    this.state.playlistSongs = songs;
-                    this.state.hasMore = result.hasMore;
-
-                    offset += result.items.length;
-                    currentCursor = result.nextCursor;
-                } catch (e) {
-                    console.error('Background loading failed:', e);
-                    break;
-                }
+            // Basic UUID validation (should be hex chars and dashes)
+            if (uuid && /^[0-9a-f-]+$/i.test(uuid)) {
+                uuids.push(uuid);
             }
         }
-    },
+
+        return uuids;
+    }
+
+    async handleImport() {
+        if (!this._importFile) {
+            this.state.importError = 'Please select a file';
+            return;
+        }
+
+        if (this.state.importMode === 'new' && !this.state.importNewName.trim()) {
+            this.state.importError = 'Please enter a playlist name';
+            return;
+        }
+
+        if (this.state.importMode === 'append' && !this.state.importTargetPlaylist) {
+            this.state.importError = 'Please select a playlist';
+            return;
+        }
+
+        try {
+            // Read and parse file (use _importFile which is the actual File object)
+            const content = await this._importFile.text();
+            const uuids = this.parsePlaylistFile(content);
+
+            if (uuids.length === 0) {
+                this.state.importError = 'No valid UUIDs found in file';
+                return;
+            }
+
+            let playlistId;
+
+            if (this.state.importMode === 'new') {
+                // Create new playlist
+                const result = await playlistsApi.create(this.state.importNewName.trim());
+                if (result.error) {
+                    this.state.importError = result.error;
+                    return;
+                }
+                playlistId = result.id;
+            } else {
+                playlistId = this.state.importTargetPlaylist;
+            }
+
+            // Add songs in batches
+            this.state.importProgress = { completed: 0, total: uuids.length };
+
+            await playlistsApi.addSongsBatch(playlistId, uuids, 500, (completed, total) => {
+                this.state.importProgress = { completed, total };
+            });
+
+            // Done - close dialog and refresh
+            this.state.showImportDialog = false;
+            this.state.importProgress = null;
+            this.loadPlaylists();
+
+        } catch (e) {
+            console.error('Import failed:', e);
+            this.state.importError = e.message || 'Import failed';
+        }
+    }
+
+    async _loadRemainingInBackground(playlistId, cursor, shareToken = null) {
+        // Load remaining items in background with larger batches. In the
+        // shared (anonymous) view the token-scoped endpoint is used -
+        // getSongs requires a logged-in user.
+        let currentCursor = cursor;
+        let offset = this.state.playlistSongs.filter(s => s !== null).length;
+
+        while (currentCursor) {
+            try {
+                const opts = { cursor: currentCursor, limit: 500 };  // Larger batches for background loading
+                const result = shareToken
+                    ? await playlistsApi.getSongsByToken(shareToken, opts)
+                    : await playlistsApi.getSongs(playlistId, opts);
+                if (result.error) break;
+
+                // Update sparse array
+                const songs = [...this.state.playlistSongs];
+                result.items.forEach((item, i) => {
+                    songs[offset + i] = item;
+                });
+                this.state.playlistSongs = songs;
+                this.state.hasMore = result.hasMore;
+
+                offset += result.items.length;
+                currentCursor = result.nextCursor;
+            } catch (e) {
+                console.error('Background loading failed:', e);
+                break;
+            }
+        }
+    }
 
     template() {
         const { view, tab, myPlaylists, publicPlaylists, currentPlaylist, playlistSongs,
@@ -1912,9 +1912,9 @@ export default defineComponent('playlists-page', {
                 `)}
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -2707,4 +2707,6 @@ export default defineComponent('playlists-page', {
             }
         }
     `
-});
+}
+
+export default defineComponent('playlists-page', PlaylistsPage);

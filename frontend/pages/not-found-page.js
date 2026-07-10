@@ -5,7 +5,7 @@
  * '/404' route key in music-app.js and reached via _findRoute's fallback.
  */
 
-import { defineComponent, html } from 'vdx/framework.js';
+import { defineComponent, html, Component } from 'vdx/framework.js';
 import { getRouter } from 'vdx/router.js';
 
 // Resolve the path the user tried to reach. Prefer the router's current route
@@ -22,12 +22,14 @@ function getAttemptedPath() {
     return window.location.hash || '#/';
 }
 
-export default defineComponent('not-found-page', {
-    data() {
-        return {
+export class NotFoundPage extends Component {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             attemptedPath: getAttemptedPath()
         };
-    },
+    }
 
     template() {
         return html`
@@ -43,9 +45,9 @@ export default defineComponent('not-found-page', {
                 </div>
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -105,4 +107,6 @@ export default defineComponent('not-found-page', {
             background: var(--primary-400, #42a5f5);
         }
     `
-});
+}
+
+export default defineComponent('not-found-page', NotFoundPage);

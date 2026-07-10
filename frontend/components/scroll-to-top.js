@@ -5,53 +5,53 @@
  * allowing them to quickly return to the top of the page.
  */
 
-import { defineComponent, html, when } from 'vdx/framework.js';
+import { defineComponent, html, when, Component } from 'vdx/framework.js';
 
-export default defineComponent('scroll-to-top', {
-    props: {
+export class ScrollToTop extends Component {
+    static props = {
         threshold: 200  // How far to scroll before showing the button
-    },
+    }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             visible: false
         };
-    },
+    }
 
     mounted() {
         this._scrollHandler = () => this._checkScroll();
         window.addEventListener('scroll', this._scrollHandler, true);
         // Initial check
         requestAnimationFrame(() => this._checkScroll());
-    },
+    }
 
     unmounted() {
         if (this._scrollHandler) {
             window.removeEventListener('scroll', this._scrollHandler, true);
         }
-    },
+    }
 
-    methods: {
-        _checkScroll() {
-            // Get the main content container (shell's scrollable area)
-            const mainContent = document.querySelector('div.router-wrapper');
-            if (!mainContent) return;
+    _checkScroll() {
+        // Get the main content container (shell's scrollable area)
+        const mainContent = document.querySelector('div.router-wrapper');
+        if (!mainContent) return;
 
-            const scrollTop = mainContent.scrollTop;
-            const shouldShow = scrollTop > this.props.threshold;
+        const scrollTop = mainContent.scrollTop;
+        const shouldShow = scrollTop > this.props.threshold;
 
-            if (shouldShow !== this.state.visible) {
-                this.state.visible = shouldShow;
-            }
-        },
-
-        scrollToTop() {
-            const mainContent = document.querySelector('div.router-wrapper');
-            if (mainContent) {
-                mainContent.scrollTo({ top: 0, behavior: 'smooth' });
-            }
+        if (shouldShow !== this.state.visible) {
+            this.state.visible = shouldShow;
         }
-    },
+    }
+
+    scrollToTop() {
+        const mainContent = document.querySelector('div.router-wrapper');
+        if (mainContent) {
+            mainContent.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+    }
 
     template() {
         return html`
@@ -63,9 +63,9 @@ export default defineComponent('scroll-to-top', {
                 </button>
             `)}
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -125,4 +125,6 @@ export default defineComponent('scroll-to-top', {
             }
         }
     `
-});
+}
+
+export default defineComponent('scroll-to-top', ScrollToTop);

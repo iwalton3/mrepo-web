@@ -7,7 +7,7 @@
  * - Easy navigation back to settings
  */
 
-import { defineComponent, html, when, each } from 'vdx/framework.js';
+import { defineComponent, html, when, each, Component } from 'vdx/framework.js';
 import player, { EQ_BANDS } from '../stores/player-store.js';
 import eqPresetsStore from '../stores/eq-presets-store.js';
 import '../components/parametric-eq-editor.js';
@@ -21,13 +21,15 @@ const MAX_FREQ = 20000;
 // Max undo history size
 const MAX_UNDO_HISTORY = 50;
 
-export default defineComponent('eq-page', {
-    data() {
+export class EqPage extends Component {
+    constructor(props) {
+        super(props);
+
         // Capture initial state immediately from player store
         const initialGains = [...player.state.eqGains];
         const isParametric = localStorage.getItem('music-eq-advanced') === 'true';
 
-        return {
+        this.state = {
             // EQ settings (from player store, device-specific)
             eqEnabled: player.state.eqEnabled,
             eqGains: initialGains,
@@ -61,388 +63,386 @@ export default defineComponent('eq-page', {
                 gains: initialGains
             }
         };
-    },
+    }
 
     mounted() {
         // For parametric mode, wait for editor to be ready then capture initial state
         if (this.state.showParametricEQ && this.state.eqEnabled) {
             this._waitForParametricEditor();
         }
-    },
+    }
 
-    methods: {
-        _waitForParametricEditor() {
-            // Poll for editor to have bands loaded (max 2 seconds)
-            let attempts = 0;
-            const maxAttempts = 40;
-            const checkEditor = () => {
-                const editor = this.querySelector('parametric-eq-editor');
-                if (editor && editor.state && editor.state.bands) {
-                    // Editor is ready - capture its current state
-                    const bands = editor.state.bands;
-                    if (bands.length > 0 || attempts >= maxAttempts) {
-                        this.state.lastSavedState = {
-                            mode: 'parametric',
-                            bands: JSON.parse(JSON.stringify(bands))
-                        };
-                        return;
-                    }
-                }
-                attempts++;
-                if (attempts < maxAttempts) {
-                    setTimeout(checkEditor, 50);
-                }
-            };
-            checkEditor();
-        },
-
-        _getCurrentState() {
-            if (this.state.showParametricEQ) {
-                // Get bands from parametric editor
-                const editor = this.querySelector('parametric-eq-editor');
-                if (editor && editor.state) {
-                    return {
+    _waitForParametricEditor() {
+        // Poll for editor to have bands loaded (max 2 seconds)
+        let attempts = 0;
+        const maxAttempts = 40;
+        const checkEditor = () => {
+            const editor = this.querySelector('parametric-eq-editor');
+            if (editor && editor.state && editor.state.bands) {
+                // Editor is ready - capture its current state
+                const bands = editor.state.bands;
+                if (bands.length > 0 || attempts >= maxAttempts) {
+                    this.state.lastSavedState = {
                         mode: 'parametric',
-                        bands: JSON.parse(JSON.stringify(editor.state.bands))
+                        bands: JSON.parse(JSON.stringify(bands))
                     };
+                    return;
                 }
             }
-            return {
-                mode: 'graphic',
-                gains: [...this.state.eqGains]
-            };
-        },
-
-        _pushUndoState() {
-            const currentState = this._getCurrentState();
-
-            // Don't push if state hasn't changed
-            if (this.state.lastSavedState &&
-                JSON.stringify(currentState) === JSON.stringify(this.state.lastSavedState)) {
-                return;
+            attempts++;
+            if (attempts < maxAttempts) {
+                setTimeout(checkEditor, 50);
             }
+        };
+        checkEditor();
+    }
 
-            // Push previous state to undo stack
-            if (this.state.lastSavedState) {
-                this.state.undoHistory = [
-                    ...this.state.undoHistory.slice(-MAX_UNDO_HISTORY + 1),
-                    this.state.lastSavedState
-                ];
+    _getCurrentState() {
+        if (this.state.showParametricEQ) {
+            // Get bands from parametric editor
+            const editor = this.querySelector('parametric-eq-editor');
+            if (editor && editor.state) {
+                return {
+                    mode: 'parametric',
+                    bands: JSON.parse(JSON.stringify(editor.state.bands))
+                };
             }
-
-            // Clear redo stack on new change
-            this.state.redoHistory = [];
-            this.state.lastSavedState = currentState;
-        },
-
-        handleUndo() {
-            if (this.state.undoHistory.length === 0) return;
-
-            const undoHistory = [...this.state.undoHistory];
-            const previousState = undoHistory.pop();
-
-            // Save current state to redo
-            const currentState = this._getCurrentState();
-            this.state.redoHistory = [...this.state.redoHistory, currentState];
-
-            // Apply previous state
-            this._applyState(previousState);
-            this.state.undoHistory = undoHistory;
-            this.state.lastSavedState = previousState;
-        },
-
-        handleRedo() {
-            if (this.state.redoHistory.length === 0) return;
-
-            const redoHistory = [...this.state.redoHistory];
-            const nextState = redoHistory.pop();
-
-            // Save current state to undo
-            const currentState = this._getCurrentState();
-            this.state.undoHistory = [...this.state.undoHistory, currentState];
-
-            // Apply next state
-            this._applyState(nextState);
-            this.state.redoHistory = redoHistory;
-            this.state.lastSavedState = nextState;
-        },
-
-        _applyState(state) {
-            if (state.mode === 'parametric') {
-                // Switch to parametric mode if needed
-                if (!this.state.showParametricEQ) {
-                    this.state.showParametricEQ = true;
-                    localStorage.setItem('music-eq-advanced', 'true');
-                }
-
-                // Apply bands to parametric editor
-                const editor = this.querySelector('parametric-eq-editor');
-                if (editor) {
-                    editor.setBands(state.bands);
-                }
-            } else {
-                // Switch to graphic mode if needed
-                if (this.state.showParametricEQ) {
-                    this.state.showParametricEQ = false;
-                    localStorage.setItem('music-eq-advanced', 'false');
-                }
-
-                // Apply gains to graphic EQ
-                this.state.eqGains = [...state.gains];
-                state.gains.forEach((gain, i) => {
-                    player.setEQBand(i, gain);
-                });
-                this._applyGraphicPreamp();
-            }
-        },
-
-        handleEQToggle(e) {
-            this.state.eqEnabled = e.target.checked;
-            player.setEQEnabled(e.target.checked);
-        },
-
-        // Called continuously during slider drag - updates audio but doesn't push undo
-        handleEQInput(index, e) {
-            const value = parseInt(e.target.value, 10);
-            this.state.eqGains[index] = value;
-            player.setEQBand(index, value);
-            this._applyGraphicPreamp();
-        },
-
-        // Called on blur/change end - pushes undo state
-        handleEQChange(index, e) {
-            this._pushUndoState();
-        },
-
-        handleResetEQ() {
-            this._pushUndoState();
-            this.state.eqGains = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-            player.resetEQ();
-            player.setGraphicPreamp(0);
-        },
-
-        setEQMode(mode) {
-            const isParametric = mode === 'parametric';
-            if (isParametric === this.state.showParametricEQ) return;
-
-            this._pushUndoState();
-            this.state.showParametricEQ = isParametric;
-            localStorage.setItem('music-eq-advanced', isParametric);
-
-            // When switching to graphic EQ, restore the 10-band filter chain with preamp
-            if (!isParametric) {
-                const preamp = this._calculateGraphicPreamp();
-                player.restoreGraphicEQ(preamp);
-            }
-        },
-
-        // Called by parametric-eq-editor when bands change
-        handleParametricChange() {
-            this._pushUndoState();
-        },
-
-        formatFreq(freq) {
-            if (freq >= 1000) {
-                return (freq / 1000) + 'k';
-            }
-            return freq.toString();
-        },
-
-        /**
-         * Calculate headroom for graphic EQ based on combined frequency response peak.
-         */
-        _calculateGraphicPreamp() {
-            const gains = this.state.eqGains;
-            if (!gains || gains.every(g => g === 0)) return 0;
-
-            // Create temporary AudioContext if needed
-            if (!this._tempAudioContext) {
-                try {
-                    this._tempAudioContext = new (window.AudioContext || window.webkitAudioContext)();
-                } catch (e) {
-                    // Fallback to simple max gain
-                    const maxGain = Math.max(...gains.filter(g => g > 0), 0);
-                    return maxGain > 0 ? -maxGain : 0;
-                }
-            }
-
-            const logMin = Math.log10(MIN_FREQ);
-            const logMax = Math.log10(MAX_FREQ);
-
-            // Generate log-spaced frequencies
-            const frequencies = new Float32Array(RESPONSE_POINTS);
-            for (let i = 0; i < RESPONSE_POINTS; i++) {
-                const logFreq = logMin + (i / (RESPONSE_POINTS - 1)) * (logMax - logMin);
-                frequencies[i] = Math.pow(10, logFreq);
-            }
-
-            // Combined magnitude in dB
-            const combinedMag = new Float32Array(RESPONSE_POINTS).fill(0);
-
-            // Create filters for each band
-            EQ_BANDS.forEach((freq, i) => {
-                const filter = this._tempAudioContext.createBiquadFilter();
-                filter.type = i === 0 ? 'lowshelf' : i === 9 ? 'highshelf' : 'peaking';
-                filter.frequency.value = freq;
-                filter.gain.value = gains[i];
-                if (i > 0 && i < 9) {
-                    filter.Q.value = 1.4;
-                }
-
-                const magResponse = new Float32Array(RESPONSE_POINTS);
-                const phaseResponse = new Float32Array(RESPONSE_POINTS);
-                filter.getFrequencyResponse(frequencies, magResponse, phaseResponse);
-
-                for (let j = 0; j < RESPONSE_POINTS; j++) {
-                    combinedMag[j] += 20 * Math.log10(magResponse[j]);
-                }
-            });
-
-            // Find peak
-            let peakDb = 0;
-            for (let i = 0; i < RESPONSE_POINTS; i++) {
-                if (combinedMag[i] > peakDb) {
-                    peakDb = combinedMag[i];
-                }
-            }
-
-            // Round to 0.1 dB precision
-            return peakDb > 0 ? -Math.ceil(peakDb * 10) / 10 : 0;
-        },
-
-        /**
-         * Apply the current graphic EQ preamp.
-         */
-        _applyGraphicPreamp() {
-            const preamp = this._calculateGraphicPreamp();
-            player.setGraphicPreamp(preamp);
-        },
-
-        // Crossfeed handlers
-        handleCrossfeedToggle(e) {
-            this.state.crossfeedEnabled = e.target.checked;
-            player.setCrossfeedEnabled(e.target.checked);
-        },
-
-        handleCrossfeedLevelChange(e) {
-            const value = parseInt(e.target.value, 10);
-            this.state.crossfeedLevel = value;
-            player.setCrossfeedLevel(value);
-        },
-
-        // Logarithmic conversion: slider 0-100 → delay 0-5ms
-        // Using base=50 gives excellent resolution at low values (0.1-0.5ms range)
-        // slider 30 ≈ 0.2ms, slider 40 ≈ 0.3ms, slider 50 ≈ 0.5ms, slider 70 ≈ 1.2ms
-        sliderToDelay(slider) {
-            if (slider <= 0) return 0;
-            const maxMs = 5;
-            const base = 50;
-            return maxMs * (Math.pow(base, slider / 100) - 1) / (base - 1);
-        },
-
-        delayToSlider(ms) {
-            if (ms <= 0) return 0;
-            const maxMs = 5;
-            const base = 50;
-            return 100 * Math.log(ms * (base - 1) / maxMs + 1) / Math.log(base);
-        },
-
-        handleCrossfeedDelayChange(e) {
-            const ms = this.sliderToDelay(parseInt(e.target.value, 10));
-            this.state.crossfeedDelayMs = ms;
-            player.setCrossfeedDelay(ms);
-        },
-
-        // Shadow filter conversion: slider 0-100 → 0 (off) or 500-3000Hz
-        // Inverted scale: higher slider = lower frequency (more filtering)
-        sliderToShadow(slider) {
-            if (slider <= 0) return 0;
-            // Linear scale from 3000Hz (slider=1) down to 500Hz (slider=100)
-            return Math.round(3000 - (slider / 100) * 2500);
-        },
-
-        shadowToSlider(hz) {
-            if (hz <= 0) return 0;
-            return Math.round((3000 - hz) / 2500 * 100);
-        },
-
-        handleCrossfeedShadowChange(e) {
-            const hz = this.sliderToShadow(parseInt(e.target.value, 10));
-            this.state.crossfeedShadowHz = hz;
-            player.setCrossfeedShadow(hz);
-        },
-
-        handleCrossfeedPreset(preset) {
-            player.setCrossfeedPreset(preset);
-            // Sync local state with store
-            this.state.crossfeedLevel = player.state.crossfeedLevel;
-            this.state.crossfeedDelayMs = player.state.crossfeedDelayMs;
-            this.state.crossfeedShadowHz = player.state.crossfeedShadowHz;
-        },
-
-        // Loudness compensation handlers
-        handleLoudnessToggle(e) {
-            this.state.loudnessEnabled = e.target.checked;
-            player.setLoudnessEnabled(e.target.checked);
-        },
-
-        handleReferenceSPLChange(e) {
-            const value = parseInt(e.target.value, 10);
-            this.state.loudnessReferenceSPL = value;
-            player.setLoudnessReferenceSPL(value);
-        },
-
-        handleLoudnessStrengthChange(e) {
-            const value = parseInt(e.target.value, 10);
-            this.state.loudnessStrength = value;
-            player.setLoudnessStrength(value);
-        },
-
-        // Comfort noise handlers
-        handleNoiseToggle(e) {
-            this.state.noiseEnabled = e.target.checked;
-            player.setNoiseEnabled(e.target.checked);
-        },
-
-        handleNoiseModeChange(mode) {
-            this.state.noiseMode = mode;
-            this.state.noiseTilt = 0;  // Reset tilt when changing mode (matches store behavior)
-            player.setNoiseMode(mode);
-        },
-
-        handleNoiseTiltChange(e) {
-            const value = parseInt(e.target.value, 10);
-            this.state.noiseTilt = value;
-            player.setNoiseTilt(value);
-        },
-
-        handleNoisePowerChange(e) {
-            const value = parseInt(e.target.value, 10);
-            this.state.noisePower = value;
-            player.setNoisePower(value);
-        },
-
-        handleNoiseThresholdChange(e) {
-            const value = parseInt(e.target.value, 10);
-            this.state.noiseThreshold = value;
-            player.setNoiseThreshold(value);
-        },
-
-        handleNoiseAttackChange(e) {
-            // Log scale: slider 0-100 maps to 25-2000ms
-            // ms = 25 * 80^(slider/100)
-            const sliderValue = parseInt(e.target.value, 10);
-            const ms = Math.round(25 * Math.pow(80, sliderValue / 100));
-            this.state.noiseAttack = ms;
-            player.setNoiseAttack(ms);
-        },
-
-        // Convert ms to slider position (log scale)
-        attackMsToSlider(ms) {
-            // slider = 100 * log(ms/25) / log(80)
-            return Math.round(100 * Math.log(ms / 25) / Math.log(80));
         }
-    },
+        return {
+            mode: 'graphic',
+            gains: [...this.state.eqGains]
+        };
+    }
+
+    _pushUndoState() {
+        const currentState = this._getCurrentState();
+
+        // Don't push if state hasn't changed
+        if (this.state.lastSavedState &&
+            JSON.stringify(currentState) === JSON.stringify(this.state.lastSavedState)) {
+            return;
+        }
+
+        // Push previous state to undo stack
+        if (this.state.lastSavedState) {
+            this.state.undoHistory = [
+                ...this.state.undoHistory.slice(-MAX_UNDO_HISTORY + 1),
+                this.state.lastSavedState
+            ];
+        }
+
+        // Clear redo stack on new change
+        this.state.redoHistory = [];
+        this.state.lastSavedState = currentState;
+    }
+
+    handleUndo() {
+        if (this.state.undoHistory.length === 0) return;
+
+        const undoHistory = [...this.state.undoHistory];
+        const previousState = undoHistory.pop();
+
+        // Save current state to redo
+        const currentState = this._getCurrentState();
+        this.state.redoHistory = [...this.state.redoHistory, currentState];
+
+        // Apply previous state
+        this._applyState(previousState);
+        this.state.undoHistory = undoHistory;
+        this.state.lastSavedState = previousState;
+    }
+
+    handleRedo() {
+        if (this.state.redoHistory.length === 0) return;
+
+        const redoHistory = [...this.state.redoHistory];
+        const nextState = redoHistory.pop();
+
+        // Save current state to undo
+        const currentState = this._getCurrentState();
+        this.state.undoHistory = [...this.state.undoHistory, currentState];
+
+        // Apply next state
+        this._applyState(nextState);
+        this.state.redoHistory = redoHistory;
+        this.state.lastSavedState = nextState;
+    }
+
+    _applyState(state) {
+        if (state.mode === 'parametric') {
+            // Switch to parametric mode if needed
+            if (!this.state.showParametricEQ) {
+                this.state.showParametricEQ = true;
+                localStorage.setItem('music-eq-advanced', 'true');
+            }
+
+            // Apply bands to parametric editor
+            const editor = this.querySelector('parametric-eq-editor');
+            if (editor) {
+                editor.setBands(state.bands);
+            }
+        } else {
+            // Switch to graphic mode if needed
+            if (this.state.showParametricEQ) {
+                this.state.showParametricEQ = false;
+                localStorage.setItem('music-eq-advanced', 'false');
+            }
+
+            // Apply gains to graphic EQ
+            this.state.eqGains = [...state.gains];
+            state.gains.forEach((gain, i) => {
+                player.setEQBand(i, gain);
+            });
+            this._applyGraphicPreamp();
+        }
+    }
+
+    handleEQToggle(e) {
+        this.state.eqEnabled = e.target.checked;
+        player.setEQEnabled(e.target.checked);
+    }
+
+    // Called continuously during slider drag - updates audio but doesn't push undo
+    handleEQInput(index, e) {
+        const value = parseInt(e.target.value, 10);
+        this.state.eqGains[index] = value;
+        player.setEQBand(index, value);
+        this._applyGraphicPreamp();
+    }
+
+    // Called on blur/change end - pushes undo state
+    handleEQChange(index, e) {
+        this._pushUndoState();
+    }
+
+    handleResetEQ() {
+        this._pushUndoState();
+        this.state.eqGains = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        player.resetEQ();
+        player.setGraphicPreamp(0);
+    }
+
+    setEQMode(mode) {
+        const isParametric = mode === 'parametric';
+        if (isParametric === this.state.showParametricEQ) return;
+
+        this._pushUndoState();
+        this.state.showParametricEQ = isParametric;
+        localStorage.setItem('music-eq-advanced', isParametric);
+
+        // When switching to graphic EQ, restore the 10-band filter chain with preamp
+        if (!isParametric) {
+            const preamp = this._calculateGraphicPreamp();
+            player.restoreGraphicEQ(preamp);
+        }
+    }
+
+    // Called by parametric-eq-editor when bands change
+    handleParametricChange() {
+        this._pushUndoState();
+    }
+
+    formatFreq(freq) {
+        if (freq >= 1000) {
+            return (freq / 1000) + 'k';
+        }
+        return freq.toString();
+    }
+
+    /**
+     * Calculate headroom for graphic EQ based on combined frequency response peak.
+     */
+    _calculateGraphicPreamp() {
+        const gains = this.state.eqGains;
+        if (!gains || gains.every(g => g === 0)) return 0;
+
+        // Create temporary AudioContext if needed
+        if (!this._tempAudioContext) {
+            try {
+                this._tempAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+            } catch (e) {
+                // Fallback to simple max gain
+                const maxGain = Math.max(...gains.filter(g => g > 0), 0);
+                return maxGain > 0 ? -maxGain : 0;
+            }
+        }
+
+        const logMin = Math.log10(MIN_FREQ);
+        const logMax = Math.log10(MAX_FREQ);
+
+        // Generate log-spaced frequencies
+        const frequencies = new Float32Array(RESPONSE_POINTS);
+        for (let i = 0; i < RESPONSE_POINTS; i++) {
+            const logFreq = logMin + (i / (RESPONSE_POINTS - 1)) * (logMax - logMin);
+            frequencies[i] = Math.pow(10, logFreq);
+        }
+
+        // Combined magnitude in dB
+        const combinedMag = new Float32Array(RESPONSE_POINTS).fill(0);
+
+        // Create filters for each band
+        EQ_BANDS.forEach((freq, i) => {
+            const filter = this._tempAudioContext.createBiquadFilter();
+            filter.type = i === 0 ? 'lowshelf' : i === 9 ? 'highshelf' : 'peaking';
+            filter.frequency.value = freq;
+            filter.gain.value = gains[i];
+            if (i > 0 && i < 9) {
+                filter.Q.value = 1.4;
+            }
+
+            const magResponse = new Float32Array(RESPONSE_POINTS);
+            const phaseResponse = new Float32Array(RESPONSE_POINTS);
+            filter.getFrequencyResponse(frequencies, magResponse, phaseResponse);
+
+            for (let j = 0; j < RESPONSE_POINTS; j++) {
+                combinedMag[j] += 20 * Math.log10(magResponse[j]);
+            }
+        });
+
+        // Find peak
+        let peakDb = 0;
+        for (let i = 0; i < RESPONSE_POINTS; i++) {
+            if (combinedMag[i] > peakDb) {
+                peakDb = combinedMag[i];
+            }
+        }
+
+        // Round to 0.1 dB precision
+        return peakDb > 0 ? -Math.ceil(peakDb * 10) / 10 : 0;
+    }
+
+    /**
+     * Apply the current graphic EQ preamp.
+     */
+    _applyGraphicPreamp() {
+        const preamp = this._calculateGraphicPreamp();
+        player.setGraphicPreamp(preamp);
+    }
+
+    // Crossfeed handlers
+    handleCrossfeedToggle(e) {
+        this.state.crossfeedEnabled = e.target.checked;
+        player.setCrossfeedEnabled(e.target.checked);
+    }
+
+    handleCrossfeedLevelChange(e) {
+        const value = parseInt(e.target.value, 10);
+        this.state.crossfeedLevel = value;
+        player.setCrossfeedLevel(value);
+    }
+
+    // Logarithmic conversion: slider 0-100 → delay 0-5ms
+    // Using base=50 gives excellent resolution at low values (0.1-0.5ms range)
+    // slider 30 ≈ 0.2ms, slider 40 ≈ 0.3ms, slider 50 ≈ 0.5ms, slider 70 ≈ 1.2ms
+    sliderToDelay(slider) {
+        if (slider <= 0) return 0;
+        const maxMs = 5;
+        const base = 50;
+        return maxMs * (Math.pow(base, slider / 100) - 1) / (base - 1);
+    }
+
+    delayToSlider(ms) {
+        if (ms <= 0) return 0;
+        const maxMs = 5;
+        const base = 50;
+        return 100 * Math.log(ms * (base - 1) / maxMs + 1) / Math.log(base);
+    }
+
+    handleCrossfeedDelayChange(e) {
+        const ms = this.sliderToDelay(parseInt(e.target.value, 10));
+        this.state.crossfeedDelayMs = ms;
+        player.setCrossfeedDelay(ms);
+    }
+
+    // Shadow filter conversion: slider 0-100 → 0 (off) or 500-3000Hz
+    // Inverted scale: higher slider = lower frequency (more filtering)
+    sliderToShadow(slider) {
+        if (slider <= 0) return 0;
+        // Linear scale from 3000Hz (slider=1) down to 500Hz (slider=100)
+        return Math.round(3000 - (slider / 100) * 2500);
+    }
+
+    shadowToSlider(hz) {
+        if (hz <= 0) return 0;
+        return Math.round((3000 - hz) / 2500 * 100);
+    }
+
+    handleCrossfeedShadowChange(e) {
+        const hz = this.sliderToShadow(parseInt(e.target.value, 10));
+        this.state.crossfeedShadowHz = hz;
+        player.setCrossfeedShadow(hz);
+    }
+
+    handleCrossfeedPreset(preset) {
+        player.setCrossfeedPreset(preset);
+        // Sync local state with store
+        this.state.crossfeedLevel = player.state.crossfeedLevel;
+        this.state.crossfeedDelayMs = player.state.crossfeedDelayMs;
+        this.state.crossfeedShadowHz = player.state.crossfeedShadowHz;
+    }
+
+    // Loudness compensation handlers
+    handleLoudnessToggle(e) {
+        this.state.loudnessEnabled = e.target.checked;
+        player.setLoudnessEnabled(e.target.checked);
+    }
+
+    handleReferenceSPLChange(e) {
+        const value = parseInt(e.target.value, 10);
+        this.state.loudnessReferenceSPL = value;
+        player.setLoudnessReferenceSPL(value);
+    }
+
+    handleLoudnessStrengthChange(e) {
+        const value = parseInt(e.target.value, 10);
+        this.state.loudnessStrength = value;
+        player.setLoudnessStrength(value);
+    }
+
+    // Comfort noise handlers
+    handleNoiseToggle(e) {
+        this.state.noiseEnabled = e.target.checked;
+        player.setNoiseEnabled(e.target.checked);
+    }
+
+    handleNoiseModeChange(mode) {
+        this.state.noiseMode = mode;
+        this.state.noiseTilt = 0;  // Reset tilt when changing mode (matches store behavior)
+        player.setNoiseMode(mode);
+    }
+
+    handleNoiseTiltChange(e) {
+        const value = parseInt(e.target.value, 10);
+        this.state.noiseTilt = value;
+        player.setNoiseTilt(value);
+    }
+
+    handleNoisePowerChange(e) {
+        const value = parseInt(e.target.value, 10);
+        this.state.noisePower = value;
+        player.setNoisePower(value);
+    }
+
+    handleNoiseThresholdChange(e) {
+        const value = parseInt(e.target.value, 10);
+        this.state.noiseThreshold = value;
+        player.setNoiseThreshold(value);
+    }
+
+    handleNoiseAttackChange(e) {
+        // Log scale: slider 0-100 maps to 25-2000ms
+        // ms = 25 * 80^(slider/100)
+        const sliderValue = parseInt(e.target.value, 10);
+        const ms = Math.round(25 * Math.pow(80, sliderValue / 100));
+        this.state.noiseAttack = ms;
+        player.setNoiseAttack(ms);
+    }
+
+    // Convert ms to slider position (log scale)
+    attackMsToSlider(ms) {
+        // slider = 100 * log(ms/25) / log(80)
+        return Math.round(100 * Math.log(ms / 25) / Math.log(80));
+    }
 
     template() {
         const { eqEnabled, eqGains, showParametricEQ, undoHistory, redoHistory, crossfeedEnabled, crossfeedLevel, crossfeedDelayMs, crossfeedShadowHz, loudnessEnabled, loudnessReferenceSPL, loudnessStrength, noiseEnabled, noiseMode, noiseTilt, noisePower, noiseThreshold, noiseAttack } = this.state;
@@ -672,9 +672,9 @@ export default defineComponent('eq-page', {
                 </div>
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -1168,4 +1168,6 @@ export default defineComponent('eq-page', {
             }
         }
     `
-});
+}
+
+export default defineComponent('eq-page', EqPage);

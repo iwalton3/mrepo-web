@@ -5,92 +5,92 @@
  * Displays current song info with basic controls.
  */
 
-import { defineComponent, html, when, contain } from 'vdx/framework.js';
+import { defineComponent, html, when, contain, Component } from 'vdx/framework.js';
 import { debounce } from 'vdx/utils.js';
 import { player, playerStore } from '../stores/player-store.js';
 
-export default defineComponent('mini-player', {
-    stores: { player: playerStore },
+export class MiniPlayer extends Component {
+    static stores = { player: playerStore }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             showVolumePopup: false
         };
-    },
+    }
 
     mounted() {
         // Create debounced volume setter (50ms) for smoother slider interaction
         this._debouncedSetVolume = debounce((value) => {
             player.setVolume(value / 100);
         }, 50);
-    },
+    }
 
-    methods: {
-        handlePlayPause() {
-            player.togglePlayPause();
-        },
+    handlePlayPause() {
+        player.togglePlayPause();
+    }
 
-        handlePrevious() {
-            player.previous();
-        },
+    handlePrevious() {
+        player.previous();
+    }
 
-        handleNext() {
-            player.next();
-        },
+    handleNext() {
+        player.next();
+    }
 
-        formatTime(seconds) {
-            if (!seconds || isNaN(seconds)) return '0:00';
-            const mins = Math.floor(seconds / 60);
-            const secs = Math.floor(seconds % 60);
-            return `${mins}:${secs.toString().padStart(2, '0')}`;
-        },
+    formatTime(seconds) {
+        if (!seconds || isNaN(seconds)) return '0:00';
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+    }
 
-        getProgressPercent() {
-            const { currentTime, duration } = this.stores.player;
-            if (!duration) return 0;
-            // Clamp to 100% to handle edge cases during song transitions
-            return Math.min(100, (currentTime / duration) * 100);
-        },
+    getProgressPercent() {
+        const { currentTime, duration } = this.stores.player;
+        if (!duration) return 0;
+        // Clamp to 100% to handle edge cases during song transitions
+        return Math.min(100, (currentTime / duration) * 100);
+    }
 
-        handleSeek(e) {
-            const song = this.stores.player.currentSong;
-            const duration = this.stores.player.duration;
-            if (!song || !duration || song.seekable === false || song.seekable === 0) return;
+    handleSeek(e) {
+        const song = this.stores.player.currentSong;
+        const duration = this.stores.player.duration;
+        if (!song || !duration || song.seekable === false || song.seekable === 0) return;
 
-            const rect = e.currentTarget.getBoundingClientRect();
-            const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-            player.seek(percent * duration);
-        },
+        const rect = e.currentTarget.getBoundingClientRect();
+        const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        player.seek(percent * duration);
+    }
 
-        isSeekable() {
-            const song = this.stores.player.currentSong;
-            return song && song.seekable !== false && song.seekable !== 0;
-        },
+    isSeekable() {
+        const song = this.stores.player.currentSong;
+        return song && song.seekable !== false && song.seekable !== 0;
+    }
 
-        handleVolumeChange(e) {
-            const value = parseFloat(e.target.value);
-            this._debouncedSetVolume(value);
-        },
+    handleVolumeChange(e) {
+        const value = parseFloat(e.target.value);
+        this._debouncedSetVolume(value);
+    }
 
-        handleToggleMute() {
-            player.toggleMute();
-        },
+    handleToggleMute() {
+        player.toggleMute();
+    }
 
-        getVolumeIcon() {
-            const { volume, muted } = this.stores.player;
-            if (muted || volume === 0) return '🔇';
-            if (volume > 0.5) return '🔊';
-            return '🔉';
-        },
+    getVolumeIcon() {
+        const { volume, muted } = this.stores.player;
+        if (muted || volume === 0) return '🔇';
+        if (volume > 0.5) return '🔊';
+        return '🔉';
+    }
 
-        handlePlayerMouseEnter() {
-            this.state.showVolumePopup = true;
-        },
+    handlePlayerMouseEnter() {
+        this.state.showVolumePopup = true;
+    }
 
-        handlePlayerMouseLeave() {
-            this.state.showVolumePopup = false;
-        }
-    },
+    handlePlayerMouseLeave() {
+        this.state.showVolumePopup = false;
+    }
 
     template() {
         const song = this.stores.player.currentSong;
@@ -179,9 +179,9 @@ export default defineComponent('mini-player', {
                 </div>
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -435,4 +435,6 @@ export default defineComponent('mini-player', {
             min-width: 2rem;
         }
     `
-});
+}
+
+export default defineComponent('mini-player', MiniPlayer);

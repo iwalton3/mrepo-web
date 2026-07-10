@@ -7,7 +7,7 @@
  * - Radio EOPP mode
  */
 
-import { defineComponent, html, when } from 'vdx/framework.js';
+import { defineComponent, html, when, Component } from 'vdx/framework.js';
 import { preferences, auth, ai } from '../offline/offline-api.js';
 import { profile } from '#profile';
 import player from '../stores/player-store.js';
@@ -34,10 +34,12 @@ function getDefaultLowLatency() {
     return !isMobileDevice();
 }
 
-export default defineComponent('settings-page', {
-    stores: { offline: offlineStore },
+export class SettingsPage extends Component {
+    static stores = { offline: offlineStore }
 
-    data() {
+    constructor(props) {
+        super(props);
+
         // Load low latency setting from localStorage or use default
         let lowLatencyAlways;
         try {
@@ -47,7 +49,7 @@ export default defineComponent('settings-page', {
             lowLatencyAlways = getDefaultLowLatency();
         }
 
-        return {
+        this.state = {
             isAuthenticated: false,
             user: null,
             prefs: {
@@ -99,7 +101,7 @@ export default defineComponent('settings-page', {
             isLoading: false,
             saveStatus: ''
         };
-    },
+    }
 
     async mounted() {
         // Check for app updates
@@ -125,271 +127,269 @@ export default defineComponent('settings-page', {
 
         // Load preferences
         await this.loadPreferences();
-    },
+    }
 
-    methods: {
-        async loadPreferences() {
-            if (!this.state.isAuthenticated) return;
+    async loadPreferences() {
+        if (!this.state.isAuthenticated) return;
 
-            this.state.isLoading = true;
-            try {
-                const result = await preferences.get();
-                if (!result.error) {
-                    // Default radio algorithm to 'clap' if AI is available and user hasn't set one
-                    const defaultAlgo = this.state.aiEnabled ? 'clap' : 'sca';
+        this.state.isLoading = true;
+        try {
+            const result = await preferences.get();
+            if (!result.error) {
+                // Default radio algorithm to 'clap' if AI is available and user hasn't set one
+                const defaultAlgo = this.state.aiEnabled ? 'clap' : 'sca';
 
-                    this.state.prefs = {
-                        // Shuffle/repeat are the LIVE playback mode, owned by the
-                        // player store (persisted server-side as play_mode). Read
-                        // from the player — not user_preferences.shuffle/repeat_mode,
-                        // which is a separate column the player never reads, so the
-                        // two used to drift and the setting appeared to "not sync".
-                        shuffle: player.state.shuffle,
-                        repeatMode: player.state.repeatMode,
-                        radioEopp: result.radio_eopp !== false,
-                        radioAlgorithm: result.radio_algorithm || defaultAlgo,
-                        replayGainMode: result.replay_gain_mode || 'off',
-                        replayGainPreamp: result.replay_gain_preamp ?? 0,
-                        replayGainFallback: result.replay_gain_fallback ?? -6,
-                        // AI Settings
-                        aiSearchMax: result.ai_search_max ?? 2000,
-                        aiSearchDiversity: result.ai_search_diversity ?? 0.3,
-                        aiRadioQueueDiversity: result.ai_radio_queue_diversity ?? 0.3
-                    };
-                }
-            } catch (e) {
-                console.error('Failed to load preferences:', e);
-            } finally {
-                this.state.isLoading = false;
-            }
-        },
-
-        async handleChangePassword() {
-            this.state.pwError = null;
-            this.state.pwStatus = '';
-
-            if (this.state.pwNew !== this.state.pwConfirm) {
-                this.state.pwError = 'New passwords do not match';
-                return;
-            }
-            if (this.state.pwNew.length < 8) {
-                this.state.pwError = 'New password must be at least 8 characters';
-                return;
-            }
-
-            this.state.pwSaving = true;
-            try {
-                await auth.changePassword(this.state.pwCurrent, this.state.pwNew);
-                this.state.pwStatus = 'Password changed';
-                this.state.pwCurrent = '';
-                this.state.pwNew = '';
-                this.state.pwConfirm = '';
-            } catch (e) {
-                this.state.pwError = e.message || 'Failed to change password';
-            } finally {
-                this.state.pwSaving = false;
-            }
-        },
-
-        async savePreferences() {
-            if (!this.state.isAuthenticated) return;
-
-            this.state.isLoading = true;
-            this.state.saveStatus = '';
-
-            try {
-                await preferences.set({
-                    // shuffle/repeatMode are applied immediately via the player
-                    // store (handleShuffleChange/handleRepeatChange) and persisted
-                    // as play_mode, so they are intentionally NOT sent here — that
-                    // is the single source of truth.
-                    radioEopp: this.state.prefs.radioEopp,
-                    radioAlgorithm: this.state.prefs.radioAlgorithm,
-                    replayGainMode: this.state.prefs.replayGainMode,
-                    replayGainPreamp: this.state.prefs.replayGainPreamp,
-                    replayGainFallback: this.state.prefs.replayGainFallback,
+                this.state.prefs = {
+                    // Shuffle/repeat are the LIVE playback mode, owned by the
+                    // player store (persisted server-side as play_mode). Read
+                    // from the player — not user_preferences.shuffle/repeat_mode,
+                    // which is a separate column the player never reads, so the
+                    // two used to drift and the setting appeared to "not sync".
+                    shuffle: player.state.shuffle,
+                    repeatMode: player.state.repeatMode,
+                    radioEopp: result.radio_eopp !== false,
+                    radioAlgorithm: result.radio_algorithm || defaultAlgo,
+                    replayGainMode: result.replay_gain_mode || 'off',
+                    replayGainPreamp: result.replay_gain_preamp ?? 0,
+                    replayGainFallback: result.replay_gain_fallback ?? -6,
                     // AI Settings
-                    aiSearchMax: this.state.prefs.aiSearchMax,
-                    aiSearchDiversity: this.state.prefs.aiSearchDiversity,
-                    aiRadioQueueDiversity: this.state.prefs.aiRadioQueueDiversity
-                });
-                this.state.saveStatus = 'Saved!';
-                setTimeout(() => this.state.saveStatus = '', 2000);
-            } catch (e) {
-                console.error('Failed to save preferences:', e);
-                this.state.saveStatus = 'Failed to save';
-            } finally {
-                this.state.isLoading = false;
+                    aiSearchMax: result.ai_search_max ?? 2000,
+                    aiSearchDiversity: result.ai_search_diversity ?? 0.3,
+                    aiRadioQueueDiversity: result.ai_radio_queue_diversity ?? 0.3
+                };
             }
-        },
-
-        async handleShuffleChange(e) {
-            // Apply through the player store (single source of truth → play_mode).
-            await player.setShuffle(e.target.checked);
-            // Reflect the player's resolved state: shuffle and repeat are mutually
-            // exclusive, so enabling one may clear the other.
-            this.state.prefs.shuffle = player.state.shuffle;
-            this.state.prefs.repeatMode = player.state.repeatMode;
-        },
-
-        async handleRepeatChange(e) {
-            await player.setRepeatMode(e.target.value);
-            this.state.prefs.shuffle = player.state.shuffle;
-            this.state.prefs.repeatMode = player.state.repeatMode;
-        },
-
-        handleEoppChange(e) {
-            this.state.prefs.radioEopp = e.target.checked;
-        },
-
-        handleRadioAlgorithmChange(e) {
-            this.state.prefs.radioAlgorithm = e.target.value;
-        },
-
-        // AI Settings handlers
-        handleAiSearchMaxChange(e) {
-            this.state.prefs.aiSearchMax = parseInt(e.target.value, 10);
-        },
-
-        handleAiSearchDiversityChange(e) {
-            this.state.prefs.aiSearchDiversity = parseFloat(e.target.value);
-        },
-
-        handleAiRadioQueueDiversityChange(e) {
-            this.state.prefs.aiRadioQueueDiversity = parseFloat(e.target.value);
-        },
-
-        handleReplayGainModeChange(e) {
-            this.state.prefs.replayGainMode = e.target.value;
-            // Apply immediately for real-time feedback
-            player.setReplayGainMode(e.target.value);
-        },
-
-        handleReplayGainPreampChange(e) {
-            const value = parseFloat(e.target.value);
-            this.state.prefs.replayGainPreamp = value;
-            // Apply immediately for real-time feedback
-            player.setReplayGainPreamp(value);
-        },
-
-        handleReplayGainFallbackChange(e) {
-            const value = parseFloat(e.target.value);
-            this.state.prefs.replayGainFallback = value;
-            // Apply immediately for real-time feedback
-            player.setReplayGainFallback(value);
-        },
-
-        handleLowLatencyChange(e) {
-            const enabled = e.target.checked;
-            this.state.lowLatencyAlways = enabled;
-
-            // Save to localStorage
-            try {
-                localStorage.setItem(LOW_LATENCY_MODE_KEY, enabled);
-            } catch (err) {}
-
-            // Apply immediately - switch latency mode
-            player.setLowLatencyAlways(enabled);
-        },
-
-        // Gapless/Crossfade handlers
-        handleGaplessChange(e) {
-            this.state.gaplessEnabled = e.target.checked;
-            // If enabling gapless, disable crossfade
-            if (e.target.checked) {
-                this.state.crossfadeEnabled = false;
-                player.setCrossfadeEnabled(false);
-            }
-            player.setGaplessEnabled(e.target.checked);
-        },
-
-        handleCrossfadeChange(e) {
-            this.state.crossfadeEnabled = e.target.checked;
-            // If enabling crossfade, disable gapless
-            if (e.target.checked) {
-                this.state.gaplessEnabled = false;
-            }
-            player.setCrossfadeEnabled(e.target.checked);
-        },
-
-        handleCrossfadeDurationChange(e) {
-            const value = parseInt(e.target.value, 10);
-            this.state.crossfadeDuration = value;
-            player.setCrossfadeDuration(value);
-        },
-
-        // Tempo handlers
-        handleTempoToggle(e) {
-            this.state.tempoEnabled = e.target.checked;
-            player.setTempoEnabled(e.target.checked);
-        },
-
-        handleTempoRateChange(e) {
-            const value = parseFloat(e.target.value);
-            this.state.tempoRate = value;
-            player.setTempoRate(value);
-        },
-
-        handlePitchLockChange(e) {
-            this.state.tempoPitchLock = e.target.checked;
-            player.setTempoPitchLock(e.target.checked);
-        },
-
-        formatTempo(rate) {
-            return rate.toFixed(2) + 'x';
-        },
-
-        // Sleep timer handlers
-        handleSleepTimerModeChange(e) {
-            const mode = e.target.value;
-            this.state.sleepTimerMode = mode;
-            player.setSleepTimerMode(mode);
-        },
-
-        handleSleepTimerChange(e) {
-            const value = parseInt(e.target.value, 10);
-            this.state.sleepTimerMinutes = value;
-            player.setSleepTimerMinutes(value);
-        },
-
-        handleSleepTimerTimeChange(e) {
-            const time = e.target.value;
-            this.state.sleepTimerTargetTime = time;
-            player.setSleepTimerTargetTime(time);
-        },
-
-        handleSleepTimerMinimumChange(e) {
-            const value = parseInt(e.target.value, 10);
-            this.state.sleepTimerMinimumMinutes = value;
-            player.setSleepTimerMinimumMinutes(value);
-        },
-
-        startSleepTimer() {
-            player.startSleepTimer();
-            this.state.sleepTimerActive = true;
-        },
-
-        cancelSleepTimer() {
-            player.cancelSleepTimer();
-            this.state.sleepTimerActive = false;
-        },
-
-        formatSleepTime(minutes) {
-            if (minutes === 0) return 'Off';
-            if (minutes < 60) return `${minutes} min`;
-            const hours = Math.floor(minutes / 60);
-            const mins = minutes % 60;
-            return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
-        },
-
-        navigateToEQ() {
-            window.location.hash = '/eq/';
-        },
-
-        handleForceReload() {
-            forceReloadWithUpdate();
+        } catch (e) {
+            console.error('Failed to load preferences:', e);
+        } finally {
+            this.state.isLoading = false;
         }
-    },
+    }
+
+    async handleChangePassword() {
+        this.state.pwError = null;
+        this.state.pwStatus = '';
+
+        if (this.state.pwNew !== this.state.pwConfirm) {
+            this.state.pwError = 'New passwords do not match';
+            return;
+        }
+        if (this.state.pwNew.length < 8) {
+            this.state.pwError = 'New password must be at least 8 characters';
+            return;
+        }
+
+        this.state.pwSaving = true;
+        try {
+            await auth.changePassword(this.state.pwCurrent, this.state.pwNew);
+            this.state.pwStatus = 'Password changed';
+            this.state.pwCurrent = '';
+            this.state.pwNew = '';
+            this.state.pwConfirm = '';
+        } catch (e) {
+            this.state.pwError = e.message || 'Failed to change password';
+        } finally {
+            this.state.pwSaving = false;
+        }
+    }
+
+    async savePreferences() {
+        if (!this.state.isAuthenticated) return;
+
+        this.state.isLoading = true;
+        this.state.saveStatus = '';
+
+        try {
+            await preferences.set({
+                // shuffle/repeatMode are applied immediately via the player
+                // store (handleShuffleChange/handleRepeatChange) and persisted
+                // as play_mode, so they are intentionally NOT sent here — that
+                // is the single source of truth.
+                radioEopp: this.state.prefs.radioEopp,
+                radioAlgorithm: this.state.prefs.radioAlgorithm,
+                replayGainMode: this.state.prefs.replayGainMode,
+                replayGainPreamp: this.state.prefs.replayGainPreamp,
+                replayGainFallback: this.state.prefs.replayGainFallback,
+                // AI Settings
+                aiSearchMax: this.state.prefs.aiSearchMax,
+                aiSearchDiversity: this.state.prefs.aiSearchDiversity,
+                aiRadioQueueDiversity: this.state.prefs.aiRadioQueueDiversity
+            });
+            this.state.saveStatus = 'Saved!';
+            setTimeout(() => this.state.saveStatus = '', 2000);
+        } catch (e) {
+            console.error('Failed to save preferences:', e);
+            this.state.saveStatus = 'Failed to save';
+        } finally {
+            this.state.isLoading = false;
+        }
+    }
+
+    async handleShuffleChange(e) {
+        // Apply through the player store (single source of truth → play_mode).
+        await player.setShuffle(e.target.checked);
+        // Reflect the player's resolved state: shuffle and repeat are mutually
+        // exclusive, so enabling one may clear the other.
+        this.state.prefs.shuffle = player.state.shuffle;
+        this.state.prefs.repeatMode = player.state.repeatMode;
+    }
+
+    async handleRepeatChange(e) {
+        await player.setRepeatMode(e.target.value);
+        this.state.prefs.shuffle = player.state.shuffle;
+        this.state.prefs.repeatMode = player.state.repeatMode;
+    }
+
+    handleEoppChange(e) {
+        this.state.prefs.radioEopp = e.target.checked;
+    }
+
+    handleRadioAlgorithmChange(e) {
+        this.state.prefs.radioAlgorithm = e.target.value;
+    }
+
+    // AI Settings handlers
+    handleAiSearchMaxChange(e) {
+        this.state.prefs.aiSearchMax = parseInt(e.target.value, 10);
+    }
+
+    handleAiSearchDiversityChange(e) {
+        this.state.prefs.aiSearchDiversity = parseFloat(e.target.value);
+    }
+
+    handleAiRadioQueueDiversityChange(e) {
+        this.state.prefs.aiRadioQueueDiversity = parseFloat(e.target.value);
+    }
+
+    handleReplayGainModeChange(e) {
+        this.state.prefs.replayGainMode = e.target.value;
+        // Apply immediately for real-time feedback
+        player.setReplayGainMode(e.target.value);
+    }
+
+    handleReplayGainPreampChange(e) {
+        const value = parseFloat(e.target.value);
+        this.state.prefs.replayGainPreamp = value;
+        // Apply immediately for real-time feedback
+        player.setReplayGainPreamp(value);
+    }
+
+    handleReplayGainFallbackChange(e) {
+        const value = parseFloat(e.target.value);
+        this.state.prefs.replayGainFallback = value;
+        // Apply immediately for real-time feedback
+        player.setReplayGainFallback(value);
+    }
+
+    handleLowLatencyChange(e) {
+        const enabled = e.target.checked;
+        this.state.lowLatencyAlways = enabled;
+
+        // Save to localStorage
+        try {
+            localStorage.setItem(LOW_LATENCY_MODE_KEY, enabled);
+        } catch (err) {}
+
+        // Apply immediately - switch latency mode
+        player.setLowLatencyAlways(enabled);
+    }
+
+    // Gapless/Crossfade handlers
+    handleGaplessChange(e) {
+        this.state.gaplessEnabled = e.target.checked;
+        // If enabling gapless, disable crossfade
+        if (e.target.checked) {
+            this.state.crossfadeEnabled = false;
+            player.setCrossfadeEnabled(false);
+        }
+        player.setGaplessEnabled(e.target.checked);
+    }
+
+    handleCrossfadeChange(e) {
+        this.state.crossfadeEnabled = e.target.checked;
+        // If enabling crossfade, disable gapless
+        if (e.target.checked) {
+            this.state.gaplessEnabled = false;
+        }
+        player.setCrossfadeEnabled(e.target.checked);
+    }
+
+    handleCrossfadeDurationChange(e) {
+        const value = parseInt(e.target.value, 10);
+        this.state.crossfadeDuration = value;
+        player.setCrossfadeDuration(value);
+    }
+
+    // Tempo handlers
+    handleTempoToggle(e) {
+        this.state.tempoEnabled = e.target.checked;
+        player.setTempoEnabled(e.target.checked);
+    }
+
+    handleTempoRateChange(e) {
+        const value = parseFloat(e.target.value);
+        this.state.tempoRate = value;
+        player.setTempoRate(value);
+    }
+
+    handlePitchLockChange(e) {
+        this.state.tempoPitchLock = e.target.checked;
+        player.setTempoPitchLock(e.target.checked);
+    }
+
+    formatTempo(rate) {
+        return rate.toFixed(2) + 'x';
+    }
+
+    // Sleep timer handlers
+    handleSleepTimerModeChange(e) {
+        const mode = e.target.value;
+        this.state.sleepTimerMode = mode;
+        player.setSleepTimerMode(mode);
+    }
+
+    handleSleepTimerChange(e) {
+        const value = parseInt(e.target.value, 10);
+        this.state.sleepTimerMinutes = value;
+        player.setSleepTimerMinutes(value);
+    }
+
+    handleSleepTimerTimeChange(e) {
+        const time = e.target.value;
+        this.state.sleepTimerTargetTime = time;
+        player.setSleepTimerTargetTime(time);
+    }
+
+    handleSleepTimerMinimumChange(e) {
+        const value = parseInt(e.target.value, 10);
+        this.state.sleepTimerMinimumMinutes = value;
+        player.setSleepTimerMinimumMinutes(value);
+    }
+
+    startSleepTimer() {
+        player.startSleepTimer();
+        this.state.sleepTimerActive = true;
+    }
+
+    cancelSleepTimer() {
+        player.cancelSleepTimer();
+        this.state.sleepTimerActive = false;
+    }
+
+    formatSleepTime(minutes) {
+        if (minutes === 0) return 'Off';
+        if (minutes < 60) return `${minutes} min`;
+        const hours = Math.floor(minutes / 60);
+        const mins = minutes % 60;
+        return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+    }
+
+    navigateToEQ() {
+        window.location.hash = '/eq/';
+    }
+
+    handleForceReload() {
+        forceReloadWithUpdate();
+    }
 
     template() {
         const {
@@ -850,9 +850,9 @@ export default defineComponent('settings-page', {
                 `)}
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -1209,4 +1209,6 @@ export default defineComponent('settings-page', {
             }
         }
     `
-});
+}
+
+export default defineComponent('settings-page', SettingsPage);

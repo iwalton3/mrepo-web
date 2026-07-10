@@ -9,7 +9,7 @@
  * - Batch add to queue/playlist
  */
 
-import { defineComponent, html, when, each, memoEach, untracked } from 'vdx/framework.js';
+import { defineComponent, html, when, each, memoEach, untracked, Component } from 'vdx/framework.js';
 import { notify } from 'vdx/utils.js';
 import { createWindowing } from 'vdx/windowing.js';
 import { history as historyApi, playlists as playlistsApi, auth, shouldUseOffline } from '../offline/offline-api.js';
@@ -20,13 +20,15 @@ import 'vdxui/button/button.js';
 import 'vdxui/overlay/dialog.js';
 import 'vdxui/misc/spinner.js';
 
-export default defineComponent('history-page', {
-    props: {
+export class HistoryPage extends Component {
+    static props = {
         params: {},
         query: {}
-    },
+    }
 
-    data() {
+    constructor(props) {
+        super(props);
+
         // Windowing controller owns the visible-range state and scroll/resize
         // plumbing. Created in data() so its state exists for the first render.
         // History scrolls the window; measured against the sparse-array spacer.
@@ -38,7 +40,7 @@ export default defineComponent('history-page', {
             measureElement: () => this.refs.historyContainer
         });
 
-        return {
+        this.state = {
             // View mode
             viewMode: 'chronological',  // 'chronological' | 'grouped'
 
@@ -66,7 +68,7 @@ export default defineComponent('history-page', {
             createNewPlaylist: false,
             newPlaylistName: ''
         };
-    },
+    }
 
     async mounted() {
         // Check auth
@@ -81,351 +83,350 @@ export default defineComponent('history-page', {
             await this.loadHistory();
             this.loadPlaylists();
         }
-    },
+    }
 
     unmounted() {
         this._win.destroy();
-    },
+    }
 
-    methods: {
-        getDateRange() {
-            const now = new Date();
-            let startDate = null;
-            let endDate = null;
+    getDateRange() {
+        const now = new Date();
+        let startDate = null;
+        let endDate = null;
 
-            switch (this.state.datePreset) {
-                case '7d':
-                    startDate = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-                    break;
-                case '30d':
-                    startDate = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-                    break;
-                case '90d':
-                    startDate = new Date(now - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-                    break;
-                case '1y':
-                    startDate = new Date(now - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-                    break;
-                case 'custom':
-                    startDate = this.state.customStartDate || null;
-                    endDate = this.state.customEndDate || null;
-                    break;
-                // 'all' - no date filtering
+        switch (this.state.datePreset) {
+            case '7d':
+                startDate = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+                break;
+            case '30d':
+                startDate = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+                break;
+            case '90d':
+                startDate = new Date(now - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+                break;
+            case '1y':
+                startDate = new Date(now - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+                break;
+            case 'custom':
+                startDate = this.state.customStartDate || null;
+                endDate = this.state.customEndDate || null;
+                break;
+            // 'all' - no date filtering
+        }
+
+        return { startDate, endDate };
+    }
+
+    async loadHistory() {
+        // History not available offline
+        if (shouldUseOffline()) {
+            this.state.historyItems = [];
+            this.state.totalCount = 0;
+            this.state.isLoading = false;
+            return;
+        }
+
+        this.state.isLoading = true;
+
+        try {
+            const { startDate, endDate } = this.getDateRange();
+            const excludeSkipped = this.state.hideSkipped;
+            let result;
+
+            if (this.state.viewMode === 'grouped') {
+                result = await historyApi.grouped({
+                    startDate, endDate, excludeSkipped,
+                    limit: 100
+                });
+            } else {
+                result = await historyApi.list({
+                    startDate, endDate, excludeSkipped,
+                    limit: 100
+                });
             }
 
-            return { startDate, endDate };
-        },
+            const totalCount = result.totalCount || result.items.length;
+            const items = new Array(totalCount).fill(null);
+            result.items.forEach((item, i) => { items[i] = item; });
 
-        async loadHistory() {
-            // History not available offline
-            if (shouldUseOffline()) {
-                this.state.historyItems = [];
-                this.state.totalCount = 0;
-                this.state.isLoading = false;
-                return;
+            this.state.historyItems = items;
+            this.state.totalCount = totalCount;
+
+            // Recompute the window once the new list has rendered
+            requestAnimationFrame(() => this._win.refresh());
+
+            if (result.hasMore) {
+                this._loadRemainingInBackground(100);
             }
+        } catch (e) {
+            console.error('Failed to load history:', e);
+            notify('Failed to load history', 'error');
+        } finally {
+            this.state.isLoading = false;
+        }
+    }
 
-            this.state.isLoading = true;
+    async loadPlaylists() {
+        try {
+            const result = await playlistsApi.list();
+            this.state.playlists = result.items || [];
+            if (this.state.playlists.length > 0 && !this.state.selectedPlaylistId) {
+                this.state.selectedPlaylistId = this.state.playlists[0].id;
+            }
+        } catch (e) {
+            console.error('Failed to load playlists:', e);
+        }
+    }
 
+    async _loadRemainingInBackground(currentOffset) {
+        const { startDate, endDate } = this.getDateRange();
+        const excludeSkipped = this.state.hideSkipped;
+        let offset = currentOffset;
+
+        while (offset < this.state.totalCount) {
             try {
-                const { startDate, endDate } = this.getDateRange();
-                const excludeSkipped = this.state.hideSkipped;
                 let result;
-
                 if (this.state.viewMode === 'grouped') {
                     result = await historyApi.grouped({
                         startDate, endDate, excludeSkipped,
-                        limit: 100
+                        offset, limit: 500
                     });
                 } else {
                     result = await historyApi.list({
                         startDate, endDate, excludeSkipped,
-                        limit: 100
+                        offset, limit: 500
                     });
                 }
 
-                const totalCount = result.totalCount || result.items.length;
-                const items = new Array(totalCount).fill(null);
-                result.items.forEach((item, i) => { items[i] = item; });
-
-                this.state.historyItems = items;
-                this.state.totalCount = totalCount;
-
-                // Recompute the window once the new list has rendered
-                requestAnimationFrame(() => this._win.refresh());
-
-                if (result.hasMore) {
-                    this._loadRemainingInBackground(100);
-                }
-            } catch (e) {
-                console.error('Failed to load history:', e);
-                notify('Failed to load history', 'error');
-            } finally {
-                this.state.isLoading = false;
-            }
-        },
-
-        async loadPlaylists() {
-            try {
-                const result = await playlistsApi.list();
-                this.state.playlists = result.items || [];
-                if (this.state.playlists.length > 0 && !this.state.selectedPlaylistId) {
-                    this.state.selectedPlaylistId = this.state.playlists[0].id;
-                }
-            } catch (e) {
-                console.error('Failed to load playlists:', e);
-            }
-        },
-
-        async _loadRemainingInBackground(currentOffset) {
-            const { startDate, endDate } = this.getDateRange();
-            const excludeSkipped = this.state.hideSkipped;
-            let offset = currentOffset;
-
-            while (offset < this.state.totalCount) {
-                try {
-                    let result;
-                    if (this.state.viewMode === 'grouped') {
-                        result = await historyApi.grouped({
-                            startDate, endDate, excludeSkipped,
-                            offset, limit: 500
-                        });
-                    } else {
-                        result = await historyApi.list({
-                            startDate, endDate, excludeSkipped,
-                            offset, limit: 500
-                        });
-                    }
-
-                    const items = [...this.state.historyItems];
-                    result.items.forEach((item, i) => {
-                        items[offset + i] = item;
-                    });
-                    this.state.historyItems = items;
-
-                    offset += result.items.length;
-
-                    if (!result.hasMore) break;
-                } catch (e) {
-                    console.error('Background loading failed:', e);
-                    break;
-                }
-            }
-        },
-
-        setViewMode(mode) {
-            if (mode !== this.state.viewMode) {
-                this.state.viewMode = mode;
-                this.loadHistory();
-            }
-        },
-
-        handleDatePresetChange(e) {
-            this.state.datePreset = e.target.value;
-            if (this.state.datePreset !== 'custom') {
-                this.loadHistory();
-            }
-        },
-
-        handleStartDateChange(e) {
-            this.state.customStartDate = e.target.value;
-        },
-
-        handleEndDateChange(e) {
-            this.state.customEndDate = e.target.value;
-        },
-
-        applyCustomDates() {
-            this.loadHistory();
-        },
-
-        toggleSkipFilter() {
-            this.state.hideSkipped = !this.state.hideSkipped;
-            this.loadHistory();
-        },
-
-        handleItemClick(item) {
-            player.addToQueue(item, true);
-        },
-
-        handleItemContextMenu(item, e) {
-            e.preventDefault();
-            e.stopPropagation();
-            showSongContextMenu(item, e.clientX, e.clientY);
-        },
-
-        toggleQueueMenu() {
-            this.state.showQueueMenu = !this.state.showQueueMenu;
-        },
-
-        closeQueueMenu() {
-            this.state.showQueueMenu = false;
-        },
-
-        async handleAddToQueue(limit) {
-            this.state.showQueueMenu = false;
-            this.state.batchInProgress = true;
-
-            try {
-                const { startDate, endDate } = this.getDateRange();
-                const grouped = this.state.viewMode === 'grouped';
-                const excludeSkipped = this.state.hideSkipped;
-
-                const result = await historyApi.getUuids({
-                    startDate, endDate, excludeSkipped, grouped,
-                    limit: limit === 'all' ? 5000 : limit
+                const items = [...this.state.historyItems];
+                result.items.forEach((item, i) => {
+                    items[offset + i] = item;
                 });
+                this.state.historyItems = items;
 
-                if (result.uuids.length === 0) {
-                    notify('No songs to add');
-                    return;
-                }
+                offset += result.items.length;
 
-                // Get song details for each UUID
-                const songs = this.state.historyItems.filter(
-                    item => item && result.uuids.includes(item.uuid)
-                );
-
-                // If we don't have all songs loaded, just use UUIDs we do have
-                const toAdd = songs.length > 0 ? songs : result.uuids.map(uuid => ({ uuid }));
-
-                await player.addToQueue(toAdd.slice(0, limit === 'all' ? 5000 : limit), false);
-                notify(`Added ${Math.min(toAdd.length, limit === 'all' ? 5000 : limit)} songs to queue`);
+                if (!result.hasMore) break;
             } catch (e) {
-                console.error('Failed to add to queue:', e);
-                notify('Failed to add to queue', 'error');
-            } finally {
-                this.state.batchInProgress = false;
+                console.error('Background loading failed:', e);
+                break;
             }
-        },
+        }
+    }
 
-        openPlaylistDialog() {
-            this.state.showPlaylistDialog = true;
-            this.state.createNewPlaylist = false;
-            this.state.newPlaylistName = '';
-        },
+    setViewMode(mode) {
+        if (mode !== this.state.viewMode) {
+            this.state.viewMode = mode;
+            this.loadHistory();
+        }
+    }
 
-        closePlaylistDialog() {
-            this.state.showPlaylistDialog = false;
-            this.state.createNewPlaylist = false;
-            this.state.newPlaylistName = '';
-        },
+    handleDatePresetChange(e) {
+        this.state.datePreset = e.target.value;
+        if (this.state.datePreset !== 'custom') {
+            this.loadHistory();
+        }
+    }
 
-        toggleCreateNew() {
-            this.state.createNewPlaylist = !this.state.createNewPlaylist;
-        },
+    handleStartDateChange(e) {
+        this.state.customStartDate = e.target.value;
+    }
 
-        handlePlaylistSelect(e) {
-            this.state.selectedPlaylistId = e.target.value;
-        },
+    handleEndDateChange(e) {
+        this.state.customEndDate = e.target.value;
+    }
 
-        async handleAddToPlaylist(limit) {
-            this.state.batchInProgress = true;
+    applyCustomDates() {
+        this.loadHistory();
+    }
 
-            try {
-                const { startDate, endDate } = this.getDateRange();
-                const grouped = this.state.viewMode === 'grouped';
-                const excludeSkipped = this.state.hideSkipped;
-                let playlistId = this.state.selectedPlaylistId;
+    toggleSkipFilter() {
+        this.state.hideSkipped = !this.state.hideSkipped;
+        this.loadHistory();
+    }
 
-                // Create new playlist if requested
-                if (this.state.createNewPlaylist) {
-                    const name = this.state.newPlaylistName.trim();
-                    if (!name) {
-                        notify('Please enter a playlist name');
-                        this.state.batchInProgress = false;
-                        return;
-                    }
+    handleItemClick(item) {
+        player.addToQueue(item, true);
+    }
 
-                    const createResult = await playlistsApi.create(name, '', false);
-                    if (createResult.error) {
-                        notify('Failed to create playlist', 'error');
-                        this.state.batchInProgress = false;
-                        return;
-                    }
-                    playlistId = createResult.id;
+    handleItemContextMenu(item, e) {
+        e.preventDefault();
+        e.stopPropagation();
+        showSongContextMenu(item, e.clientX, e.clientY);
+    }
 
-                    // Refresh playlists list
-                    this.loadPlaylists();
-                }
+    toggleQueueMenu() {
+        this.state.showQueueMenu = !this.state.showQueueMenu;
+    }
 
-                if (!playlistId) {
-                    notify('Please select a playlist');
+    closeQueueMenu() {
+        this.state.showQueueMenu = false;
+    }
+
+    async handleAddToQueue(limit) {
+        this.state.showQueueMenu = false;
+        this.state.batchInProgress = true;
+
+        try {
+            const { startDate, endDate } = this.getDateRange();
+            const grouped = this.state.viewMode === 'grouped';
+            const excludeSkipped = this.state.hideSkipped;
+
+            const result = await historyApi.getUuids({
+                startDate, endDate, excludeSkipped, grouped,
+                limit: limit === 'all' ? 5000 : limit
+            });
+
+            if (result.uuids.length === 0) {
+                notify('No songs to add');
+                return;
+            }
+
+            // Get song details for each UUID
+            const songs = this.state.historyItems.filter(
+                item => item && result.uuids.includes(item.uuid)
+            );
+
+            // If we don't have all songs loaded, just use UUIDs we do have
+            const toAdd = songs.length > 0 ? songs : result.uuids.map(uuid => ({ uuid }));
+
+            await player.addToQueue(toAdd.slice(0, limit === 'all' ? 5000 : limit), false);
+            notify(`Added ${Math.min(toAdd.length, limit === 'all' ? 5000 : limit)} songs to queue`);
+        } catch (e) {
+            console.error('Failed to add to queue:', e);
+            notify('Failed to add to queue', 'error');
+        } finally {
+            this.state.batchInProgress = false;
+        }
+    }
+
+    openPlaylistDialog() {
+        this.state.showPlaylistDialog = true;
+        this.state.createNewPlaylist = false;
+        this.state.newPlaylistName = '';
+    }
+
+    closePlaylistDialog() {
+        this.state.showPlaylistDialog = false;
+        this.state.createNewPlaylist = false;
+        this.state.newPlaylistName = '';
+    }
+
+    toggleCreateNew() {
+        this.state.createNewPlaylist = !this.state.createNewPlaylist;
+    }
+
+    handlePlaylistSelect(e) {
+        this.state.selectedPlaylistId = e.target.value;
+    }
+
+    async handleAddToPlaylist(limit) {
+        this.state.batchInProgress = true;
+
+        try {
+            const { startDate, endDate } = this.getDateRange();
+            const grouped = this.state.viewMode === 'grouped';
+            const excludeSkipped = this.state.hideSkipped;
+            let playlistId = this.state.selectedPlaylistId;
+
+            // Create new playlist if requested
+            if (this.state.createNewPlaylist) {
+                const name = this.state.newPlaylistName.trim();
+                if (!name) {
+                    notify('Please enter a playlist name');
                     this.state.batchInProgress = false;
                     return;
                 }
 
-                this.state.showPlaylistDialog = false;
-
-                const result = await historyApi.getUuids({
-                    startDate, endDate, excludeSkipped, grouped,
-                    limit: limit === 'all' ? 5000 : limit
-                });
-
-                if (result.uuids.length === 0) {
-                    notify('No songs to add');
+                const createResult = await playlistsApi.create(name, '', false);
+                if (createResult.error) {
+                    notify('Failed to create playlist', 'error');
+                    this.state.batchInProgress = false;
                     return;
                 }
+                playlistId = createResult.id;
 
-                const uuids = result.uuids.slice(0, limit === 'all' ? 5000 : limit);
+                // Refresh playlists list
+                this.loadPlaylists();
+            }
 
-                // Batch add to playlist
-                await playlistsApi.addSongsBatch(playlistId, uuids);
-
-                const playlistName = this.state.createNewPlaylist
-                    ? this.state.newPlaylistName
-                    : this.state.playlists.find(p => p.id === playlistId)?.name || 'playlist';
-                notify(`Added ${uuids.length} songs to ${playlistName}`);
-            } catch (e) {
-                console.error('Failed to add to playlist:', e);
-                notify('Failed to add to playlist', 'error');
-            } finally {
+            if (!playlistId) {
+                notify('Please select a playlist');
                 this.state.batchInProgress = false;
-                this.state.createNewPlaylist = false;
-                this.state.newPlaylistName = '';
-            }
-        },
-
-        formatDate(date) {
-            if (!date) return '';
-            const d = new Date(date);
-            const now = new Date();
-            const diff = now - d;
-
-            // Less than 24 hours ago - show relative time
-            if (diff < 24 * 60 * 60 * 1000) {
-                const hours = Math.floor(diff / (60 * 60 * 1000));
-                if (hours < 1) {
-                    const mins = Math.floor(diff / (60 * 1000));
-                    return mins < 1 ? 'Just now' : `${mins}m ago`;
-                }
-                return `${hours}h ago`;
+                return;
             }
 
-            // Less than 7 days ago
-            if (diff < 7 * 24 * 60 * 60 * 1000) {
-                const days = Math.floor(diff / (24 * 60 * 60 * 1000));
-                return `${days}d ago`;
+            this.state.showPlaylistDialog = false;
+
+            const result = await historyApi.getUuids({
+                startDate, endDate, excludeSkipped, grouped,
+                limit: limit === 'all' ? 5000 : limit
+            });
+
+            if (result.uuids.length === 0) {
+                notify('No songs to add');
+                return;
             }
 
-            // Otherwise show date
-            return d.toLocaleDateString();
-        },
+            const uuids = result.uuids.slice(0, limit === 'all' ? 5000 : limit);
 
-        formatDuration(seconds) {
-            if (seconds == null) return '0:00';
-            const mins = Math.floor(seconds / 60);
-            const secs = Math.floor(seconds % 60);
-            return `${mins}:${String(secs).padStart(2, '0')}`;
-        },
+            // Batch add to playlist
+            await playlistsApi.addSongsBatch(playlistId, uuids);
 
-        getDisplayTitle(song) {
-            return song.title || song.filename || 'Unknown';
-        },
+            const playlistName = this.state.createNewPlaylist
+                ? this.state.newPlaylistName
+                : this.state.playlists.find(p => p.id === playlistId)?.name || 'playlist';
+            notify(`Added ${uuids.length} songs to ${playlistName}`);
+        } catch (e) {
+            console.error('Failed to add to playlist:', e);
+            notify('Failed to add to playlist', 'error');
+        } finally {
+            this.state.batchInProgress = false;
+            this.state.createNewPlaylist = false;
+            this.state.newPlaylistName = '';
+        }
+    }
 
-        renderHistoryItem(item, index) {
-            if (!item) {
-                return html`
+    formatDate(date) {
+        if (!date) return '';
+        const d = new Date(date);
+        const now = new Date();
+        const diff = now - d;
+
+        // Less than 24 hours ago - show relative time
+        if (diff < 24 * 60 * 60 * 1000) {
+            const hours = Math.floor(diff / (60 * 60 * 1000));
+            if (hours < 1) {
+                const mins = Math.floor(diff / (60 * 1000));
+                return mins < 1 ? 'Just now' : `${mins}m ago`;
+            }
+            return `${hours}h ago`;
+        }
+
+        // Less than 7 days ago
+        if (diff < 7 * 24 * 60 * 60 * 1000) {
+            const days = Math.floor(diff / (24 * 60 * 60 * 1000));
+            return `${days}d ago`;
+        }
+
+        // Otherwise show date
+        return d.toLocaleDateString();
+    }
+
+    formatDuration(seconds) {
+        if (seconds == null) return '0:00';
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins}:${String(secs).padStart(2, '0')}`;
+    }
+
+    getDisplayTitle(song) {
+        return song.title || song.filename || 'Unknown';
+    }
+
+    renderHistoryItem(item, index) {
+        if (!item) {
+            return html`
                     <div class="history-item loading-placeholder">
                         <span class="history-num">${index + 1}</span>
                         <div class="history-info">
@@ -433,16 +434,16 @@ export default defineComponent('history-page', {
                         </div>
                     </div>
                 `;
-            }
+        }
 
-            if (this.state.viewMode === 'grouped') {
-                return this.renderGroupedItem(item, index);
-            }
-            return this.renderChronologicalItem(item, index);
-        },
+        if (this.state.viewMode === 'grouped') {
+            return this.renderGroupedItem(item, index);
+        }
+        return this.renderChronologicalItem(item, index);
+    }
 
-        renderChronologicalItem(item, index) {
-            return html`
+    renderChronologicalItem(item, index) {
+        return html`
                 <div class="history-item"
                      on-click="${() => this.handleItemClick(item)}"
                      on-contextmenu="${(e) => this.handleItemContextMenu(item, e)}">
@@ -451,9 +452,9 @@ export default defineComponent('history-page', {
                         <div class="song-title">${this.getDisplayTitle(item)}</div>
                         <div class="song-meta">
                             ${when(item.artist,
-                                () => html`<a class="meta-link" on-click="${(e) => { e.stopPropagation(); navigateToArtist(item.artist); }}">${item.artist}</a>`,
-                                () => html`<span>Unknown</span>`
-                            )}
+                            () => html`<a class="meta-link" on-click="${(e) => { e.stopPropagation(); navigateToArtist(item.artist); }}">${item.artist}</a>`,
+                            () => html`<span>Unknown</span>`
+                        )}
                             ${when(item.album, () => html`
                                 <span> • </span>
                                 <a class="meta-link" on-click="${(e) => { e.stopPropagation(); navigateToAlbum(item.artist, item.album); }}">${item.album}</a>
@@ -469,10 +470,10 @@ export default defineComponent('history-page', {
                     </div>
                 </div>
             `;
-        },
+    }
 
-        renderGroupedItem(item, index) {
-            return html`
+    renderGroupedItem(item, index) {
+        return html`
                 <div class="history-item grouped"
                      on-click="${() => this.handleItemClick(item)}"
                      on-contextmenu="${(e) => this.handleItemContextMenu(item, e)}">
@@ -481,9 +482,9 @@ export default defineComponent('history-page', {
                         <div class="song-title">${this.getDisplayTitle(item)}</div>
                         <div class="song-meta">
                             ${when(item.artist,
-                                () => html`<a class="meta-link" on-click="${(e) => { e.stopPropagation(); navigateToArtist(item.artist); }}">${item.artist}</a>`,
-                                () => html`<span>Unknown</span>`
-                            )}
+                            () => html`<a class="meta-link" on-click="${(e) => { e.stopPropagation(); navigateToArtist(item.artist); }}">${item.artist}</a>`,
+                            () => html`<span>Unknown</span>`
+                        )}
                             ${when(item.album, () => html`
                                 <span> • </span>
                                 <a class="meta-link" on-click="${(e) => { e.stopPropagation(); navigateToAlbum(item.artist, item.album); }}">${item.album}</a>
@@ -495,8 +496,7 @@ export default defineComponent('history-page', {
                     </div>
                 </div>
             `;
-        }
-    },
+    }
 
     template() {
         const { viewMode, historyItems, totalCount, isLoading, isAuthenticated,
@@ -666,9 +666,9 @@ export default defineComponent('history-page', {
                 <scroll-to-top></scroll-to-top>
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -1050,4 +1050,6 @@ export default defineComponent('history-page', {
             }
         }
     `
-});
+}
+
+export default defineComponent('history-page', HistoryPage);

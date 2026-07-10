@@ -11,7 +11,7 @@
  * Includes syntax help for advanced query operators.
  */
 
-import { defineComponent, html, when, each, memoEach, untracked } from 'vdx/framework.js';
+import { defineComponent, html, when, each, memoEach, untracked, Component } from 'vdx/framework.js';
 import { getRouter } from 'vdx/router.js';
 import { createWindowing } from 'vdx/windowing.js';
 import { songs, ai } from '../offline/offline-api.js';
@@ -22,14 +22,16 @@ import { showSongContextMenu, navigateToArtist, navigateToAlbum, navigateToFolde
 import 'vdxui/button/button.js';
 import 'vdxui/misc/spinner.js';
 
-export default defineComponent('quick-search-page', {
-    props: {
+export class QuickSearchPage extends Component {
+    static props = {
         query: {}  // Query params from router (e.g., ?q=beatles)
-    },
+    }
 
-    stores: { offline: offlineStore },
+    static stores = { offline: offlineStore }
 
-    data() {
+    constructor(props) {
+        super(props);
+
         // Windowing controller owns the visible-range state and scroll/resize
         // plumbing. Created in data() so its state exists for the first render.
         // Advanced results scroll inside the app's .router-wrapper; the window
@@ -44,7 +46,7 @@ export default defineComponent('quick-search-page', {
             measureElement: () => this.refs.songsSpacer
         });
 
-        return {
+        this.state = {
             searchQuery: '',  // The actual search text
             results: null,  // {artists, albums, songs, folders} for quick search
             advancedResults: untracked([]),  // Sparse array for virtual scroll - untracked for performance
@@ -63,11 +65,11 @@ export default defineComponent('quick-search-page', {
             songsLimit: 10,
             foldersLimit: 10
         };
-    },
+    }
 
     unmounted() {
         this._win.destroy();
-    },
+    }
 
     mounted() {
         // Check for similar mode first
@@ -90,7 +92,7 @@ export default defineComponent('quick-search-page', {
             const input = this.querySelector('.search-input');
             if (input) input.focus();
         });
-    },
+    }
 
     propsChanged(prop, newValue, oldValue) {
         // Handle URL query changes (e.g., browser back/forward)
@@ -146,169 +148,134 @@ export default defineComponent('quick-search-page', {
                 }
             }
         }
-    },
+    }
 
-    methods: {
-        getDisplayTitle(song) {
-            if (!song) return 'Unknown';
-            if (song.title) return song.title;
-            // Fallback to filename without extension
-            const path = song.virtual_file || song.file || '';
-            const filename = path.split('/').pop() || '';
-            return filename.replace(/\.[^.]+$/, '') || 'Unknown';
-        },
+    getDisplayTitle(song) {
+        if (!song) return 'Unknown';
+        if (song.title) return song.title;
+        // Fallback to filename without extension
+        const path = song.virtual_file || song.file || '';
+        const filename = path.split('/').pop() || '';
+        return filename.replace(/\.[^.]+$/, '') || 'Unknown';
+    }
 
-        handleQueryChange(e) {
-            this.state.searchQuery = e.target.value;
-            // Reset to quick search mode when typing
+    handleQueryChange(e) {
+        this.state.searchQuery = e.target.value;
+        // Reset to quick search mode when typing
+        this.state.advancedMode = false;
+        this._debouncedSearch();
+    }
+
+    handleKeyDown(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            this.performAdvancedSearch();
+        }
+    }
+
+    _debouncedSearch() {
+        // Debounce search to avoid excessive API calls
+        if (this._searchTimeout) {
+            clearTimeout(this._searchTimeout);
+        }
+        this._searchTimeout = setTimeout(() => this.performSearch(), 300);
+    }
+
+    _updateUrl(query) {
+        // Update URL with search query for deeplinking.
+        // Write through the router (never raw history.replaceState) so that
+        // in hash mode the replace fires a hashchange -> router re-delivers
+        // props, keeping router.currentRoute/props.query in sync with the
+        // address bar. A raw replaceState fires no hashchange and silently
+        // desyncs them (see state-management-audit A5).
+        const router = getRouter();
+        if (!router) return;
+
+        const nextQ = query || '';
+        const currentQ = router.currentRoute.state.query?.q || '';
+        // Skip the write when the URL already carries this query. This keeps
+        // the propsChanged loop airtight: replace -> hashchange ->
+        // propsChanged; if the query is unchanged we must NOT replace again,
+        // otherwise an identical write could re-enter propsChanged.
+        if (nextQ === currentQ) return;
+
+        if (nextQ) {
+            router.replace('/search/', { q: nextQ });
+        } else {
+            router.replace('/search/');
+        }
+    }
+
+    async performSearch() {
+        const query = this.state.searchQuery.trim();
+        if (!query) {
+            this.state.results = null;
+            this.state.searchPerformed = false;
             this.state.advancedMode = false;
-            this._debouncedSearch();
-        },
+            return;
+        }
 
-        handleKeyDown(e) {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                this.performAdvancedSearch();
-            }
-        },
+        // Don't run quick search if advanced mode is active
+        if (this.state.advancedMode) return;
 
-        _debouncedSearch() {
-            // Debounce search to avoid excessive API calls
-            if (this._searchTimeout) {
-                clearTimeout(this._searchTimeout);
-            }
-            this._searchTimeout = setTimeout(() => this.performSearch(), 300);
-        },
+        // Track request ID to avoid interfering with advanced search
+        this._quickSearchId = (this._quickSearchId || 0) + 1;
+        const thisSearchId = this._quickSearchId;
 
-        _updateUrl(query) {
-            // Update URL with search query for deeplinking.
-            // Write through the router (never raw history.replaceState) so that
-            // in hash mode the replace fires a hashchange -> router re-delivers
-            // props, keeping router.currentRoute/props.query in sync with the
-            // address bar. A raw replaceState fires no hashchange and silently
-            // desyncs them (see state-management-audit A5).
-            const router = getRouter();
-            if (!router) return;
+        const isOffline = this.stores.offline.workOfflineMode || !this.stores.offline.isOnline;
 
-            const nextQ = query || '';
-            const currentQ = router.currentRoute.state.query?.q || '';
-            // Skip the write when the URL already carries this query. This keeps
-            // the propsChanged loop airtight: replace -> hashchange ->
-            // propsChanged; if the query is unchanged we must NOT replace again,
-            // otherwise an identical write could re-enter propsChanged.
-            if (nextQ === currentQ) return;
+        this.state.isLoading = true;
+        this.state.searchPerformed = true;
 
-            if (nextQ) {
-                router.replace('/search/', { q: nextQ });
-            } else {
-                router.replace('/search/');
-            }
-        },
+        if (isOffline) {
+            // Offline search - use local IndexedDB song metadata
+            try {
+                const offlineSongs = await searchOfflineSongs(query);
+                const queryLower = query.toLowerCase();
 
-        async performSearch() {
-            const query = this.state.searchQuery.trim();
-            if (!query) {
-                this.state.results = null;
-                this.state.searchPerformed = false;
-                this.state.advancedMode = false;
-                return;
-            }
-
-            // Don't run quick search if advanced mode is active
-            if (this.state.advancedMode) return;
-
-            // Track request ID to avoid interfering with advanced search
-            this._quickSearchId = (this._quickSearchId || 0) + 1;
-            const thisSearchId = this._quickSearchId;
-
-            const isOffline = this.stores.offline.workOfflineMode || !this.stores.offline.isOnline;
-
-            this.state.isLoading = true;
-            this.state.searchPerformed = true;
-
-            if (isOffline) {
-                // Offline search - use local IndexedDB song metadata
-                try {
-                    const offlineSongs = await searchOfflineSongs(query);
-                    const queryLower = query.toLowerCase();
-
-                    // Compute matching artists from songs
-                    const artistMap = new Map();
-                    for (const song of offlineSongs) {
-                        if (song.artist && song.artist.toLowerCase().includes(queryLower)) {
-                            if (!artistMap.has(song.artist)) {
-                                artistMap.set(song.artist, { name: song.artist, song_count: 0 });
-                            }
-                            artistMap.get(song.artist).song_count++;
+                // Compute matching artists from songs
+                const artistMap = new Map();
+                for (const song of offlineSongs) {
+                    if (song.artist && song.artist.toLowerCase().includes(queryLower)) {
+                        if (!artistMap.has(song.artist)) {
+                            artistMap.set(song.artist, { name: song.artist, song_count: 0 });
                         }
-                    }
-                    const artists = [...artistMap.values()].sort((a, b) => b.song_count - a.song_count);
-
-                    // Compute matching albums from songs
-                    const albumMap = new Map();
-                    for (const song of offlineSongs) {
-                        if (song.album && song.album.toLowerCase().includes(queryLower)) {
-                            const key = `${song.artist || ''}|${song.album}`;
-                            if (!albumMap.has(key)) {
-                                albumMap.set(key, { name: song.album, artist: song.artist || 'Unknown Artist', song_count: 0 });
-                            }
-                            albumMap.get(key).song_count++;
-                        }
-                    }
-                    const albums = [...albumMap.values()].sort((a, b) => b.song_count - a.song_count);
-
-                    // Only apply if still current and not in advanced mode
-                    // (a slower earlier query must not clobber newer results)
-                    if (this._quickSearchId === thisSearchId && !this.state.advancedMode) {
-                        this.state.results = {
-                            artists: artists.slice(0, 10),
-                            albums: albums.slice(0, 10),
-                            songs: offlineSongs.slice(0, 50),
-                            folders: [],  // Not supported offline
-                            artistsHasMore: artists.length > 10,
-                            albumsHasMore: albums.length > 10,
-                            songsHasMore: offlineSongs.length > 50,
-                            foldersHasMore: false
-                        };
-                        this._updateUrl(query);
-                    }
-                } catch (e) {
-                    if (this._quickSearchId === thisSearchId && !this.state.advancedMode) {
-                        console.error('Offline search failed:', e);
-                        this.state.results = {
-                            artists: [], albums: [], songs: [], folders: [],
-                            artistsHasMore: false, albumsHasMore: false,
-                            songsHasMore: false, foldersHasMore: false
-                        };
-                    }
-                } finally {
-                    // Only clear loading if this is still current and not in advanced mode
-                    if (this._quickSearchId === thisSearchId && !this.state.advancedMode) {
-                        this.state.isLoading = false;
+                        artistMap.get(song.artist).song_count++;
                     }
                 }
-                return;
-            }
+                const artists = [...artistMap.values()].sort((a, b) => b.song_count - a.song_count);
 
-            // Online search
-            // Use the max limit from all sections
-            const maxLimit = Math.max(
-                this.state.artistsLimit,
-                this.state.albumsLimit,
-                this.state.songsLimit,
-                this.state.foldersLimit
-            );
+                // Compute matching albums from songs
+                const albumMap = new Map();
+                for (const song of offlineSongs) {
+                    if (song.album && song.album.toLowerCase().includes(queryLower)) {
+                        const key = `${song.artist || ''}|${song.album}`;
+                        if (!albumMap.has(key)) {
+                            albumMap.set(key, { name: song.album, artist: song.artist || 'Unknown Artist', song_count: 0 });
+                        }
+                        albumMap.get(key).song_count++;
+                    }
+                }
+                const albums = [...albumMap.values()].sort((a, b) => b.song_count - a.song_count);
 
-            try {
-                const results = await songs.quickSearch(query, maxLimit);
                 // Only apply if still current and not in advanced mode
+                // (a slower earlier query must not clobber newer results)
                 if (this._quickSearchId === thisSearchId && !this.state.advancedMode) {
-                    this.state.results = results;
+                    this.state.results = {
+                        artists: artists.slice(0, 10),
+                        albums: albums.slice(0, 10),
+                        songs: offlineSongs.slice(0, 50),
+                        folders: [],  // Not supported offline
+                        artistsHasMore: artists.length > 10,
+                        albumsHasMore: albums.length > 10,
+                        songsHasMore: offlineSongs.length > 50,
+                        foldersHasMore: false
+                    };
                     this._updateUrl(query);
                 }
             } catch (e) {
                 if (this._quickSearchId === thisSearchId && !this.state.advancedMode) {
-                    console.error('Quick search failed:', e);
+                    console.error('Offline search failed:', e);
                     this.state.results = {
                         artists: [], albums: [], songs: [], folders: [],
                         artistsHasMore: false, albumsHasMore: false,
@@ -321,400 +288,433 @@ export default defineComponent('quick-search-page', {
                     this.state.isLoading = false;
                 }
             }
-        },
+            return;
+        }
 
-        // Load more handlers for each section
-        async loadMoreArtists() {
-            this.state.artistsLimit += 10;
-            await this.performSearch();
-        },
+        // Online search
+        // Use the max limit from all sections
+        const maxLimit = Math.max(
+            this.state.artistsLimit,
+            this.state.albumsLimit,
+            this.state.songsLimit,
+            this.state.foldersLimit
+        );
 
-        async loadMoreAlbums() {
-            this.state.albumsLimit += 10;
-            await this.performSearch();
-        },
-
-        async loadMoreSongs() {
-            this.state.songsLimit += 10;
-            await this.performSearch();
-        },
-
-        async loadMoreFolders() {
-            this.state.foldersLimit += 10;
-            await this.performSearch();
-        },
-
-        async performAdvancedSearch() {
-            const query = this.state.searchQuery.trim();
-            if (!query) {
-                // Clear any prior results so stale advanced output doesn't linger
-                this.state.results = null;
-                this.state.advancedResults = [];
-                this.state.advancedTotalCount = 0;
-                this.state.advancedMode = false;
-                this.state.searchPerformed = false;
+        try {
+            const results = await songs.quickSearch(query, maxLimit);
+            // Only apply if still current and not in advanced mode
+            if (this._quickSearchId === thisSearchId && !this.state.advancedMode) {
+                this.state.results = results;
+                this._updateUrl(query);
+            }
+        } catch (e) {
+            if (this._quickSearchId === thisSearchId && !this.state.advancedMode) {
+                console.error('Quick search failed:', e);
+                this.state.results = {
+                    artists: [], albums: [], songs: [], folders: [],
+                    artistsHasMore: false, albumsHasMore: false,
+                    songsHasMore: false, foldersHasMore: false
+                };
+            }
+        } finally {
+            // Only clear loading if this is still current and not in advanced mode
+            if (this._quickSearchId === thisSearchId && !this.state.advancedMode) {
                 this.state.isLoading = false;
-                return;
-            }
-
-            // Cancel any pending quick search debounce
-            if (this._searchTimeout) {
-                clearTimeout(this._searchTimeout);
-                this._searchTimeout = null;
-            }
-
-            // Track request ID to handle race conditions with quick search
-            this._advancedSearchId = (this._advancedSearchId || 0) + 1;
-            const thisSearchId = this._advancedSearchId;
-
-            const isOffline = this.stores.offline.workOfflineMode || !this.stores.offline.isOnline;
-
-            // Update URL
-            this._updateUrl(query);
-
-            this.state.isLoading = true;
-            this.state.searchPerformed = true;
-            this.state.advancedMode = true;
-            this._currentSearchQuery = query;
-
-            if (isOffline) {
-                // Offline advanced search - returns all results from IndexedDB
-                try {
-                    const offlineSongs = await searchOfflineSongs(query);
-                    // Only apply if this is still the current search
-                    if (this._advancedSearchId !== thisSearchId) return;
-                    this.state.advancedResults = offlineSongs;
-                    this.state.advancedTotalCount = offlineSongs.length;
-                    requestAnimationFrame(() => this._win.refresh());
-                } catch (e) {
-                    if (this._advancedSearchId === thisSearchId) {
-                        console.error('Offline advanced search failed:', e);
-                        this.state.advancedResults = [];
-                        this.state.advancedTotalCount = 0;
-                    }
-                } finally {
-                    if (this._advancedSearchId === thisSearchId) {
-                        this.state.isLoading = false;
-                    }
-                }
-                return;
-            }
-
-            // Online search
-            try {
-                const result = await songs.search(query, { limit: 200 });
-                // Only apply if this is still the current search
-                if (this._advancedSearchId !== thisSearchId) return;
-
-                const totalCount = result.totalCount || result.items?.length || 0;
-
-                // Create sparse array
-                const items = new Array(totalCount).fill(null);
-                (result.items || []).forEach((item, i) => {
-                    items[i] = item;
-                });
-
-                this.state.advancedResults = items;
-                this.state.advancedTotalCount = totalCount;
-
-                // Recompute the window once the new results have rendered
-                requestAnimationFrame(() => this._win.refresh());
-
-                // Background load remaining
-                if (result.hasMore && result.nextCursor) {
-                    this._loadAdvancedInBackground(query, result.nextCursor, result.items?.length || 0, thisSearchId);
-                }
-            } catch (e) {
-                if (this._advancedSearchId === thisSearchId) {
-                    console.error('Advanced search failed:', e);
-                    this.state.advancedResults = [];
-                    this.state.advancedTotalCount = 0;
-                }
-            } finally {
-                if (this._advancedSearchId === thisSearchId) {
-                    this.state.isLoading = false;
-                }
-            }
-        },
-
-        async performSimilarSearch(uuid) {
-            // Similar search mode - uses CLAP similarity API
-            // Track a request ID so rapid ?similar= navigations don't let an
-            // older (slower) lookup overwrite the newer one's results.
-            this._similarSearchId = (this._similarSearchId || 0) + 1;
-            const thisSearchId = this._similarSearchId;
-
-            this.state.similarMode = true;
-            this.state.similarSongUuid = uuid;
-            this.state.advancedMode = true;
-            this.state.isLoading = true;
-            this.state.searchPerformed = true;
-
-            try {
-                // Fetch the source song info for the header
-                const sourceSong = await songs.get(uuid);
-                if (this._similarSearchId !== thisSearchId) return;
-                this.state.similarSong = sourceSong;
-
-                // Search for similar songs via the AI adapter (normalized -> { items })
-                const result = await ai.findSimilar(uuid, 200);
-                if (this._similarSearchId !== thisSearchId) return;
-
-                if (result.error) {
-                    console.error('Similar search failed:', result.error);
-                    this.state.advancedResults = [];
-                    this.state.advancedTotalCount = 0;
-                    return;
-                }
-
-                const similarSongs = result.items || [];
-                this.state.advancedResults = similarSongs;
-                this.state.advancedTotalCount = similarSongs.length;
-
-                // Recompute the window once the new results have rendered
-                requestAnimationFrame(() => this._win.refresh());
-            } catch (e) {
-                if (this._similarSearchId === thisSearchId) {
-                    console.error('Similar search failed:', e);
-                    this.state.advancedResults = [];
-                    this.state.advancedTotalCount = 0;
-                }
-            } finally {
-                if (this._similarSearchId === thisSearchId) {
-                    this.state.isLoading = false;
-                }
-            }
-        },
-
-        backToQuickSearch() {
-            // Leave advanced mode and ensure the sectioned quick-search results
-            // are populated. If the search was started via Enter / URL ?q= /
-            // example button, performAdvancedSearch ran but performSearch never
-            // did, so this.state.results is still null and the template would
-            // otherwise show a false "No Results".
-            this.state.advancedMode = false;
-            if (!this.hasResults() && this.state.searchQuery.trim()) {
-                this.performSearch();
-            }
-        },
-
-        exitSimilarMode() {
-            this.state.similarMode = false;
-            this.state.similarSong = null;
-            this.state.similarSongUuid = null;
-            this.state.advancedMode = false;
-            this.state.advancedResults = [];
-            this.state.advancedTotalCount = 0;
-            this.state.searchPerformed = false;
-            // Route the URL change through the router (not raw replaceState) so
-            // router.currentRoute drops the stale ?similar= and stays in sync.
-            // The resulting hashchange -> propsChanged just re-applies this same
-            // reset, so it's idempotent (no double load).
-            const router = getRouter();
-            if (router) {
-                router.replace('/search/');
-            } else {
-                window.location.hash = '/search/';
-            }
-        },
-
-        async _loadAdvancedInBackground(query, cursor, offset, searchId) {
-            let currentCursor = cursor;
-            let currentOffset = offset;
-
-            // Guard on the request ID, not the query text: re-running the same
-            // query starts a fresh search with a new (reallocated) results array,
-            // so an old background loop must stop rather than fill the new array.
-            while (currentCursor && this._advancedSearchId === searchId) {
-                try {
-                    const result = await songs.search(query, {
-                        cursor: currentCursor,
-                        limit: 500
-                    });
-
-                    if (this._advancedSearchId !== searchId) break;
-
-                    const items = [...this.state.advancedResults];
-                    (result.items || []).forEach((item, i) => {
-                        items[currentOffset + i] = item;
-                    });
-                    this.state.advancedResults = items;
-
-                    currentOffset += result.items?.length || 0;
-                    currentCursor = result.nextCursor;
-                } catch (e) {
-                    console.error('Background loading failed:', e);
-                    break;
-                }
-            }
-        },
-
-        toggleHelp() {
-            this.state.showHelp = !this.state.showHelp;
-        },
-
-        insertExample(example) {
-            this.state.searchQuery = example;
-            this.state.showHelp = false;
-            this.performAdvancedSearch();
-        },
-
-        handleArtistClick(artist) {
-            navigateToArtist(artist.name);
-        },
-
-        handleAlbumClick(album) {
-            navigateToAlbum(album.artist, album.name);
-        },
-
-        handleSongClick(song) {
-            player.addToQueue(song, true);
-        },
-
-        handleSongContextMenu(song, e) {
-            e.preventDefault();
-            e.stopPropagation();
-            showSongContextMenu(song, e.clientX, e.clientY);
-        },
-
-        // Touch long press for context menu (mobile)
-        handleTouchStart(song, e) {
-            if (this._longPressTimer) {
-                clearTimeout(this._longPressTimer);
-            }
-
-            const touch = e.touches[0];
-            this._touchStartX = touch.clientX;
-            this._touchStartY = touch.clientY;
-
-            this._longPressTimer = setTimeout(() => {
-                showSongContextMenu(song, this._touchStartX, this._touchStartY);
-                this._longPressTriggered = true;
-            }, 500);
-        },
-
-        handleTouchMove(e) {
-            if (!this._longPressTimer) return;
-
-            const touch = e.touches[0];
-            const dx = Math.abs(touch.clientX - this._touchStartX);
-            const dy = Math.abs(touch.clientY - this._touchStartY);
-
-            if (dx > 10 || dy > 10) {
-                clearTimeout(this._longPressTimer);
-                this._longPressTimer = null;
-            }
-        },
-
-        handleTouchEnd(e) {
-            if (this._longPressTimer) {
-                clearTimeout(this._longPressTimer);
-                this._longPressTimer = null;
-            }
-            if (this._longPressTriggered) {
-                e.preventDefault();
-                this._longPressTriggered = false;
-            }
-        },
-
-        handleFolderClick(folder) {
-            // Navigate to VFS browse
-            const encodedPath = encodeURIComponent(folder.path.replace(/^\//, ''));
-            window.location.hash = `/browse/path/${encodedPath}/`;
-        },
-
-        handleAddSongToQueue(song, e) {
-            e.stopPropagation();
-            player.addToQueue(song);
-        },
-
-        handlePlayArtist(artist, e) {
-            e.stopPropagation();
-            navigateToArtist(artist.name);
-        },
-
-        handlePlayAlbum(album, e) {
-            e.stopPropagation();
-            navigateToAlbum(album.artist, album.name);
-        },
-
-        hasResults() {
-            const r = this.state.results;
-            if (!r) return false;
-            return r.artists.length > 0 || r.albums.length > 0 ||
-                   r.songs.length > 0 || r.folders.length > 0;
-        },
-
-        // Artist queue/radio actions
-        async handleQueueArtist(artist, e) {
-            e.stopPropagation();
-            try {
-                await player.addByFilter({ artist: artist.name });
-            } catch (err) {
-                console.error('Failed to queue artist:', err);
-            }
-        },
-
-        async handleRadioArtist(artist, e) {
-            e.stopPropagation();
-            try {
-                await player.startRadio(null, `a:eq:${artist.name}`);
-            } catch (err) {
-                console.error('Failed to start artist radio:', err);
-            }
-        },
-
-        // Album queue/radio actions
-        async handleQueueAlbum(album, e) {
-            e.stopPropagation();
-            try {
-                await player.addByFilter({ artist: album.artist, album: album.name });
-            } catch (err) {
-                console.error('Failed to queue album:', err);
-            }
-        },
-
-        async handleRadioAlbum(album, e) {
-            e.stopPropagation();
-            try {
-                await player.startRadio(null, `a:eq:${album.artist} AND al:eq:${album.name}`);
-            } catch (err) {
-                console.error('Failed to start album radio:', err);
-            }
-        },
-
-        // Advanced search result actions
-        async handleQueueAllResults() {
-            const loadedSongs = this.state.advancedResults.filter(s => s !== null);
-            if (loadedSongs.length === 0) return;
-
-            try {
-                await player.addToQueue(loadedSongs);
-            } catch (err) {
-                console.error('Failed to queue all results:', err);
-            }
-        },
-
-        async handleRadioFromSearch() {
-            const query = this.state.searchQuery.trim();
-            if (!query) return;
-
-            try {
-                await player.startRadio(null, query);
-            } catch (err) {
-                console.error('Failed to start radio from search:', err);
-            }
-        },
-
-        async handleRadioFromSong(song, e) {
-            e.stopPropagation();
-            try {
-                await player.startRadio(song.uuid);
-            } catch (err) {
-                console.error('Failed to start radio from song:', err);
             }
         }
-    },
+    }
+
+    // Load more handlers for each section
+    async loadMoreArtists() {
+        this.state.artistsLimit += 10;
+        await this.performSearch();
+    }
+
+    async loadMoreAlbums() {
+        this.state.albumsLimit += 10;
+        await this.performSearch();
+    }
+
+    async loadMoreSongs() {
+        this.state.songsLimit += 10;
+        await this.performSearch();
+    }
+
+    async loadMoreFolders() {
+        this.state.foldersLimit += 10;
+        await this.performSearch();
+    }
+
+    async performAdvancedSearch() {
+        const query = this.state.searchQuery.trim();
+        if (!query) {
+            // Clear any prior results so stale advanced output doesn't linger
+            this.state.results = null;
+            this.state.advancedResults = [];
+            this.state.advancedTotalCount = 0;
+            this.state.advancedMode = false;
+            this.state.searchPerformed = false;
+            this.state.isLoading = false;
+            return;
+        }
+
+        // Cancel any pending quick search debounce
+        if (this._searchTimeout) {
+            clearTimeout(this._searchTimeout);
+            this._searchTimeout = null;
+        }
+
+        // Track request ID to handle race conditions with quick search
+        this._advancedSearchId = (this._advancedSearchId || 0) + 1;
+        const thisSearchId = this._advancedSearchId;
+
+        const isOffline = this.stores.offline.workOfflineMode || !this.stores.offline.isOnline;
+
+        // Update URL
+        this._updateUrl(query);
+
+        this.state.isLoading = true;
+        this.state.searchPerformed = true;
+        this.state.advancedMode = true;
+        this._currentSearchQuery = query;
+
+        if (isOffline) {
+            // Offline advanced search - returns all results from IndexedDB
+            try {
+                const offlineSongs = await searchOfflineSongs(query);
+                // Only apply if this is still the current search
+                if (this._advancedSearchId !== thisSearchId) return;
+                this.state.advancedResults = offlineSongs;
+                this.state.advancedTotalCount = offlineSongs.length;
+                requestAnimationFrame(() => this._win.refresh());
+            } catch (e) {
+                if (this._advancedSearchId === thisSearchId) {
+                    console.error('Offline advanced search failed:', e);
+                    this.state.advancedResults = [];
+                    this.state.advancedTotalCount = 0;
+                }
+            } finally {
+                if (this._advancedSearchId === thisSearchId) {
+                    this.state.isLoading = false;
+                }
+            }
+            return;
+        }
+
+        // Online search
+        try {
+            const result = await songs.search(query, { limit: 200 });
+            // Only apply if this is still the current search
+            if (this._advancedSearchId !== thisSearchId) return;
+
+            const totalCount = result.totalCount || result.items?.length || 0;
+
+            // Create sparse array
+            const items = new Array(totalCount).fill(null);
+            (result.items || []).forEach((item, i) => {
+                items[i] = item;
+            });
+
+            this.state.advancedResults = items;
+            this.state.advancedTotalCount = totalCount;
+
+            // Recompute the window once the new results have rendered
+            requestAnimationFrame(() => this._win.refresh());
+
+            // Background load remaining
+            if (result.hasMore && result.nextCursor) {
+                this._loadAdvancedInBackground(query, result.nextCursor, result.items?.length || 0, thisSearchId);
+            }
+        } catch (e) {
+            if (this._advancedSearchId === thisSearchId) {
+                console.error('Advanced search failed:', e);
+                this.state.advancedResults = [];
+                this.state.advancedTotalCount = 0;
+            }
+        } finally {
+            if (this._advancedSearchId === thisSearchId) {
+                this.state.isLoading = false;
+            }
+        }
+    }
+
+    async performSimilarSearch(uuid) {
+        // Similar search mode - uses CLAP similarity API
+        // Track a request ID so rapid ?similar= navigations don't let an
+        // older (slower) lookup overwrite the newer one's results.
+        this._similarSearchId = (this._similarSearchId || 0) + 1;
+        const thisSearchId = this._similarSearchId;
+
+        this.state.similarMode = true;
+        this.state.similarSongUuid = uuid;
+        this.state.advancedMode = true;
+        this.state.isLoading = true;
+        this.state.searchPerformed = true;
+
+        try {
+            // Fetch the source song info for the header
+            const sourceSong = await songs.get(uuid);
+            if (this._similarSearchId !== thisSearchId) return;
+            this.state.similarSong = sourceSong;
+
+            // Search for similar songs via the AI adapter (normalized -> { items })
+            const result = await ai.findSimilar(uuid, 200);
+            if (this._similarSearchId !== thisSearchId) return;
+
+            if (result.error) {
+                console.error('Similar search failed:', result.error);
+                this.state.advancedResults = [];
+                this.state.advancedTotalCount = 0;
+                return;
+            }
+
+            const similarSongs = result.items || [];
+            this.state.advancedResults = similarSongs;
+            this.state.advancedTotalCount = similarSongs.length;
+
+            // Recompute the window once the new results have rendered
+            requestAnimationFrame(() => this._win.refresh());
+        } catch (e) {
+            if (this._similarSearchId === thisSearchId) {
+                console.error('Similar search failed:', e);
+                this.state.advancedResults = [];
+                this.state.advancedTotalCount = 0;
+            }
+        } finally {
+            if (this._similarSearchId === thisSearchId) {
+                this.state.isLoading = false;
+            }
+        }
+    }
+
+    backToQuickSearch() {
+        // Leave advanced mode and ensure the sectioned quick-search results
+        // are populated. If the search was started via Enter / URL ?q= /
+        // example button, performAdvancedSearch ran but performSearch never
+        // did, so this.state.results is still null and the template would
+        // otherwise show a false "No Results".
+        this.state.advancedMode = false;
+        if (!this.hasResults() && this.state.searchQuery.trim()) {
+            this.performSearch();
+        }
+    }
+
+    exitSimilarMode() {
+        this.state.similarMode = false;
+        this.state.similarSong = null;
+        this.state.similarSongUuid = null;
+        this.state.advancedMode = false;
+        this.state.advancedResults = [];
+        this.state.advancedTotalCount = 0;
+        this.state.searchPerformed = false;
+        // Route the URL change through the router (not raw replaceState) so
+        // router.currentRoute drops the stale ?similar= and stays in sync.
+        // The resulting hashchange -> propsChanged just re-applies this same
+        // reset, so it's idempotent (no double load).
+        const router = getRouter();
+        if (router) {
+            router.replace('/search/');
+        } else {
+            window.location.hash = '/search/';
+        }
+    }
+
+    async _loadAdvancedInBackground(query, cursor, offset, searchId) {
+        let currentCursor = cursor;
+        let currentOffset = offset;
+
+        // Guard on the request ID, not the query text: re-running the same
+        // query starts a fresh search with a new (reallocated) results array,
+        // so an old background loop must stop rather than fill the new array.
+        while (currentCursor && this._advancedSearchId === searchId) {
+            try {
+                const result = await songs.search(query, {
+                    cursor: currentCursor,
+                    limit: 500
+                });
+
+                if (this._advancedSearchId !== searchId) break;
+
+                const items = [...this.state.advancedResults];
+                (result.items || []).forEach((item, i) => {
+                    items[currentOffset + i] = item;
+                });
+                this.state.advancedResults = items;
+
+                currentOffset += result.items?.length || 0;
+                currentCursor = result.nextCursor;
+            } catch (e) {
+                console.error('Background loading failed:', e);
+                break;
+            }
+        }
+    }
+
+    toggleHelp() {
+        this.state.showHelp = !this.state.showHelp;
+    }
+
+    insertExample(example) {
+        this.state.searchQuery = example;
+        this.state.showHelp = false;
+        this.performAdvancedSearch();
+    }
+
+    handleArtistClick(artist) {
+        navigateToArtist(artist.name);
+    }
+
+    handleAlbumClick(album) {
+        navigateToAlbum(album.artist, album.name);
+    }
+
+    handleSongClick(song) {
+        player.addToQueue(song, true);
+    }
+
+    handleSongContextMenu(song, e) {
+        e.preventDefault();
+        e.stopPropagation();
+        showSongContextMenu(song, e.clientX, e.clientY);
+    }
+
+    // Touch long press for context menu (mobile)
+    handleTouchStart(song, e) {
+        if (this._longPressTimer) {
+            clearTimeout(this._longPressTimer);
+        }
+
+        const touch = e.touches[0];
+        this._touchStartX = touch.clientX;
+        this._touchStartY = touch.clientY;
+
+        this._longPressTimer = setTimeout(() => {
+            showSongContextMenu(song, this._touchStartX, this._touchStartY);
+            this._longPressTriggered = true;
+        }, 500);
+    }
+
+    handleTouchMove(e) {
+        if (!this._longPressTimer) return;
+
+        const touch = e.touches[0];
+        const dx = Math.abs(touch.clientX - this._touchStartX);
+        const dy = Math.abs(touch.clientY - this._touchStartY);
+
+        if (dx > 10 || dy > 10) {
+            clearTimeout(this._longPressTimer);
+            this._longPressTimer = null;
+        }
+    }
+
+    handleTouchEnd(e) {
+        if (this._longPressTimer) {
+            clearTimeout(this._longPressTimer);
+            this._longPressTimer = null;
+        }
+        if (this._longPressTriggered) {
+            e.preventDefault();
+            this._longPressTriggered = false;
+        }
+    }
+
+    handleFolderClick(folder) {
+        // Navigate to VFS browse
+        const encodedPath = encodeURIComponent(folder.path.replace(/^\//, ''));
+        window.location.hash = `/browse/path/${encodedPath}/`;
+    }
+
+    handleAddSongToQueue(song, e) {
+        e.stopPropagation();
+        player.addToQueue(song);
+    }
+
+    handlePlayArtist(artist, e) {
+        e.stopPropagation();
+        navigateToArtist(artist.name);
+    }
+
+    handlePlayAlbum(album, e) {
+        e.stopPropagation();
+        navigateToAlbum(album.artist, album.name);
+    }
+
+    hasResults() {
+        const r = this.state.results;
+        if (!r) return false;
+        return r.artists.length > 0 || r.albums.length > 0 ||
+               r.songs.length > 0 || r.folders.length > 0;
+    }
+
+    // Artist queue/radio actions
+    async handleQueueArtist(artist, e) {
+        e.stopPropagation();
+        try {
+            await player.addByFilter({ artist: artist.name });
+        } catch (err) {
+            console.error('Failed to queue artist:', err);
+        }
+    }
+
+    async handleRadioArtist(artist, e) {
+        e.stopPropagation();
+        try {
+            await player.startRadio(null, `a:eq:${artist.name}`);
+        } catch (err) {
+            console.error('Failed to start artist radio:', err);
+        }
+    }
+
+    // Album queue/radio actions
+    async handleQueueAlbum(album, e) {
+        e.stopPropagation();
+        try {
+            await player.addByFilter({ artist: album.artist, album: album.name });
+        } catch (err) {
+            console.error('Failed to queue album:', err);
+        }
+    }
+
+    async handleRadioAlbum(album, e) {
+        e.stopPropagation();
+        try {
+            await player.startRadio(null, `a:eq:${album.artist} AND al:eq:${album.name}`);
+        } catch (err) {
+            console.error('Failed to start album radio:', err);
+        }
+    }
+
+    // Advanced search result actions
+    async handleQueueAllResults() {
+        const loadedSongs = this.state.advancedResults.filter(s => s !== null);
+        if (loadedSongs.length === 0) return;
+
+        try {
+            await player.addToQueue(loadedSongs);
+        } catch (err) {
+            console.error('Failed to queue all results:', err);
+        }
+    }
+
+    async handleRadioFromSearch() {
+        const query = this.state.searchQuery.trim();
+        if (!query) return;
+
+        try {
+            await player.startRadio(null, query);
+        } catch (err) {
+            console.error('Failed to start radio from search:', err);
+        }
+    }
+
+    async handleRadioFromSong(song, e) {
+        e.stopPropagation();
+        try {
+            await player.startRadio(song.uuid);
+        } catch (err) {
+            console.error('Failed to start radio from song:', err);
+        }
+    }
 
     template() {
         const { searchQuery, results, advancedResults, isLoading, searchPerformed, showHelp, advancedMode,
@@ -1060,9 +1060,9 @@ export default defineComponent('quick-search-page', {
                 `)}
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -1749,4 +1749,6 @@ export default defineComponent('quick-search-page', {
             }
         }
     `
-});
+}
+
+export default defineComponent('quick-search-page', QuickSearchPage);

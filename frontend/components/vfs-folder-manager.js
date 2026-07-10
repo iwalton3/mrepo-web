@@ -20,12 +20,14 @@
  *     the host page can reload the current view.
  */
 
-import { defineComponent, html, when, each } from 'vdx/framework.js';
+import { defineComponent, html, when, each, Component } from 'vdx/framework.js';
 import { profile } from '#profile';
 
-export default defineComponent('vfs-folder-manager', {
-    data() {
-        return {
+export class VfsFolderManager extends Component {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             showMoveDialog: false,
             moveSourcePath: '',
             moveDestPath: '',
@@ -34,98 +36,96 @@ export default defineComponent('vfs-folder-manager', {
             isLoading: false,
             pendingRemoveMapping: null
         };
-    },
+    }
 
-    methods: {
-        // --- Public API (invoked by the host page) -------------------------
-        openMove(item, currentPath) {
-            if (!item) return;
-            const base = currentPath || '/';
-            const sourcePath = base === '/'
-                ? item.name
-                : base.replace(/^\//, '') + '/' + item.name;
-            this.state.moveSourcePath = sourcePath;
-            this.state.moveDestPath = sourcePath;
-            this.state.showMoveDialog = true;
-        },
+    // --- Public API (invoked by the host page) -------------------------
+    openMove(item, currentPath) {
+        if (!item) return;
+        const base = currentPath || '/';
+        const sourcePath = base === '/'
+            ? item.name
+            : base.replace(/^\//, '') + '/' + item.name;
+        this.state.moveSourcePath = sourcePath;
+        this.state.moveDestPath = sourcePath;
+        this.state.showMoveDialog = true;
+    }
 
-        async openMappings() {
-            this.state.showMappingsDialog = true;
-            await this.loadMappings();
-        },
+    async openMappings() {
+        this.state.showMappingsDialog = true;
+        await this.loadMappings();
+    }
 
-        // --- Move dialog ---------------------------------------------------
-        closeMoveDialog() {
-            this.state.showMoveDialog = false;
-        },
+    // --- Move dialog ---------------------------------------------------
+    closeMoveDialog() {
+        this.state.showMoveDialog = false;
+    }
 
-        async handleMoveFolder() {
-            const { moveSourcePath, moveDestPath } = this.state;
-            if (!moveSourcePath || !moveDestPath) return;
-            if (moveSourcePath === moveDestPath) {
-                this.closeMoveDialog();
-                return;
-            }
-
-            this.state.isLoading = true;
-            try {
-                const result = await profile.vfs.moveFolder(moveSourcePath, moveDestPath);
-                if (result && result.success) {
-                    this.closeMoveDialog();
-                    this._notifyChanged();
-                } else {
-                    const toast = document.querySelector('cl-toast');
-                    if (toast) toast.show({ severity: 'error', summary: 'Error', detail: (result && result.error) || 'Failed to move folder' });
-                }
-            } catch (e) {
-                console.error('Failed to move folder:', e);
-                const toast = document.querySelector('cl-toast');
-                if (toast) toast.show({ severity: 'error', summary: 'Error', detail: 'Failed to move folder' });
-            } finally {
-                this.state.isLoading = false;
-            }
-        },
-
-        // --- Mappings dialog ----------------------------------------------
-        closeMappingsDialog() {
-            this.state.showMappingsDialog = false;
-        },
-
-        async loadMappings() {
-            try {
-                const result = await profile.vfs.listMappings();
-                this.state.vfsMappings = (result && result.items) || [];
-            } catch (e) {
-                console.error('Failed to load mappings:', e);
-            }
-        },
-
-        handleRemoveMapping(mapping) {
-            this.state.pendingRemoveMapping = mapping;
-        },
-
-        cancelRemoveMapping() {
-            this.state.pendingRemoveMapping = null;
-        },
-
-        async doRemoveMapping() {
-            const mapping = this.state.pendingRemoveMapping;
-            if (!mapping) return;
-            try {
-                await profile.vfs.removeMapping(mapping.id);
-                await this.loadMappings();
-                this._notifyChanged();
-            } catch (e) {
-                console.error('Failed to remove mapping:', e);
-            }
-            this.state.pendingRemoveMapping = null;
-        },
-
-        // --- Internal ------------------------------------------------------
-        _notifyChanged() {
-            this.dispatchEvent(new CustomEvent('vfs-changed', { bubbles: true, composed: true }));
+    async handleMoveFolder() {
+        const { moveSourcePath, moveDestPath } = this.state;
+        if (!moveSourcePath || !moveDestPath) return;
+        if (moveSourcePath === moveDestPath) {
+            this.closeMoveDialog();
+            return;
         }
-    },
+
+        this.state.isLoading = true;
+        try {
+            const result = await profile.vfs.moveFolder(moveSourcePath, moveDestPath);
+            if (result && result.success) {
+                this.closeMoveDialog();
+                this._notifyChanged();
+            } else {
+                const toast = document.querySelector('cl-toast');
+                if (toast) toast.show({ severity: 'error', summary: 'Error', detail: (result && result.error) || 'Failed to move folder' });
+            }
+        } catch (e) {
+            console.error('Failed to move folder:', e);
+            const toast = document.querySelector('cl-toast');
+            if (toast) toast.show({ severity: 'error', summary: 'Error', detail: 'Failed to move folder' });
+        } finally {
+            this.state.isLoading = false;
+        }
+    }
+
+    // --- Mappings dialog ----------------------------------------------
+    closeMappingsDialog() {
+        this.state.showMappingsDialog = false;
+    }
+
+    async loadMappings() {
+        try {
+            const result = await profile.vfs.listMappings();
+            this.state.vfsMappings = (result && result.items) || [];
+        } catch (e) {
+            console.error('Failed to load mappings:', e);
+        }
+    }
+
+    handleRemoveMapping(mapping) {
+        this.state.pendingRemoveMapping = mapping;
+    }
+
+    cancelRemoveMapping() {
+        this.state.pendingRemoveMapping = null;
+    }
+
+    async doRemoveMapping() {
+        const mapping = this.state.pendingRemoveMapping;
+        if (!mapping) return;
+        try {
+            await profile.vfs.removeMapping(mapping.id);
+            await this.loadMappings();
+            this._notifyChanged();
+        } catch (e) {
+            console.error('Failed to remove mapping:', e);
+        }
+        this.state.pendingRemoveMapping = null;
+    }
+
+    // --- Internal ------------------------------------------------------
+    _notifyChanged() {
+        this.dispatchEvent(new CustomEvent('vfs-changed', { bubbles: true, composed: true }));
+    }
 
     template() {
         const { showMoveDialog, showMappingsDialog, isLoading, vfsMappings, pendingRemoveMapping } = this.state;
@@ -208,9 +208,9 @@ export default defineComponent('vfs-folder-manager', {
                 </cl-dialog>
             `)}
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         .move-dialog-content,
         .mappings-content {
             padding: 0.5rem 0;
@@ -306,4 +306,6 @@ export default defineComponent('vfs-folder-manager', {
             color: var(--danger-500, #dc3545);
         }
     `
-});
+}
+
+export default defineComponent('vfs-folder-manager', VfsFolderManager);

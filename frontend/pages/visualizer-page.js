@@ -9,7 +9,7 @@
  * - Graceful degradation if butterchurn/WebGL unavailable
  */
 
-import { defineComponent, html, when, each } from 'vdx/framework.js';
+import { defineComponent, html, when, each, Component } from 'vdx/framework.js';
 import { player, playerStore } from '../stores/player-store.js';
 import { profile } from '#profile';
 
@@ -32,12 +32,14 @@ const PRESET_PACKS = [
     { id: 'image', label: 'Image', description: 'Image-based presets' }
 ];
 
-export default defineComponent('visualizer-page', {
+export class VisualizerPage extends Component {
     // NOTE: We intentionally do NOT subscribe to playerStore here.
     // Store subscriptions cause re-renders which interrupt the WebGL animation loop.
     // Instead, we access player state directly and update the toolbar manually.
 
-    data() {
+    constructor(props) {
+        super(props);
+
         // Load saved mode or default to butterchurn
         let savedMode = 'butterchurn';
         let savedRandomPerSong = false;
@@ -51,7 +53,7 @@ export default defineComponent('visualizer-page', {
             }
         } catch (e) {}
 
-        return {
+        this.state = {
             error: null,
             loading: true,
             mode: savedMode,  // 'butterchurn', 'spectrogram', 'waveform', 'both'
@@ -64,7 +66,7 @@ export default defineComponent('visualizer-page', {
             randomPresetPerSong: savedRandomPerSong,
             enabledPacks: savedPresetPacks
         };
-    },
+    }
 
     async mounted() {
         // Remove shell padding for fullscreen visualizer
@@ -105,7 +107,7 @@ export default defineComponent('visualizer-page', {
         await this._initVisualizer();
         if (!this._isMounted) return;  // Unmounted during init - don't start the rAF loop
         this._startRenderLoop();
-    },
+    }
 
     unmounted() {
         this._stopRenderLoop();
@@ -160,693 +162,691 @@ export default defineComponent('visualizer-page', {
         if (!lowLatencyAlways) {
             player.switchLatencyMode('playback');
         }
-    },
+    }
 
-    methods: {
-        async _requestWakeLock() {
-            if ('wakeLock' in navigator) {
-                try {
-                    this._wakeLock = await navigator.wakeLock.request('screen');
-                } catch (e) {
-                    // Wake lock request can fail (e.g., low battery, permission denied)
-                    console.warn('Wake lock request failed:', e.message);
-                }
-            }
-        },
-
-        _releaseWakeLock() {
-            if (this._wakeLock) {
-                this._wakeLock.release().catch(() => {});
-                this._wakeLock = null;
-            }
-        },
-
-        async _initVisualizer() {
+    async _requestWakeLock() {
+        if ('wakeLock' in navigator) {
             try {
-                // Check WebGL support
-                const testCanvas = document.createElement('canvas');
-                const gl = testCanvas.getContext('webgl') || testCanvas.getContext('experimental-webgl');
-                if (!gl) {
-                    throw new Error('WebGL is not supported in this browser');
-                }
-
-                // Load butterchurn (ES module), presets (UMD script), and preset metadata
-                const [butterchurnModule] = await Promise.all([
-                    import(BUTTERCHURN_URL),
-                    import(BUTTERCHURN_PRESETS_URL),
-                    import(BUTTERCHURN_PRESET_META_URL)
-                ]);
-                if (!this._isMounted) return;  // Unmounted during dynamic imports
-
-                // Get butterchurn from ES module default export
-                const butterchurn = butterchurnModule.default || butterchurnModule;
-
-                if (!butterchurn || !butterchurn.createVisualizer) {
-                    throw new Error('butterchurn library not loaded correctly');
-                }
-
-                const butterchurnPresets = window.allButterchurnPresets.default;
-                if (!butterchurnPresets) {
-                    throw new Error('butterchurn presets not loaded correctly');
-                }
-
-                // Get preset pack metadata
-                const presetPackMeta = window.presetPackMetaButterchurnPresets;
-                if (presetPackMeta) {
-                    this._presetPackMeta = {
-                        base: presetPackMeta.getBasePresetKeys().presets,
-                        extra: presetPackMeta.getExtraPresetKeys().presets,
-                        image: presetPackMeta.getImagePresetKeys().presets
-                    };
-                }
-
-                // Get the canvas
-                const canvas = this.refs.canvas;
-                if (!canvas) {
-                    throw new Error('Canvas element not found');
-                }
-
-                // Switch to low-latency mode for synchronized visualizer
-                // This recreates the audio element with latencyHint: 'interactive'
-                // and returns the analyser node
-                const analyser = await player.switchLatencyMode('interactive');
-                if (!this._isMounted) return;  // Unmounted during latency switch - don't retain analyser
-                this._analyser = analyser;
-
-                const audioContext = player.getAudioContext();
-
-                // Validate audio context is available
-                if (!audioContext) {
-                    throw new Error('Audio context not available. Try playing a song first.');
-                }
-
-                // Get the combined pipeline node (mixer output when crossfade enabled, source otherwise)
-                const visualizerInputNode = player.getVisualizerInputNode();
-                if (!visualizerInputNode) {
-                    throw new Error('Audio source not available. Try playing a song first.');
-                }
-
-                // Ensure audio context is running (may be suspended without user gesture)
-                if (audioContext.state === 'suspended') {
-                    await audioContext.resume();
-                    if (!this._isMounted) return;  // Unmounted while resuming audio context
-                }
-
-                // Set up 2D canvas context for spectrogram/waveform modes
-                this._2dCanvas = this.refs.canvas2d;
-                if (this._2dCanvas) {
-                    this._2dCtx = this._2dCanvas.getContext('2d');
-                }
-
-                // Size canvas before creating visualizer
-                const rect = this.refs.container.getBoundingClientRect();
-                canvas.width = rect.width * (window.devicePixelRatio || 1);
-                canvas.height = rect.height * (window.devicePixelRatio || 1);
-
-                // Create visualizer
-                const visualizer = butterchurn.createVisualizer(
-                    audioContext,
-                    canvas,
-                    {
-                        width: canvas.width,
-                        height: canvas.height,
-                        pixelRatio: window.devicePixelRatio || 1,
-                        textureRatio: 1
-                    }
-                );
-
-                // Connect to combined audio pipeline (sees both audio elements during crossfade)
-                visualizer.connectAudio(visualizerInputNode);
-
-                // Load presets
-                const presets = butterchurnPresets;
-                const allPresetNames = Object.keys(presets).sort();
-
-                // Store visualizer directly on this (not in state) to avoid reactive proxy
-                this._visualizer = visualizer;
-                this._presets = presets;
-                this.state.allPresetNames = allPresetNames;
-
-                // Filter presets based on enabled packs
-                this._updateFilteredPresets();
-
-                // Set initial preset - restore saved or pick random
-                if (this.state.presetNames.length > 0) {
-                    let savedPreset = null;
-                    try {
-                        savedPreset = localStorage.getItem(VISUALIZER_PRESET_KEY);
-                    } catch (e) {}
-
-                    // Use saved preset if it exists and is valid, otherwise random
-                    if (savedPreset && this.state.presetNames.includes(savedPreset)) {
-                        this._setPreset(savedPreset);
-                    } else {
-                        this._randomPreset();
-                    }
-                }
-
-                this.state.loading = false;
-                this._handleResize();
-
-                // If starting in butterchurn mode, remove the analyser from chain
-                // (butterchurn has its own internal analyser)
-                if (this.state.mode === 'butterchurn') {
-                    player.removeAnalyser();
-                }
-
-                // Subscribe to audio source changes (e.g., after crossfade or pipeline rebuild)
-                // Butterchurn reconnects to the combined pipeline node
-                this._unsubscribeAudioSource = player.onAudioSourceChange(() => {
-                    const inputNode = player.getVisualizerInputNode();
-                    if (this._visualizer && inputNode) {
-                        try {
-                            this._visualizer.connectAudio(inputNode);
-                        } catch (e) {
-                            console.warn('Failed to reconnect visualizer audio:', e);
-                        }
-                    }
-                });
-
+                this._wakeLock = await navigator.wakeLock.request('screen');
             } catch (e) {
-                console.error('Visualizer init error:', e);
-                this.state.error = e.message;
-                this.state.loading = false;
+                // Wake lock request can fail (e.g., low battery, permission denied)
+                console.warn('Wake lock request failed:', e.message);
             }
-        },
+        }
+    }
 
-        _loadScript(url) {
-            return new Promise((resolve, reject) => {
-                // Check if already loaded
-                if (document.querySelector(`script[src="${url}"]`)) {
-                    resolve();
-                    return;
+    _releaseWakeLock() {
+        if (this._wakeLock) {
+            this._wakeLock.release().catch(() => {});
+            this._wakeLock = null;
+        }
+    }
+
+    async _initVisualizer() {
+        try {
+            // Check WebGL support
+            const testCanvas = document.createElement('canvas');
+            const gl = testCanvas.getContext('webgl') || testCanvas.getContext('experimental-webgl');
+            if (!gl) {
+                throw new Error('WebGL is not supported in this browser');
+            }
+
+            // Load butterchurn (ES module), presets (UMD script), and preset metadata
+            const [butterchurnModule] = await Promise.all([
+                import(BUTTERCHURN_URL),
+                import(BUTTERCHURN_PRESETS_URL),
+                import(BUTTERCHURN_PRESET_META_URL)
+            ]);
+            if (!this._isMounted) return;  // Unmounted during dynamic imports
+
+            // Get butterchurn from ES module default export
+            const butterchurn = butterchurnModule.default || butterchurnModule;
+
+            if (!butterchurn || !butterchurn.createVisualizer) {
+                throw new Error('butterchurn library not loaded correctly');
+            }
+
+            const butterchurnPresets = window.allButterchurnPresets.default;
+            if (!butterchurnPresets) {
+                throw new Error('butterchurn presets not loaded correctly');
+            }
+
+            // Get preset pack metadata
+            const presetPackMeta = window.presetPackMetaButterchurnPresets;
+            if (presetPackMeta) {
+                this._presetPackMeta = {
+                    base: presetPackMeta.getBasePresetKeys().presets,
+                    extra: presetPackMeta.getExtraPresetKeys().presets,
+                    image: presetPackMeta.getImagePresetKeys().presets
+                };
+            }
+
+            // Get the canvas
+            const canvas = this.refs.canvas;
+            if (!canvas) {
+                throw new Error('Canvas element not found');
+            }
+
+            // Switch to low-latency mode for synchronized visualizer
+            // This recreates the audio element with latencyHint: 'interactive'
+            // and returns the analyser node
+            const analyser = await player.switchLatencyMode('interactive');
+            if (!this._isMounted) return;  // Unmounted during latency switch - don't retain analyser
+            this._analyser = analyser;
+
+            const audioContext = player.getAudioContext();
+
+            // Validate audio context is available
+            if (!audioContext) {
+                throw new Error('Audio context not available. Try playing a song first.');
+            }
+
+            // Get the combined pipeline node (mixer output when crossfade enabled, source otherwise)
+            const visualizerInputNode = player.getVisualizerInputNode();
+            if (!visualizerInputNode) {
+                throw new Error('Audio source not available. Try playing a song first.');
+            }
+
+            // Ensure audio context is running (may be suspended without user gesture)
+            if (audioContext.state === 'suspended') {
+                await audioContext.resume();
+                if (!this._isMounted) return;  // Unmounted while resuming audio context
+            }
+
+            // Set up 2D canvas context for spectrogram/waveform modes
+            this._2dCanvas = this.refs.canvas2d;
+            if (this._2dCanvas) {
+                this._2dCtx = this._2dCanvas.getContext('2d');
+            }
+
+            // Size canvas before creating visualizer
+            const rect = this.refs.container.getBoundingClientRect();
+            canvas.width = rect.width * (window.devicePixelRatio || 1);
+            canvas.height = rect.height * (window.devicePixelRatio || 1);
+
+            // Create visualizer
+            const visualizer = butterchurn.createVisualizer(
+                audioContext,
+                canvas,
+                {
+                    width: canvas.width,
+                    height: canvas.height,
+                    pixelRatio: window.devicePixelRatio || 1,
+                    textureRatio: 1
                 }
+            );
 
-                const script = document.createElement('script');
-                script.src = url;
-                script.onload = resolve;
-                script.onerror = () => reject(new Error(`Failed to load ${url}`));
-                document.head.appendChild(script);
-            });
-        },
+            // Connect to combined audio pipeline (sees both audio elements during crossfade)
+            visualizer.connectAudio(visualizerInputNode);
 
-        _setPreset(name) {
-            if (!this._visualizer || !this._presets[name]) return;
+            // Load presets
+            const presets = butterchurnPresets;
+            const allPresetNames = Object.keys(presets).sort();
 
-            this._visualizer.loadPreset(this._presets[name], 2.0); // 2 second blend
-            this.state.currentPreset = name;
-            this.state.showPresetMenu = false;
+            // Store visualizer directly on this (not in state) to avoid reactive proxy
+            this._visualizer = visualizer;
+            this._presets = presets;
+            this.state.allPresetNames = allPresetNames;
 
-            // Save preset to localStorage for persistence
-            try {
-                localStorage.setItem(VISUALIZER_PRESET_KEY, name);
-            } catch (e) {}
-        },
+            // Filter presets based on enabled packs
+            this._updateFilteredPresets();
 
-        _randomPreset() {
-            const names = this.state.presetNames;
-            if (names.length === 0) return;
-            const randomIndex = Math.floor(Math.random() * names.length);
-            this._setPreset(names[randomIndex]);
-        },
+            // Set initial preset - restore saved or pick random
+            if (this.state.presetNames.length > 0) {
+                let savedPreset = null;
+                try {
+                    savedPreset = localStorage.getItem(VISUALIZER_PRESET_KEY);
+                } catch (e) {}
 
-        _checkSongChange() {
-            const currentUuid = playerStore.state.currentSong?.uuid || null;
-            if (currentUuid && currentUuid !== this._lastSongUuid) {
-                this._lastSongUuid = currentUuid;
-                // Trigger random preset if enabled and in butterchurn mode
-                if (this.state.randomPresetPerSong && this.state.mode === 'butterchurn') {
+                // Use saved preset if it exists and is valid, otherwise random
+                if (savedPreset && this.state.presetNames.includes(savedPreset)) {
+                    this._setPreset(savedPreset);
+                } else {
                     this._randomPreset();
                 }
             }
-        },
 
-        toggleRandomPerSong() {
-            this.state.randomPresetPerSong = !this.state.randomPresetPerSong;
-            try {
-                localStorage.setItem(VISUALIZER_RANDOM_PER_SONG_KEY, String(this.state.randomPresetPerSong));
-            } catch (e) {}
-        },
+            this.state.loading = false;
+            this._handleResize();
 
-        togglePresetPack(packId) {
-            const packs = [...this.state.enabledPacks];
-            const index = packs.indexOf(packId);
-            if (index === -1) {
-                packs.push(packId);
-            } else {
-                // Don't allow disabling all packs
-                if (packs.length > 1) {
-                    packs.splice(index, 1);
-                }
-            }
-            this.state.enabledPacks = packs;
-
-            // Save to localStorage
-            try {
-                localStorage.setItem(VISUALIZER_PRESET_PACKS_KEY, JSON.stringify(packs));
-            } catch (e) {}
-
-            // Update filtered presets
-            this._updateFilteredPresets();
-        },
-
-        _updateFilteredPresets() {
-            if (!this._presetPackMeta || !this.state.allPresetNames) {
-                // No metadata loaded, use all presets
-                this.state.presetNames = this.state.allPresetNames || [];
-                return;
-            }
-
-            // Build set of allowed presets from enabled packs
-            const allowedPresets = new Set();
-            for (const packId of this.state.enabledPacks) {
-                const packPresets = this._presetPackMeta[packId];
-                if (packPresets) {
-                    for (const name of packPresets) {
-                        allowedPresets.add(name);
-                    }
-                }
-            }
-
-            // Filter to only allowed presets
-            this.state.presetNames = this.state.allPresetNames.filter(name => allowedPresets.has(name));
-        },
-
-        _handleResize() {
-            const canvas = this.refs.canvas;
-            const canvas2d = this.refs.canvas2d;
-            const container = this.refs.container;
-            if (!container) return;
-
-            const rect = container.getBoundingClientRect();
-            const dpr = window.devicePixelRatio || 1;
-
-            // Resize WebGL canvas (butterchurn)
-            if (canvas) {
-                canvas.width = rect.width * dpr;
-                canvas.height = rect.height * dpr;
-
-                if (this._visualizer) {
-                    this._visualizer.setRendererSize(canvas.width, canvas.height);
-                }
-            }
-
-            // Resize 2D canvas (spectrogram/waveform)
-            if (canvas2d) {
-                canvas2d.width = rect.width * dpr;
-                canvas2d.height = rect.height * dpr;
-
-                // Clear the 2D canvas on resize
-                if (this._2dCtx) {
-                    this._2dCtx.fillStyle = '#000';
-                    this._2dCtx.fillRect(0, 0, canvas2d.width, canvas2d.height);
-                }
-
-                // Pre-allocate spectrogram color lookup table for performance
-                this._spectrogramColors = new Array(256);
-                for (let i = 0; i < 256; i++) {
-                    const normalized = i / 255;
-                    const hue = 240 - normalized * 240;
-                    const lightness = 5 + normalized * 45;
-                    // Pre-compute RGB values
-                    const rgb = this._hslToRgb(hue / 360, 1, lightness / 100);
-                    this._spectrogramColors[i] = rgb;
-                }
-            }
-        },
-
-        _hslToRgb(h, s, l) {
-            let r, g, b;
-            if (s === 0) {
-                r = g = b = l;
-            } else {
-                const hue2rgb = (p, q, t) => {
-                    if (t < 0) t += 1;
-                    if (t > 1) t -= 1;
-                    if (t < 1/6) return p + (q - p) * 6 * t;
-                    if (t < 1/2) return q;
-                    if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
-                    return p;
-                };
-                const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-                const p = 2 * l - q;
-                r = hue2rgb(p, q, h + 1/3);
-                g = hue2rgb(p, q, h);
-                b = hue2rgb(p, q, h - 1/3);
-            }
-            return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
-        },
-
-        _startRenderLoop() {
-            let lastTime = 0;
-            let lastToolbarUpdate = 0;
-            // Track current song to detect changes
-            this._lastSongUuid = playerStore.state.currentSong?.uuid || null;
-            // Flag lets the loop self-terminate; cleared by _stopRenderLoop()/unmounted()
-            this._renderLoopActive = true;
-
-            const render = (time) => {
-                // Self-terminate if the component unmounted or the loop was stopped,
-                // so a loop started right before unmount can't run forever in the background
-                if (!this._renderLoopActive || !this._isMounted) {
-                    this._animationFrame = null;
-                    return;
-                }
-
-                // Render based on current mode at ~60fps
-                if (time - lastTime >= 16) {
-                    switch (this.state.mode) {
-                        case 'butterchurn':
-                            if (this._visualizer) {
-                                this._visualizer.render();
-                            }
-                            break;
-                        case 'spectrogram':
-                            this._renderSpectrogram(false);
-                            break;
-                        case 'waveform':
-                            this._renderWaveform();
-                            break;
-                        case 'both':
-                            this._renderSplitView();  // Waveform on top, spectrogram on bottom
-                            break;
-                    }
-                    lastTime = time;
-                }
-
-                // Update toolbar at ~4fps (every 250ms) to avoid DOM thrashing
-                if (time - lastToolbarUpdate >= 250) {
-                    this._updateToolbar();
-                    this._checkSongChange();
-                    lastToolbarUpdate = time;
-                }
-
-                this._animationFrame = requestAnimationFrame(render);
-            };
-
-            this._animationFrame = requestAnimationFrame(render);
-        },
-
-        _renderSpectrogram() {
-            if (!this._analyser || !this._2dCtx || !this._spectrogramColors) return;
-
-            const canvas = this._2dCanvas;
-            const ctx = this._2dCtx;
-            const analyser = this._analyser;
-            const colors = this._spectrogramColors;
-
-            const bufferLength = analyser.frequencyBinCount;
-
-            // Reuse frequency data array
-            if (!this._freqData || this._freqData.length !== bufferLength) {
-                this._freqData = new Uint8Array(bufferLength);
-            }
-            analyser.getByteFrequencyData(this._freqData);
-
-            // Shift existing image left by 2 pixels
-            const shiftAmount = 2;
-            const imageData = ctx.getImageData(shiftAmount, 0, canvas.width - shiftAmount, canvas.height);
-            ctx.putImageData(imageData, 0, 0);
-
-            // Create ImageData for the new column
-            const colData = ctx.createImageData(shiftAmount, canvas.height);
-            const pixels = colData.data;
-
-            // Draw new column using pre-computed colors
-            for (let y = 0; y < canvas.height; y++) {
-                // Map canvas Y to frequency bin (low freq at bottom, log scale)
-                const normalizedY = (canvas.height - 1 - y) / canvas.height;
-                const logIndex = Math.pow(normalizedY, 2) * bufferLength;
-                const freqIndex = Math.min(logIndex | 0, bufferLength - 1);  // Bitwise floor
-                const value = this._freqData[freqIndex];
-                const rgb = colors[value];
-
-                // Fill both pixels of the column width
-                for (let x = 0; x < shiftAmount; x++) {
-                    const idx = (y * shiftAmount + x) * 4;
-                    pixels[idx] = rgb[0];
-                    pixels[idx + 1] = rgb[1];
-                    pixels[idx + 2] = rgb[2];
-                    pixels[idx + 3] = 255;
-                }
-            }
-
-            ctx.putImageData(colData, canvas.width - shiftAmount, 0);
-        },
-
-        _renderSplitView() {
-            if (!this._analyser || !this._2dCtx || !this._spectrogramColors) return;
-
-            const canvas = this._2dCanvas;
-            const ctx = this._2dCtx;
-            const analyser = this._analyser;
-            const colors = this._spectrogramColors;
-
-            const halfHeight = Math.floor(canvas.height / 2);
-            const bufferLength = analyser.frequencyBinCount;
-
-            // Reuse data arrays
-            if (!this._waveData || this._waveData.length !== analyser.fftSize) {
-                this._waveData = new Uint8Array(analyser.fftSize);
-            }
-            if (!this._freqData || this._freqData.length !== bufferLength) {
-                this._freqData = new Uint8Array(bufferLength);
-            }
-
-            analyser.getByteTimeDomainData(this._waveData);
-            analyser.getByteFrequencyData(this._freqData);
-
-            // --- Top half: Waveform ---
-            ctx.fillStyle = 'rgb(0, 0, 0)';
-            ctx.fillRect(0, 0, canvas.width, halfHeight);
-
-            ctx.lineWidth = 2;
-            ctx.strokeStyle = 'rgb(0, 255, 128)';
-            ctx.beginPath();
-
-            const sliceWidth = canvas.width / this._waveData.length;
-            let x = 0;
-
-            for (let i = 0; i < this._waveData.length; i++) {
-                const v = this._waveData[i] / 128.0;
-                const y = (v * halfHeight) / 2;
-
-                if (i === 0) {
-                    ctx.moveTo(x, y);
-                } else {
-                    ctx.lineTo(x, y);
-                }
-                x += sliceWidth;
-            }
-            ctx.stroke();
-
-            // Draw divider line
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(0, halfHeight);
-            ctx.lineTo(canvas.width, halfHeight);
-            ctx.stroke();
-
-            // --- Bottom half: Spectrogram ---
-            const shiftAmount = 2;
-            const spectrogramHeight = canvas.height - halfHeight;
-            const imageData = ctx.getImageData(shiftAmount, halfHeight, canvas.width - shiftAmount, spectrogramHeight);
-            ctx.putImageData(imageData, 0, halfHeight);
-
-            // Create ImageData for the new column
-            const colData = ctx.createImageData(shiftAmount, spectrogramHeight);
-            const pixels = colData.data;
-
-            for (let y = 0; y < spectrogramHeight; y++) {
-                const normalizedY = (spectrogramHeight - 1 - y) / spectrogramHeight;
-                const logIndex = Math.pow(normalizedY, 2) * bufferLength;
-                const freqIndex = Math.min(logIndex | 0, bufferLength - 1);
-                const value = this._freqData[freqIndex];
-                const rgb = colors[value];
-
-                for (let xOff = 0; xOff < shiftAmount; xOff++) {
-                    const idx = (y * shiftAmount + xOff) * 4;
-                    pixels[idx] = rgb[0];
-                    pixels[idx + 1] = rgb[1];
-                    pixels[idx + 2] = rgb[2];
-                    pixels[idx + 3] = 255;
-                }
-            }
-
-            ctx.putImageData(colData, canvas.width - shiftAmount, halfHeight);
-        },
-
-        _renderWaveform() {
-            if (!this._analyser || !this._2dCtx) return;
-
-            const canvas = this._2dCanvas;
-            const ctx = this._2dCtx;
-            const analyser = this._analyser;
-            const bufferLength = analyser.fftSize;
-
-            // Reuse waveform data array
-            if (!this._waveData || this._waveData.length !== bufferLength) {
-                this._waveData = new Uint8Array(bufferLength);
-            }
-            analyser.getByteTimeDomainData(this._waveData);
-
-            // Clear with black
-            ctx.fillStyle = 'rgb(0, 0, 0)';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-            // Draw waveform
-            ctx.lineWidth = 2;
-            ctx.strokeStyle = 'rgb(0, 255, 128)';
-            ctx.beginPath();
-
-            const sliceWidth = canvas.width / bufferLength;
-            let x = 0;
-
-            for (let i = 0; i < bufferLength; i++) {
-                const v = this._waveData[i] / 128.0;
-                const y = (v * canvas.height) / 2;
-
-                if (i === 0) {
-                    ctx.moveTo(x, y);
-                } else {
-                    ctx.lineTo(x, y);
-                }
-                x += sliceWidth;
-            }
-
-            ctx.stroke();
-        },
-
-        closeModeMenu() {
-            this.state.showModeMenu = false;
-        },
-
-        setMode(mode) {
-            this.state.showModeMenu = false;  // Close menu
-
-            if (mode === this.state.mode) return;
-
-            const wasButterchurn = this.state.mode === 'butterchurn';
-            const isButterchurn = mode === 'butterchurn';
-
-            this.state.mode = mode;
-
-            // Save preference
-            try {
-                localStorage.setItem(VISUALIZER_MODE_KEY, mode);
-            } catch (e) {}
-
-            // Manage analyser for performance:
-            // - Butterchurn has its own analyser, so remove ours from the chain
-            // - Spectrogram/waveform/both need our analyser in the chain
-            if (wasButterchurn && !isButterchurn) {
-                // Switching FROM butterchurn - need to insert analyser for 2D modes
-                if (this._analyser) {
-                    player.insertAnalyser(this._analyser);
-                }
-            } else if (!wasButterchurn && isButterchurn) {
-                // Switching TO butterchurn - remove analyser to save CPU
+            // If starting in butterchurn mode, remove the analyser from chain
+            // (butterchurn has its own internal analyser)
+            if (this.state.mode === 'butterchurn') {
                 player.removeAnalyser();
             }
 
-            // Clear 2D canvas when switching modes
-            if (this._2dCtx && this._2dCanvas) {
-                this._2dCtx.fillStyle = '#000';
-                this._2dCtx.fillRect(0, 0, this._2dCanvas.width, this._2dCanvas.height);
-            }
-        },
-
-        _updateToolbar() {
-            // Manually update toolbar elements without triggering reactive re-render
-            // Use store state instead of direct audio element references to handle crossfade element swaps
-            const state = playerStore.state;
-
-            // Update play/pause button
-            const playBtn = this.querySelector('.play-btn');
-            if (playBtn) {
-                const isPlaying = state.isPlaying;
-                playBtn.title = isPlaying ? 'Pause' : 'Play';
-                // Update icon
-                const iconHtml = isPlaying
-                    ? '<span class="pause-icon"></span>'
-                    : '<span class="play-icon"></span>';
-                if (playBtn.innerHTML !== iconHtml) {
-                    playBtn.innerHTML = iconHtml;
+            // Subscribe to audio source changes (e.g., after crossfade or pipeline rebuild)
+            // Butterchurn reconnects to the combined pipeline node
+            this._unsubscribeAudioSource = player.onAudioSourceChange(() => {
+                const inputNode = player.getVisualizerInputNode();
+                if (this._visualizer && inputNode) {
+                    try {
+                        this._visualizer.connectAudio(inputNode);
+                    } catch (e) {
+                        console.warn('Failed to reconnect visualizer audio:', e);
+                    }
                 }
-            }
+            });
 
-            // Update time display
-            const timeEl = this.querySelector('.song-time');
-            if (timeEl) {
-                const currentTime = state.currentTime || 0;
-                const duration = state.duration || 0;
-                timeEl.textContent = `${this.formatTime(currentTime)} / ${this.formatTime(duration)}`;
-            }
-
-            // Update song title
-            const titleEl = this.querySelector('.song-title');
-            if (titleEl && state.currentSong) {
-                const title = this.getDisplayTitle(state.currentSong);
-                if (titleEl.textContent !== title) {
-                    titleEl.textContent = title;
-                }
-            }
-        },
-
-        _stopRenderLoop() {
-            // Clear the flag first so any already-scheduled frame self-terminates
-            this._renderLoopActive = false;
-            if (this._animationFrame) {
-                cancelAnimationFrame(this._animationFrame);
-                this._animationFrame = null;
-            }
-        },
-
-        togglePresetMenu() {
-            this.state.showPresetMenu = !this.state.showPresetMenu;
-        },
-
-        async toggleFullscreen() {
-            try {
-                if (document.fullscreenElement) {
-                    await document.exitFullscreen();
-                } else {
-                    await this.refs.container?.requestFullscreen();
-                }
-            } catch (e) {
-                console.warn('Fullscreen error:', e);
-            }
-        },
-
-        // Playback controls
-        handlePlayPause() {
-            player.togglePlayPause();
-        },
-
-        handlePrevious() {
-            player.previous();
-        },
-
-        handleNext() {
-            player.next();
-        },
-
-        formatTime(seconds) {
-            if (!seconds || isNaN(seconds)) return '0:00';
-            const mins = Math.floor(seconds / 60);
-            const secs = Math.floor(seconds % 60);
-            return `${mins}:${secs.toString().padStart(2, '0')}`;
-        },
-
-        getDisplayTitle(song) {
-            if (!song) return 'No song playing';
-            if (song.title) return song.title;
-            const path = song.virtual_file || song.file || '';
-            const filename = path.split('/').pop() || '';
-            return filename.replace(/\.[^.]+$/, '') || 'Unknown';
+        } catch (e) {
+            console.error('Visualizer init error:', e);
+            this.state.error = e.message;
+            this.state.loading = false;
         }
-    },
+    }
+
+    _loadScript(url) {
+        return new Promise((resolve, reject) => {
+            // Check if already loaded
+            if (document.querySelector(`script[src="${url}"]`)) {
+                resolve();
+                return;
+            }
+
+            const script = document.createElement('script');
+            script.src = url;
+            script.onload = resolve;
+            script.onerror = () => reject(new Error(`Failed to load ${url}`));
+            document.head.appendChild(script);
+        });
+    }
+
+    _setPreset(name) {
+        if (!this._visualizer || !this._presets[name]) return;
+
+        this._visualizer.loadPreset(this._presets[name], 2.0); // 2 second blend
+        this.state.currentPreset = name;
+        this.state.showPresetMenu = false;
+
+        // Save preset to localStorage for persistence
+        try {
+            localStorage.setItem(VISUALIZER_PRESET_KEY, name);
+        } catch (e) {}
+    }
+
+    _randomPreset() {
+        const names = this.state.presetNames;
+        if (names.length === 0) return;
+        const randomIndex = Math.floor(Math.random() * names.length);
+        this._setPreset(names[randomIndex]);
+    }
+
+    _checkSongChange() {
+        const currentUuid = playerStore.state.currentSong?.uuid || null;
+        if (currentUuid && currentUuid !== this._lastSongUuid) {
+            this._lastSongUuid = currentUuid;
+            // Trigger random preset if enabled and in butterchurn mode
+            if (this.state.randomPresetPerSong && this.state.mode === 'butterchurn') {
+                this._randomPreset();
+            }
+        }
+    }
+
+    toggleRandomPerSong() {
+        this.state.randomPresetPerSong = !this.state.randomPresetPerSong;
+        try {
+            localStorage.setItem(VISUALIZER_RANDOM_PER_SONG_KEY, String(this.state.randomPresetPerSong));
+        } catch (e) {}
+    }
+
+    togglePresetPack(packId) {
+        const packs = [...this.state.enabledPacks];
+        const index = packs.indexOf(packId);
+        if (index === -1) {
+            packs.push(packId);
+        } else {
+            // Don't allow disabling all packs
+            if (packs.length > 1) {
+                packs.splice(index, 1);
+            }
+        }
+        this.state.enabledPacks = packs;
+
+        // Save to localStorage
+        try {
+            localStorage.setItem(VISUALIZER_PRESET_PACKS_KEY, JSON.stringify(packs));
+        } catch (e) {}
+
+        // Update filtered presets
+        this._updateFilteredPresets();
+    }
+
+    _updateFilteredPresets() {
+        if (!this._presetPackMeta || !this.state.allPresetNames) {
+            // No metadata loaded, use all presets
+            this.state.presetNames = this.state.allPresetNames || [];
+            return;
+        }
+
+        // Build set of allowed presets from enabled packs
+        const allowedPresets = new Set();
+        for (const packId of this.state.enabledPacks) {
+            const packPresets = this._presetPackMeta[packId];
+            if (packPresets) {
+                for (const name of packPresets) {
+                    allowedPresets.add(name);
+                }
+            }
+        }
+
+        // Filter to only allowed presets
+        this.state.presetNames = this.state.allPresetNames.filter(name => allowedPresets.has(name));
+    }
+
+    _handleResize() {
+        const canvas = this.refs.canvas;
+        const canvas2d = this.refs.canvas2d;
+        const container = this.refs.container;
+        if (!container) return;
+
+        const rect = container.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+
+        // Resize WebGL canvas (butterchurn)
+        if (canvas) {
+            canvas.width = rect.width * dpr;
+            canvas.height = rect.height * dpr;
+
+            if (this._visualizer) {
+                this._visualizer.setRendererSize(canvas.width, canvas.height);
+            }
+        }
+
+        // Resize 2D canvas (spectrogram/waveform)
+        if (canvas2d) {
+            canvas2d.width = rect.width * dpr;
+            canvas2d.height = rect.height * dpr;
+
+            // Clear the 2D canvas on resize
+            if (this._2dCtx) {
+                this._2dCtx.fillStyle = '#000';
+                this._2dCtx.fillRect(0, 0, canvas2d.width, canvas2d.height);
+            }
+
+            // Pre-allocate spectrogram color lookup table for performance
+            this._spectrogramColors = new Array(256);
+            for (let i = 0; i < 256; i++) {
+                const normalized = i / 255;
+                const hue = 240 - normalized * 240;
+                const lightness = 5 + normalized * 45;
+                // Pre-compute RGB values
+                const rgb = this._hslToRgb(hue / 360, 1, lightness / 100);
+                this._spectrogramColors[i] = rgb;
+            }
+        }
+    }
+
+    _hslToRgb(h, s, l) {
+        let r, g, b;
+        if (s === 0) {
+            r = g = b = l;
+        } else {
+            const hue2rgb = (p, q, t) => {
+                if (t < 0) t += 1;
+                if (t > 1) t -= 1;
+                if (t < 1/6) return p + (q - p) * 6 * t;
+                if (t < 1/2) return q;
+                if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+                return p;
+            };
+            const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+            const p = 2 * l - q;
+            r = hue2rgb(p, q, h + 1/3);
+            g = hue2rgb(p, q, h);
+            b = hue2rgb(p, q, h - 1/3);
+        }
+        return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+    }
+
+    _startRenderLoop() {
+        let lastTime = 0;
+        let lastToolbarUpdate = 0;
+        // Track current song to detect changes
+        this._lastSongUuid = playerStore.state.currentSong?.uuid || null;
+        // Flag lets the loop self-terminate; cleared by _stopRenderLoop()/unmounted()
+        this._renderLoopActive = true;
+
+        const render = (time) => {
+            // Self-terminate if the component unmounted or the loop was stopped,
+            // so a loop started right before unmount can't run forever in the background
+            if (!this._renderLoopActive || !this._isMounted) {
+                this._animationFrame = null;
+                return;
+            }
+
+            // Render based on current mode at ~60fps
+            if (time - lastTime >= 16) {
+                switch (this.state.mode) {
+                    case 'butterchurn':
+                        if (this._visualizer) {
+                            this._visualizer.render();
+                        }
+                        break;
+                    case 'spectrogram':
+                        this._renderSpectrogram(false);
+                        break;
+                    case 'waveform':
+                        this._renderWaveform();
+                        break;
+                    case 'both':
+                        this._renderSplitView();  // Waveform on top, spectrogram on bottom
+                        break;
+                }
+                lastTime = time;
+            }
+
+            // Update toolbar at ~4fps (every 250ms) to avoid DOM thrashing
+            if (time - lastToolbarUpdate >= 250) {
+                this._updateToolbar();
+                this._checkSongChange();
+                lastToolbarUpdate = time;
+            }
+
+            this._animationFrame = requestAnimationFrame(render);
+        };
+
+        this._animationFrame = requestAnimationFrame(render);
+    }
+
+    _renderSpectrogram() {
+        if (!this._analyser || !this._2dCtx || !this._spectrogramColors) return;
+
+        const canvas = this._2dCanvas;
+        const ctx = this._2dCtx;
+        const analyser = this._analyser;
+        const colors = this._spectrogramColors;
+
+        const bufferLength = analyser.frequencyBinCount;
+
+        // Reuse frequency data array
+        if (!this._freqData || this._freqData.length !== bufferLength) {
+            this._freqData = new Uint8Array(bufferLength);
+        }
+        analyser.getByteFrequencyData(this._freqData);
+
+        // Shift existing image left by 2 pixels
+        const shiftAmount = 2;
+        const imageData = ctx.getImageData(shiftAmount, 0, canvas.width - shiftAmount, canvas.height);
+        ctx.putImageData(imageData, 0, 0);
+
+        // Create ImageData for the new column
+        const colData = ctx.createImageData(shiftAmount, canvas.height);
+        const pixels = colData.data;
+
+        // Draw new column using pre-computed colors
+        for (let y = 0; y < canvas.height; y++) {
+            // Map canvas Y to frequency bin (low freq at bottom, log scale)
+            const normalizedY = (canvas.height - 1 - y) / canvas.height;
+            const logIndex = Math.pow(normalizedY, 2) * bufferLength;
+            const freqIndex = Math.min(logIndex | 0, bufferLength - 1);  // Bitwise floor
+            const value = this._freqData[freqIndex];
+            const rgb = colors[value];
+
+            // Fill both pixels of the column width
+            for (let x = 0; x < shiftAmount; x++) {
+                const idx = (y * shiftAmount + x) * 4;
+                pixels[idx] = rgb[0];
+                pixels[idx + 1] = rgb[1];
+                pixels[idx + 2] = rgb[2];
+                pixels[idx + 3] = 255;
+            }
+        }
+
+        ctx.putImageData(colData, canvas.width - shiftAmount, 0);
+    }
+
+    _renderSplitView() {
+        if (!this._analyser || !this._2dCtx || !this._spectrogramColors) return;
+
+        const canvas = this._2dCanvas;
+        const ctx = this._2dCtx;
+        const analyser = this._analyser;
+        const colors = this._spectrogramColors;
+
+        const halfHeight = Math.floor(canvas.height / 2);
+        const bufferLength = analyser.frequencyBinCount;
+
+        // Reuse data arrays
+        if (!this._waveData || this._waveData.length !== analyser.fftSize) {
+            this._waveData = new Uint8Array(analyser.fftSize);
+        }
+        if (!this._freqData || this._freqData.length !== bufferLength) {
+            this._freqData = new Uint8Array(bufferLength);
+        }
+
+        analyser.getByteTimeDomainData(this._waveData);
+        analyser.getByteFrequencyData(this._freqData);
+
+        // --- Top half: Waveform ---
+        ctx.fillStyle = 'rgb(0, 0, 0)';
+        ctx.fillRect(0, 0, canvas.width, halfHeight);
+
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = 'rgb(0, 255, 128)';
+        ctx.beginPath();
+
+        const sliceWidth = canvas.width / this._waveData.length;
+        let x = 0;
+
+        for (let i = 0; i < this._waveData.length; i++) {
+            const v = this._waveData[i] / 128.0;
+            const y = (v * halfHeight) / 2;
+
+            if (i === 0) {
+                ctx.moveTo(x, y);
+            } else {
+                ctx.lineTo(x, y);
+            }
+            x += sliceWidth;
+        }
+        ctx.stroke();
+
+        // Draw divider line
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, halfHeight);
+        ctx.lineTo(canvas.width, halfHeight);
+        ctx.stroke();
+
+        // --- Bottom half: Spectrogram ---
+        const shiftAmount = 2;
+        const spectrogramHeight = canvas.height - halfHeight;
+        const imageData = ctx.getImageData(shiftAmount, halfHeight, canvas.width - shiftAmount, spectrogramHeight);
+        ctx.putImageData(imageData, 0, halfHeight);
+
+        // Create ImageData for the new column
+        const colData = ctx.createImageData(shiftAmount, spectrogramHeight);
+        const pixels = colData.data;
+
+        for (let y = 0; y < spectrogramHeight; y++) {
+            const normalizedY = (spectrogramHeight - 1 - y) / spectrogramHeight;
+            const logIndex = Math.pow(normalizedY, 2) * bufferLength;
+            const freqIndex = Math.min(logIndex | 0, bufferLength - 1);
+            const value = this._freqData[freqIndex];
+            const rgb = colors[value];
+
+            for (let xOff = 0; xOff < shiftAmount; xOff++) {
+                const idx = (y * shiftAmount + xOff) * 4;
+                pixels[idx] = rgb[0];
+                pixels[idx + 1] = rgb[1];
+                pixels[idx + 2] = rgb[2];
+                pixels[idx + 3] = 255;
+            }
+        }
+
+        ctx.putImageData(colData, canvas.width - shiftAmount, halfHeight);
+    }
+
+    _renderWaveform() {
+        if (!this._analyser || !this._2dCtx) return;
+
+        const canvas = this._2dCanvas;
+        const ctx = this._2dCtx;
+        const analyser = this._analyser;
+        const bufferLength = analyser.fftSize;
+
+        // Reuse waveform data array
+        if (!this._waveData || this._waveData.length !== bufferLength) {
+            this._waveData = new Uint8Array(bufferLength);
+        }
+        analyser.getByteTimeDomainData(this._waveData);
+
+        // Clear with black
+        ctx.fillStyle = 'rgb(0, 0, 0)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Draw waveform
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = 'rgb(0, 255, 128)';
+        ctx.beginPath();
+
+        const sliceWidth = canvas.width / bufferLength;
+        let x = 0;
+
+        for (let i = 0; i < bufferLength; i++) {
+            const v = this._waveData[i] / 128.0;
+            const y = (v * canvas.height) / 2;
+
+            if (i === 0) {
+                ctx.moveTo(x, y);
+            } else {
+                ctx.lineTo(x, y);
+            }
+            x += sliceWidth;
+        }
+
+        ctx.stroke();
+    }
+
+    closeModeMenu() {
+        this.state.showModeMenu = false;
+    }
+
+    setMode(mode) {
+        this.state.showModeMenu = false;  // Close menu
+
+        if (mode === this.state.mode) return;
+
+        const wasButterchurn = this.state.mode === 'butterchurn';
+        const isButterchurn = mode === 'butterchurn';
+
+        this.state.mode = mode;
+
+        // Save preference
+        try {
+            localStorage.setItem(VISUALIZER_MODE_KEY, mode);
+        } catch (e) {}
+
+        // Manage analyser for performance:
+        // - Butterchurn has its own analyser, so remove ours from the chain
+        // - Spectrogram/waveform/both need our analyser in the chain
+        if (wasButterchurn && !isButterchurn) {
+            // Switching FROM butterchurn - need to insert analyser for 2D modes
+            if (this._analyser) {
+                player.insertAnalyser(this._analyser);
+            }
+        } else if (!wasButterchurn && isButterchurn) {
+            // Switching TO butterchurn - remove analyser to save CPU
+            player.removeAnalyser();
+        }
+
+        // Clear 2D canvas when switching modes
+        if (this._2dCtx && this._2dCanvas) {
+            this._2dCtx.fillStyle = '#000';
+            this._2dCtx.fillRect(0, 0, this._2dCanvas.width, this._2dCanvas.height);
+        }
+    }
+
+    _updateToolbar() {
+        // Manually update toolbar elements without triggering reactive re-render
+        // Use store state instead of direct audio element references to handle crossfade element swaps
+        const state = playerStore.state;
+
+        // Update play/pause button
+        const playBtn = this.querySelector('.play-btn');
+        if (playBtn) {
+            const isPlaying = state.isPlaying;
+            playBtn.title = isPlaying ? 'Pause' : 'Play';
+            // Update icon
+            const iconHtml = isPlaying
+                ? '<span class="pause-icon"></span>'
+                : '<span class="play-icon"></span>';
+            if (playBtn.innerHTML !== iconHtml) {
+                playBtn.innerHTML = iconHtml;
+            }
+        }
+
+        // Update time display
+        const timeEl = this.querySelector('.song-time');
+        if (timeEl) {
+            const currentTime = state.currentTime || 0;
+            const duration = state.duration || 0;
+            timeEl.textContent = `${this.formatTime(currentTime)} / ${this.formatTime(duration)}`;
+        }
+
+        // Update song title
+        const titleEl = this.querySelector('.song-title');
+        if (titleEl && state.currentSong) {
+            const title = this.getDisplayTitle(state.currentSong);
+            if (titleEl.textContent !== title) {
+                titleEl.textContent = title;
+            }
+        }
+    }
+
+    _stopRenderLoop() {
+        // Clear the flag first so any already-scheduled frame self-terminates
+        this._renderLoopActive = false;
+        if (this._animationFrame) {
+            cancelAnimationFrame(this._animationFrame);
+            this._animationFrame = null;
+        }
+    }
+
+    togglePresetMenu() {
+        this.state.showPresetMenu = !this.state.showPresetMenu;
+    }
+
+    async toggleFullscreen() {
+        try {
+            if (document.fullscreenElement) {
+                await document.exitFullscreen();
+            } else {
+                await this.refs.container?.requestFullscreen();
+            }
+        } catch (e) {
+            console.warn('Fullscreen error:', e);
+        }
+    }
+
+    // Playback controls
+    handlePlayPause() {
+        player.togglePlayPause();
+    }
+
+    handlePrevious() {
+        player.previous();
+    }
+
+    handleNext() {
+        player.next();
+    }
+
+    formatTime(seconds) {
+        if (!seconds || isNaN(seconds)) return '0:00';
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    getDisplayTitle(song) {
+        if (!song) return 'No song playing';
+        if (song.title) return song.title;
+        const path = song.virtual_file || song.file || '';
+        const filename = path.split('/').pop() || '';
+        return filename.replace(/\.[^.]+$/, '') || 'Unknown';
+    }
 
     template() {
         const { error, loading, mode, presetNames, currentPreset, showPresetMenu, showModeMenu, isFullscreen } = this.state;
@@ -986,9 +986,9 @@ export default defineComponent('visualizer-page', {
                 </div>
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
             height: 100%;
@@ -1481,4 +1481,6 @@ export default defineComponent('visualizer-page', {
             opacity: 1;
         }
     `
-});
+}
+
+export default defineComponent('visualizer-page', VisualizerPage);

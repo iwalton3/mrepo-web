@@ -7,67 +7,67 @@
  * - Currently downloading (spinner)
  */
 
-import { defineComponent, html, when } from 'vdx/framework.js';
+import { defineComponent, html, when, Component } from 'vdx/framework.js';
 import offlineStore, { shouldShowOfflineWarnings } from '../offline/offline-store.js';
 import { isAvailableOffline } from '../offline/offline-audio.js';
 
-export default defineComponent('offline-indicator', {
-    props: {
+export class OfflineIndicator extends Component {
+    static props = {
         songUuid: null
-    },
+    }
 
-    stores: { offline: offlineStore },
+    static stores = { offline: offlineStore }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             isOffline: false,
             isChecking: true
         };
-    },
+    }
 
     async mounted() {
         await this.checkStatus();
-    },
+    }
 
     propsChanged(prop) {
         if (prop === 'songUuid') {
             this.checkStatus();
         }
-    },
+    }
 
-    methods: {
-        async checkStatus() {
-            const uuid = this.props.songUuid;
-            if (!uuid) {
-                this.state.isChecking = false;
-                return;
-            }
-
-            // Guard against out-of-order resolution: in a virtualized list the
-            // songUuid prop can change (row reused) before the previous IDB
-            // lookup resolves, which would show the wrong song's availability.
-            const requestId = (this._checkId || 0) + 1;
-            this._checkId = requestId;
-
-            this.state.isChecking = true;
-            try {
-                const available = await isAvailableOffline(uuid);
-                if (this._checkId !== requestId) return;  // stale
-                this.state.isOffline = available;
-            } catch (e) {
-                console.error('Failed to check offline status:', e);
-            }
-            if (this._checkId === requestId) {
-                this.state.isChecking = false;
-            }
-        },
-
-        isDownloading() {
-            const progress = this.stores.offline.downloadProgress;
-            if (!progress) return false;
-            return progress.currentSongUuid === this.props.songUuid;
+    async checkStatus() {
+        const uuid = this.props.songUuid;
+        if (!uuid) {
+            this.state.isChecking = false;
+            return;
         }
-    },
+
+        // Guard against out-of-order resolution: in a virtualized list the
+        // songUuid prop can change (row reused) before the previous IDB
+        // lookup resolves, which would show the wrong song's availability.
+        const requestId = (this._checkId || 0) + 1;
+        this._checkId = requestId;
+
+        this.state.isChecking = true;
+        try {
+            const available = await isAvailableOffline(uuid);
+            if (this._checkId !== requestId) return;  // stale
+            this.state.isOffline = available;
+        } catch (e) {
+            console.error('Failed to check offline status:', e);
+        }
+        if (this._checkId === requestId) {
+            this.state.isChecking = false;
+        }
+    }
+
+    isDownloading() {
+        const progress = this.stores.offline.downloadProgress;
+        if (!progress) return false;
+        return progress.currentSongUuid === this.props.songUuid;
+    }
 
     template() {
         const { isOffline, isChecking } = this.state;
@@ -110,9 +110,9 @@ export default defineComponent('offline-indicator', {
         }
 
         return html``;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: inline-flex;
             align-items: center;
@@ -162,4 +162,6 @@ export default defineComponent('offline-indicator', {
             to { transform: rotate(360deg); }
         }
     `
-});
+}
+
+export default defineComponent('offline-indicator', OfflineIndicator);

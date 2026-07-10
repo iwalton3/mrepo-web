@@ -5,7 +5,7 @@
  * Useful on mobile where song titles often get cut off.
  */
 
-import { defineComponent, html, when, each } from 'vdx/framework.js';
+import { defineComponent, html, when, each, Component } from 'vdx/framework.js';
 import { navigateToArtist, navigateToAlbum, navigateToCategory, navigateToGenre, navigateToFolder } from './song-context-menu.js';
 import { songs as songsApi } from '../offline/offline-api.js';
 
@@ -40,15 +40,17 @@ function formatDuration(seconds) {
     return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-export default defineComponent('song-info-modal', {
-    data() {
-        return {
+export class SongInfoModal extends Component {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             isVisible: false,
             song: null,
             copiedField: null,
             isLoading: false
         };
-    },
+    }
 
     mounted() {
         // Close on escape
@@ -58,321 +60,319 @@ export default defineComponent('song-info-modal', {
             }
         };
         document.addEventListener('keydown', this._handleEscape);
-    },
+    }
 
     unmounted() {
         document.removeEventListener('keydown', this._handleEscape);
-    },
+    }
 
-    methods: {
-        async show(song) {
-            this.state.song = song;
-            this.state.isVisible = true;
-            this.state.copiedField = null;
-            this.state.isLoading = false;
-            // Prevent body scroll
-            document.body.style.overflow = 'hidden';
+    async show(song) {
+        this.state.song = song;
+        this.state.isVisible = true;
+        this.state.copiedField = null;
+        this.state.isLoading = false;
+        // Prevent body scroll
+        document.body.style.overflow = 'hidden';
 
-            // VFS items have type='file' or no type - fetch full metadata
-            if (song.uuid && (!song.type || song.type === 'file')) {
-                this.state.isLoading = true;
-                try {
-                    const fullSong = await songsApi.get(song.uuid);
-                    if (fullSong && this.state.isVisible) {
-                        this.state.song = fullSong;
-                    }
-                } catch (e) {
-                    console.error('Failed to fetch song metadata:', e);
+        // VFS items have type='file' or no type - fetch full metadata
+        if (song.uuid && (!song.type || song.type === 'file')) {
+            this.state.isLoading = true;
+            try {
+                const fullSong = await songsApi.get(song.uuid);
+                if (fullSong && this.state.isVisible) {
+                    this.state.song = fullSong;
                 }
-                this.state.isLoading = false;
+            } catch (e) {
+                console.error('Failed to fetch song metadata:', e);
             }
-        },
-
-        hide() {
-            this.state.isVisible = false;
-            document.body.style.overflow = '';
-        },
-
-        handleMaskClick(e) {
-            if (e.target === e.currentTarget) {
-                this.hide();
-            }
-        },
-
-        async copyToClipboard(field, value, e) {
-            e?.stopPropagation();
-            if (!value) return;
-
-            try {
-                await navigator.clipboard.writeText(String(value));
-                this.state.copiedField = field;
-                setTimeout(() => {
-                    if (this.state.copiedField === field) {
-                        this.state.copiedField = null;
-                    }
-                }, 1500);
-            } catch (err) {
-                console.error('Failed to copy:', err);
-            }
-        },
-
-        async copyAllMetadata() {
-            const song = this.state.song;
-            if (!song) return;
-
-            const lines = [];
-            if (song.title) lines.push(`Title: ${song.title}`);
-            if (song.artist) lines.push(`Artist: ${song.artist}`);
-            if (song.album_artist && song.album_artist !== song.artist) {
-                lines.push(`Album Artist: ${song.album_artist}`);
-            }
-            if (song.album) lines.push(`Album: ${song.album}`);
-            if (song.track_number) {
-                const track = song.disc_number
-                    ? `${song.disc_number}-${song.track_number}`
-                    : String(song.track_number);
-                lines.push(`Track: ${track}`);
-            }
-            if (song.year) lines.push(`Year: ${song.year}`);
-            if (song.genre) lines.push(`Genre: ${song.genre}`);
-            if (song.category) lines.push(`Category: ${song.category}`);
-            if (song.composer) lines.push(`Composer: ${song.composer}`);
-            if (song.duration_seconds) lines.push(`Duration: ${formatDuration(song.duration_seconds)}`);
-            if (song.type) lines.push(`Format: ${song.type}`);
-            const filepath = song.virtual_file || song.file || song.filepath;
-            if (filepath) lines.push(`File: ${filepath}`);
-            if (song.uuid) lines.push(`UUID: ${song.uuid}`);
-
-            try {
-                await navigator.clipboard.writeText(lines.join('\n'));
-                this.state.copiedField = 'all';
-                setTimeout(() => {
-                    if (this.state.copiedField === 'all') {
-                        this.state.copiedField = null;
-                    }
-                }, 1500);
-            } catch (err) {
-                console.error('Failed to copy:', err);
-            }
-        },
-
-        // Navigation handlers
-        handleGoToArtist() {
-            const song = this.state.song;
-            if (song?.artist) {
-                this.hide();
-                navigateToArtist(song.artist);
-            }
-        },
-
-        handleGoToAlbumArtist() {
-            const song = this.state.song;
-            if (song?.album_artist) {
-                this.hide();
-                navigateToArtist(song.album_artist);
-            }
-        },
-
-        handleGoToAlbum() {
-            const song = this.state.song;
-            if (song?.album) {
-                this.hide();
-                navigateToAlbum(song.artist, song.album);
-            }
-        },
-
-        handleGoToGenre() {
-            const song = this.state.song;
-            if (song?.genre) {
-                this.hide();
-                navigateToGenre(song.genre);
-            }
-        },
-
-        handleGoToCategory() {
-            const song = this.state.song;
-            if (song?.category) {
-                this.hide();
-                navigateToCategory(song.category);
-            }
-        },
-
-        handleGoToFolder() {
-            const song = this.state.song;
-            if (song) {
-                this.hide();
-                navigateToFolder(song);
-            }
-        },
-
-        getMetadataFields() {
-            const song = this.state.song;
-            if (!song) return [];
-
-            const fields = [];
-            const filepath = song.virtual_file || song.file || song.filepath;
-
-            // Title
-            if (song.title) {
-                fields.push({
-                    key: 'title',
-                    label: 'Title',
-                    value: song.title,
-                    copyable: true
-                });
-            }
-
-            // Artist with navigation
-            if (song.artist) {
-                fields.push({
-                    key: 'artist',
-                    label: 'Artist',
-                    value: song.artist,
-                    copyable: true,
-                    navigable: true,
-                    onNavigate: () => this.handleGoToArtist()
-                });
-            }
-
-            // Album Artist (if different from artist)
-            if (song.album_artist && song.album_artist !== song.artist) {
-                fields.push({
-                    key: 'album_artist',
-                    label: 'Album Artist',
-                    value: song.album_artist,
-                    copyable: true,
-                    navigable: true,
-                    onNavigate: () => this.handleGoToAlbumArtist()
-                });
-            }
-
-            // Album with navigation
-            if (song.album) {
-                fields.push({
-                    key: 'album',
-                    label: 'Album',
-                    value: song.album,
-                    copyable: true,
-                    navigable: true,
-                    onNavigate: () => this.handleGoToAlbum()
-                });
-            }
-
-            // Track number (with disc if available)
-            if (song.track_number) {
-                const trackValue = song.disc_number
-                    ? `${song.disc_number}-${song.track_number}`
-                    : String(song.track_number);
-                fields.push({
-                    key: 'track',
-                    label: 'Track',
-                    value: trackValue,
-                    copyable: true
-                });
-            }
-
-            // Year
-            if (song.year) {
-                fields.push({
-                    key: 'year',
-                    label: 'Year',
-                    value: String(song.year),
-                    copyable: true
-                });
-            }
-
-            // Genre with navigation
-            if (song.genre) {
-                fields.push({
-                    key: 'genre',
-                    label: 'Genre',
-                    value: song.genre,
-                    copyable: true,
-                    navigable: true,
-                    onNavigate: () => this.handleGoToGenre()
-                });
-            }
-
-            // Category with navigation
-            if (song.category) {
-                fields.push({
-                    key: 'category',
-                    label: 'Category',
-                    value: song.category,
-                    copyable: true,
-                    navigable: true,
-                    onNavigate: () => this.handleGoToCategory()
-                });
-            }
-
-            // Composer
-            if (song.composer) {
-                fields.push({
-                    key: 'composer',
-                    label: 'Composer',
-                    value: song.composer,
-                    copyable: true
-                });
-            }
-
-            // Duration
-            if (song.duration_seconds) {
-                fields.push({
-                    key: 'duration',
-                    label: 'Duration',
-                    value: formatDuration(song.duration_seconds),
-                    copyable: true
-                });
-            }
-
-            // Format/Type
-            if (song.type) {
-                fields.push({
-                    key: 'type',
-                    label: 'Format',
-                    value: song.type.toUpperCase(),
-                    copyable: true
-                });
-            }
-
-            // File path with folder navigation
-            if (filepath) {
-                fields.push({
-                    key: 'file',
-                    label: 'File',
-                    value: filepath,
-                    copyable: true,
-                    navigable: true,
-                    navigateLabel: 'Go to Folder',
-                    onNavigate: () => this.handleGoToFolder()
-                });
-            }
-
-            // UUID (for debugging/reference)
-            if (song.uuid) {
-                fields.push({
-                    key: 'uuid',
-                    label: 'UUID',
-                    value: song.uuid,
-                    copyable: true,
-                    mono: true
-                });
-
-                // Permalink for loop mode
-                const baseUrl = window.location.origin + window.location.pathname;
-                const permalink = `${baseUrl}#/loopsong/${song.uuid}/`;
-                fields.push({
-                    key: 'permalink',
-                    label: 'Permalink',
-                    value: permalink,
-                    copyable: true,
-                    mono: true
-                });
-            }
-
-            return fields;
+            this.state.isLoading = false;
         }
-    },
+    }
+
+    hide() {
+        this.state.isVisible = false;
+        document.body.style.overflow = '';
+    }
+
+    handleMaskClick(e) {
+        if (e.target === e.currentTarget) {
+            this.hide();
+        }
+    }
+
+    async copyToClipboard(field, value, e) {
+        e?.stopPropagation();
+        if (!value) return;
+
+        try {
+            await navigator.clipboard.writeText(String(value));
+            this.state.copiedField = field;
+            setTimeout(() => {
+                if (this.state.copiedField === field) {
+                    this.state.copiedField = null;
+                }
+            }, 1500);
+        } catch (err) {
+            console.error('Failed to copy:', err);
+        }
+    }
+
+    async copyAllMetadata() {
+        const song = this.state.song;
+        if (!song) return;
+
+        const lines = [];
+        if (song.title) lines.push(`Title: ${song.title}`);
+        if (song.artist) lines.push(`Artist: ${song.artist}`);
+        if (song.album_artist && song.album_artist !== song.artist) {
+            lines.push(`Album Artist: ${song.album_artist}`);
+        }
+        if (song.album) lines.push(`Album: ${song.album}`);
+        if (song.track_number) {
+            const track = song.disc_number
+                ? `${song.disc_number}-${song.track_number}`
+                : String(song.track_number);
+            lines.push(`Track: ${track}`);
+        }
+        if (song.year) lines.push(`Year: ${song.year}`);
+        if (song.genre) lines.push(`Genre: ${song.genre}`);
+        if (song.category) lines.push(`Category: ${song.category}`);
+        if (song.composer) lines.push(`Composer: ${song.composer}`);
+        if (song.duration_seconds) lines.push(`Duration: ${formatDuration(song.duration_seconds)}`);
+        if (song.type) lines.push(`Format: ${song.type}`);
+        const filepath = song.virtual_file || song.file || song.filepath;
+        if (filepath) lines.push(`File: ${filepath}`);
+        if (song.uuid) lines.push(`UUID: ${song.uuid}`);
+
+        try {
+            await navigator.clipboard.writeText(lines.join('\n'));
+            this.state.copiedField = 'all';
+            setTimeout(() => {
+                if (this.state.copiedField === 'all') {
+                    this.state.copiedField = null;
+                }
+            }, 1500);
+        } catch (err) {
+            console.error('Failed to copy:', err);
+        }
+    }
+
+    // Navigation handlers
+    handleGoToArtist() {
+        const song = this.state.song;
+        if (song?.artist) {
+            this.hide();
+            navigateToArtist(song.artist);
+        }
+    }
+
+    handleGoToAlbumArtist() {
+        const song = this.state.song;
+        if (song?.album_artist) {
+            this.hide();
+            navigateToArtist(song.album_artist);
+        }
+    }
+
+    handleGoToAlbum() {
+        const song = this.state.song;
+        if (song?.album) {
+            this.hide();
+            navigateToAlbum(song.artist, song.album);
+        }
+    }
+
+    handleGoToGenre() {
+        const song = this.state.song;
+        if (song?.genre) {
+            this.hide();
+            navigateToGenre(song.genre);
+        }
+    }
+
+    handleGoToCategory() {
+        const song = this.state.song;
+        if (song?.category) {
+            this.hide();
+            navigateToCategory(song.category);
+        }
+    }
+
+    handleGoToFolder() {
+        const song = this.state.song;
+        if (song) {
+            this.hide();
+            navigateToFolder(song);
+        }
+    }
+
+    getMetadataFields() {
+        const song = this.state.song;
+        if (!song) return [];
+
+        const fields = [];
+        const filepath = song.virtual_file || song.file || song.filepath;
+
+        // Title
+        if (song.title) {
+            fields.push({
+                key: 'title',
+                label: 'Title',
+                value: song.title,
+                copyable: true
+            });
+        }
+
+        // Artist with navigation
+        if (song.artist) {
+            fields.push({
+                key: 'artist',
+                label: 'Artist',
+                value: song.artist,
+                copyable: true,
+                navigable: true,
+                onNavigate: () => this.handleGoToArtist()
+            });
+        }
+
+        // Album Artist (if different from artist)
+        if (song.album_artist && song.album_artist !== song.artist) {
+            fields.push({
+                key: 'album_artist',
+                label: 'Album Artist',
+                value: song.album_artist,
+                copyable: true,
+                navigable: true,
+                onNavigate: () => this.handleGoToAlbumArtist()
+            });
+        }
+
+        // Album with navigation
+        if (song.album) {
+            fields.push({
+                key: 'album',
+                label: 'Album',
+                value: song.album,
+                copyable: true,
+                navigable: true,
+                onNavigate: () => this.handleGoToAlbum()
+            });
+        }
+
+        // Track number (with disc if available)
+        if (song.track_number) {
+            const trackValue = song.disc_number
+                ? `${song.disc_number}-${song.track_number}`
+                : String(song.track_number);
+            fields.push({
+                key: 'track',
+                label: 'Track',
+                value: trackValue,
+                copyable: true
+            });
+        }
+
+        // Year
+        if (song.year) {
+            fields.push({
+                key: 'year',
+                label: 'Year',
+                value: String(song.year),
+                copyable: true
+            });
+        }
+
+        // Genre with navigation
+        if (song.genre) {
+            fields.push({
+                key: 'genre',
+                label: 'Genre',
+                value: song.genre,
+                copyable: true,
+                navigable: true,
+                onNavigate: () => this.handleGoToGenre()
+            });
+        }
+
+        // Category with navigation
+        if (song.category) {
+            fields.push({
+                key: 'category',
+                label: 'Category',
+                value: song.category,
+                copyable: true,
+                navigable: true,
+                onNavigate: () => this.handleGoToCategory()
+            });
+        }
+
+        // Composer
+        if (song.composer) {
+            fields.push({
+                key: 'composer',
+                label: 'Composer',
+                value: song.composer,
+                copyable: true
+            });
+        }
+
+        // Duration
+        if (song.duration_seconds) {
+            fields.push({
+                key: 'duration',
+                label: 'Duration',
+                value: formatDuration(song.duration_seconds),
+                copyable: true
+            });
+        }
+
+        // Format/Type
+        if (song.type) {
+            fields.push({
+                key: 'type',
+                label: 'Format',
+                value: song.type.toUpperCase(),
+                copyable: true
+            });
+        }
+
+        // File path with folder navigation
+        if (filepath) {
+            fields.push({
+                key: 'file',
+                label: 'File',
+                value: filepath,
+                copyable: true,
+                navigable: true,
+                navigateLabel: 'Go to Folder',
+                onNavigate: () => this.handleGoToFolder()
+            });
+        }
+
+        // UUID (for debugging/reference)
+        if (song.uuid) {
+            fields.push({
+                key: 'uuid',
+                label: 'UUID',
+                value: song.uuid,
+                copyable: true,
+                mono: true
+            });
+
+            // Permalink for loop mode
+            const baseUrl = window.location.origin + window.location.pathname;
+            const permalink = `${baseUrl}#/loopsong/${song.uuid}/`;
+            fields.push({
+                key: 'permalink',
+                label: 'Permalink',
+                value: permalink,
+                copyable: true,
+                mono: true
+            });
+        }
+
+        return fields;
+    }
 
     template() {
         const { isVisible, song, copiedField, isLoading } = this.state;
@@ -430,9 +430,9 @@ export default defineComponent('song-info-modal', {
                 </div>
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             position: fixed;
             top: 0;
@@ -706,4 +706,6 @@ export default defineComponent('song-info-modal', {
             }
         }
     `
-});
+}
+
+export default defineComponent('song-info-modal', SongInfoModal);

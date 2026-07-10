@@ -8,20 +8,22 @@
  * - Real-time audio preview
  */
 
-import { defineComponent, html, when, each } from 'vdx/framework.js';
+import { defineComponent, html, when, each, Component } from 'vdx/framework.js';
 import eqPresetsStore, { FILTER_TYPES, createDefaultBand, graphicToParametric } from '../stores/eq-presets-store.js';
 import player, { EQ_BANDS } from '../stores/player-store.js';
 import './eq-response-canvas.js';
 import 'vdxui/overlay/dialog.js';
 import 'vdxui/button/button.js';
 
-export default defineComponent('parametric-eq-editor', {
-    props: {
+export class ParametricEqEditor extends Component {
+    static props = {
         visible: false
-    },
+    }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             // Working copy of bands (editable)
             bands: [],
 
@@ -57,9 +59,9 @@ export default defineComponent('parametric-eq-editor', {
             // Confirm dialog
             confirmDialog: { show: false, title: '', message: '', action: null }
         };
-    },
+    }
 
-    stores: { eqPresetsStore },
+    static stores = { eqPresetsStore }
 
     async mounted() {
         // Detect Firefox for touch handling CSS
@@ -80,686 +82,684 @@ export default defineComponent('parametric-eq-editor', {
         this._unsubscribe = eqPresetsStore.subscribe(() => {
             this._syncFromStore();
         });
-    },
+    }
 
     unmounted() {
         if (this._unsubscribe) {
             this._unsubscribe();
         }
-    },
+    }
 
     propsChanged(prop, newValue, oldValue) {
         if (prop === 'visible' && newValue && !oldValue) {
             // Editor opened - refresh data
             this._syncFromStore();
         }
-    },
+    }
 
-    methods: {
-        _syncFromStore() {
-            this.state.presets = [...eqPresetsStore.state.presets];
-            this.state.activePresetUuid = eqPresetsStore.state.activePresetUuid;
-            this.state.isLoading = eqPresetsStore.state.isLoading;
-            this.state.error = eqPresetsStore.state.error;
+    _syncFromStore() {
+        this.state.presets = [...eqPresetsStore.state.presets];
+        this.state.activePresetUuid = eqPresetsStore.state.activePresetUuid;
+        this.state.isLoading = eqPresetsStore.state.isLoading;
+        this.state.error = eqPresetsStore.state.error;
 
-            // Load active bands
-            const activeBands = eqPresetsStore.getActiveBands();
-            this.state.bands = JSON.parse(JSON.stringify(activeBands || []));
-            this.state.isDirty = false;
-        },
+        // Load active bands
+        const activeBands = eqPresetsStore.getActiveBands();
+        this.state.bands = JSON.parse(JSON.stringify(activeBands || []));
+        this.state.isDirty = false;
+    }
 
-        handleBandChange(e) {
-            const { index, frequency, gain } = e.detail;
-            if (index >= 0 && index < this.state.bands.length) {
-                this.state.bands[index] = {
-                    ...this.state.bands[index],
-                    frequency,
-                    gain
-                };
-                this.state.isDirty = true;
-                this._applyToPlayer();
-                // Don't emit here - canvas fires continuously during drag
-            }
-        },
-
-        // Called when canvas drag ends
-        handleBandChangeEnd(e) {
-            this._emitBandsChanged();
-        },
-
-        handleBandSelect(e) {
-            this.state.selectedBand = e.detail.index;
-        },
-
-        handleTypeChange(index, e) {
+    handleBandChange(e) {
+        const { index, frequency, gain } = e.detail;
+        if (index >= 0 && index < this.state.bands.length) {
             this.state.bands[index] = {
                 ...this.state.bands[index],
-                type: e.target.value
+                frequency,
+                gain
+            };
+            this.state.isDirty = true;
+            this._applyToPlayer();
+            // Don't emit here - canvas fires continuously during drag
+        }
+    }
+
+    // Called when canvas drag ends
+    handleBandChangeEnd(e) {
+        this._emitBandsChanged();
+    }
+
+    handleBandSelect(e) {
+        this.state.selectedBand = e.detail.index;
+    }
+
+    handleTypeChange(index, e) {
+        this.state.bands[index] = {
+            ...this.state.bands[index],
+            type: e.target.value
+        };
+        this.state.isDirty = true;
+        this._applyToPlayer();
+        this._emitBandsChanged();
+    }
+
+    handleFreqFocus(index, e) {
+        // Set value BEFORE index to avoid empty render
+        this.state.editingFreqValue = e.target.value;
+        this.state.editingFreqIndex = index;
+    }
+
+    handleFreqInput(index, e) {
+        if (this.state.editingFreqIndex === index) {
+            this.state.editingFreqValue = e.target.value;
+        }
+    }
+
+    handleFreqBlur(index, e) {
+        const freq = parseInt(e.target.value, 10);
+        if (!isNaN(freq) && freq >= 20 && freq <= 20000) {
+            this.state.bands[index] = {
+                ...this.state.bands[index],
+                frequency: freq
             };
             this.state.isDirty = true;
             this._applyToPlayer();
             this._emitBandsChanged();
-        },
+        }
+        this.state.editingFreqIndex = -1;
+        this.state.editingFreqValue = '';
+    }
 
-        handleFreqFocus(index, e) {
-            // Set value BEFORE index to avoid empty render
-            this.state.editingFreqValue = e.target.value;
-            this.state.editingFreqIndex = index;
-        },
-
-        handleFreqInput(index, e) {
-            if (this.state.editingFreqIndex === index) {
-                this.state.editingFreqValue = e.target.value;
-            }
-        },
-
-        handleFreqBlur(index, e) {
-            const freq = parseInt(e.target.value, 10);
-            if (!isNaN(freq) && freq >= 20 && freq <= 20000) {
-                this.state.bands[index] = {
-                    ...this.state.bands[index],
-                    frequency: freq
-                };
-                this.state.isDirty = true;
-                this._applyToPlayer();
-                this._emitBandsChanged();
-            }
-            this.state.editingFreqIndex = -1;
-            this.state.editingFreqValue = '';
-        },
-
-        handleGainSliderChange(index, e) {
-            const gain = parseFloat(e.target.value);
-            if (!isNaN(gain)) {
-                this.state.bands[index] = {
-                    ...this.state.bands[index],
-                    gain: Math.max(-24, Math.min(24, gain))
-                };
-                this.state.isDirty = true;
-                this._applyToPlayer();
-                // Don't emit here - slider fires continuously during drag
-            }
-        },
-
-        handleGainSliderEnd(index, e) {
-            // Don't emit if this was a scroll gesture that got reverted
-            if (!this._sliderScrolling) {
-                this._emitBandsChanged();
-            }
-            this._sliderScrolling = false;
-        },
-
-        // Mobile: browser-specific touch handling for sliders
-        // Firefox: touch-action CSS doesn't work, need full JS control
-        // Chrome/Safari: touch-action: pan-y works, minimal JS needed
-        _isFirefox() {
-            return /Firefox/i.test(navigator.userAgent);
-        },
-
-        handleSliderTouchStart(index, field, e) {
-            const touch = e.touches[0];
-            const band = this.state.bands[index];
-            const isFirefox = this._isFirefox();
-
-            // Firefox: prevent default to take full control
-            if (isFirefox) {
-                e.preventDefault();
-            }
-
-            this._sliderTouch = {
-                index,
-                field,
-                startX: touch.clientX,
-                startY: touch.clientY,
-                lastY: touch.clientY,
-                startValue: field === 'gain' ? band.gain : band.q,
-                sliderRect: e.target.getBoundingClientRect(),
-                decided: false,
-                isScrolling: false,
-                isFirefox
+    handleGainSliderChange(index, e) {
+        const gain = parseFloat(e.target.value);
+        if (!isNaN(gain)) {
+            this.state.bands[index] = {
+                ...this.state.bands[index],
+                gain: Math.max(-24, Math.min(24, gain))
             };
-        },
+            this.state.isDirty = true;
+            this._applyToPlayer();
+            // Don't emit here - slider fires continuously during drag
+        }
+    }
 
-        handleSliderTouchMove(index, field, e) {
-            if (!this._sliderTouch) return;
+    handleGainSliderEnd(index, e) {
+        // Don't emit if this was a scroll gesture that got reverted
+        if (!this._sliderScrolling) {
+            this._emitBandsChanged();
+        }
+        this._sliderScrolling = false;
+    }
 
-            const touch = e.touches[0];
-            const deltaX = Math.abs(touch.clientX - this._sliderTouch.startX);
-            const deltaY = Math.abs(touch.clientY - this._sliderTouch.startY);
+    // Mobile: browser-specific touch handling for sliders
+    // Firefox: touch-action CSS doesn't work, need full JS control
+    // Chrome/Safari: touch-action: pan-y works, minimal JS needed
+    _isFirefox() {
+        return /Firefox/i.test(navigator.userAgent);
+    }
 
-            // Need some movement to decide direction
-            if (!this._sliderTouch.decided && (deltaX >= 8 || deltaY >= 8)) {
-                this._sliderTouch.decided = true;
-                this._sliderTouch.isScrolling = deltaY > deltaX;
+    handleSliderTouchStart(index, field, e) {
+        const touch = e.touches[0];
+        const band = this.state.bands[index];
+        const isFirefox = this._isFirefox();
+
+        // Firefox: prevent default to take full control
+        if (isFirefox) {
+            e.preventDefault();
+        }
+
+        this._sliderTouch = {
+            index,
+            field,
+            startX: touch.clientX,
+            startY: touch.clientY,
+            lastY: touch.clientY,
+            startValue: field === 'gain' ? band.gain : band.q,
+            sliderRect: e.target.getBoundingClientRect(),
+            decided: false,
+            isScrolling: false,
+            isFirefox
+        };
+    }
+
+    handleSliderTouchMove(index, field, e) {
+        if (!this._sliderTouch) return;
+
+        const touch = e.touches[0];
+        const deltaX = Math.abs(touch.clientX - this._sliderTouch.startX);
+        const deltaY = Math.abs(touch.clientY - this._sliderTouch.startY);
+
+        // Need some movement to decide direction
+        if (!this._sliderTouch.decided && (deltaX >= 8 || deltaY >= 8)) {
+            this._sliderTouch.decided = true;
+            this._sliderTouch.isScrolling = deltaY > deltaX;
+        }
+
+        if (!this._sliderTouch.decided) return;
+
+        if (this._sliderTouch.isScrolling) {
+            // Revert slider to start value (works on all browsers)
+            const { index: i, field: f, startValue } = this._sliderTouch;
+            const band = this.state.bands[i];
+            if (band[f] !== startValue) {
+                this.state.bands[i] = { ...band, [f]: startValue };
+                this._applyToPlayer();
             }
 
-            if (!this._sliderTouch.decided) return;
-
-            if (this._sliderTouch.isScrolling) {
-                // Revert slider to start value (works on all browsers)
-                const { index: i, field: f, startValue } = this._sliderTouch;
-                const band = this.state.bands[i];
-                if (band[f] !== startValue) {
-                    this.state.bands[i] = { ...band, [f]: startValue };
-                    this._applyToPlayer();
-                }
-
-                // Firefox only: manually scroll (CSS doesn't work)
-                if (this._sliderTouch.isFirefox) {
-                    const scrollDelta = this._sliderTouch.lastY - touch.clientY;
-                    this._sliderTouch.lastY = touch.clientY;
-                    const scrollContainer = this.closest('.router-wrapper') ||
-                                            document.documentElement;
-                    scrollContainer.scrollTop += scrollDelta;
-                }
-            } else if (this._sliderTouch.isFirefox) {
-                // Firefox only: manual slider update (since we prevented default)
-                const rect = this._sliderTouch.sliderRect;
-                const ratio = Math.max(0, Math.min(1, (touch.clientX - rect.left) / rect.width));
-                const band = this.state.bands[index];
-                let newValue;
-
-                if (field === 'gain') {
-                    newValue = -24 + ratio * 48;
-                    newValue = Math.round(newValue * 2) / 2;
-                } else {
-                    newValue = this._sliderToQ(ratio * 100);
-                    newValue = parseFloat(newValue.toFixed(3));
-                }
-
-                if (band[field] !== newValue) {
-                    this.state.bands[index] = { ...band, [field]: newValue };
-                    this._applyToPlayer();
-                }
+            // Firefox only: manually scroll (CSS doesn't work)
+            if (this._sliderTouch.isFirefox) {
+                const scrollDelta = this._sliderTouch.lastY - touch.clientY;
+                this._sliderTouch.lastY = touch.clientY;
+                const scrollContainer = this.closest('.router-wrapper') ||
+                                        document.documentElement;
+                scrollContainer.scrollTop += scrollDelta;
             }
-        },
+        } else if (this._sliderTouch.isFirefox) {
+            // Firefox only: manual slider update (since we prevented default)
+            const rect = this._sliderTouch.sliderRect;
+            const ratio = Math.max(0, Math.min(1, (touch.clientX - rect.left) / rect.width));
+            const band = this.state.bands[index];
+            let newValue;
 
-        handleSliderTouchEnd(index, field, e) {
-            if (!this._sliderTouch) return;
-
-            // Emit change if slider was actually modified
-            if (!this._sliderTouch.isScrolling) {
-                const band = this.state.bands[this._sliderTouch.index];
-                const currentValue = this._sliderTouch.field === 'gain' ? band.gain : band.q;
-                if (currentValue !== this._sliderTouch.startValue) {
-                    this._emitBandsChanged();
-                }
+            if (field === 'gain') {
+                newValue = -24 + ratio * 48;
+                newValue = Math.round(newValue * 2) / 2;
+            } else {
+                newValue = this._sliderToQ(ratio * 100);
+                newValue = parseFloat(newValue.toFixed(3));
             }
-            this._sliderTouch = null;
-        },
 
-        handleGainInputFocus(index, e) {
-            // Set value BEFORE index to avoid empty render
+            if (band[field] !== newValue) {
+                this.state.bands[index] = { ...band, [field]: newValue };
+                this._applyToPlayer();
+            }
+        }
+    }
+
+    handleSliderTouchEnd(index, field, e) {
+        if (!this._sliderTouch) return;
+
+        // Emit change if slider was actually modified
+        if (!this._sliderTouch.isScrolling) {
+            const band = this.state.bands[this._sliderTouch.index];
+            const currentValue = this._sliderTouch.field === 'gain' ? band.gain : band.q;
+            if (currentValue !== this._sliderTouch.startValue) {
+                this._emitBandsChanged();
+            }
+        }
+        this._sliderTouch = null;
+    }
+
+    handleGainInputFocus(index, e) {
+        // Set value BEFORE index to avoid empty render
+        this.state.editingGainValue = e.target.value;
+        this.state.editingGainIndex = index;
+    }
+
+    handleGainInputChange(index, e) {
+        if (this.state.editingGainIndex === index) {
             this.state.editingGainValue = e.target.value;
-            this.state.editingGainIndex = index;
-        },
+        }
+    }
 
-        handleGainInputChange(index, e) {
-            if (this.state.editingGainIndex === index) {
-                this.state.editingGainValue = e.target.value;
-            }
-        },
+    // Q slider uses logarithmic scale for better UX
+    // Slider value 0-100 maps to Q 0.1-18 logarithmically
+    _sliderToQ(sliderValue) {
+        const minQ = 0.1;
+        const maxQ = 18;
+        const logMin = Math.log10(minQ);
+        const logMax = Math.log10(maxQ);
+        const logValue = logMin + (sliderValue / 100) * (logMax - logMin);
+        return Math.pow(10, logValue);
+    }
 
-        // Q slider uses logarithmic scale for better UX
-        // Slider value 0-100 maps to Q 0.1-18 logarithmically
-        _sliderToQ(sliderValue) {
-            const minQ = 0.1;
-            const maxQ = 18;
-            const logMin = Math.log10(minQ);
-            const logMax = Math.log10(maxQ);
-            const logValue = logMin + (sliderValue / 100) * (logMax - logMin);
-            return Math.pow(10, logValue);
-        },
+    _qToSlider(q) {
+        const minQ = 0.1;
+        const maxQ = 18;
+        const logMin = Math.log10(minQ);
+        const logMax = Math.log10(maxQ);
+        const logValue = Math.log10(Math.max(minQ, Math.min(maxQ, q)));
+        return ((logValue - logMin) / (logMax - logMin)) * 100;
+    }
 
-        _qToSlider(q) {
-            const minQ = 0.1;
-            const maxQ = 18;
-            const logMin = Math.log10(minQ);
-            const logMax = Math.log10(maxQ);
-            const logValue = Math.log10(Math.max(minQ, Math.min(maxQ, q)));
-            return ((logValue - logMin) / (logMax - logMin)) * 100;
-        },
+    handleQSliderChange(index, e) {
+        const sliderValue = parseFloat(e.target.value);
+        const q = this._sliderToQ(sliderValue);
+        this.state.bands[index] = {
+            ...this.state.bands[index],
+            q: parseFloat(q.toFixed(3))
+        };
+        this.state.isDirty = true;
+        this._applyToPlayer();
+        // Don't emit here - slider fires continuously during drag
+    }
 
-        handleQSliderChange(index, e) {
-            const sliderValue = parseFloat(e.target.value);
-            const q = this._sliderToQ(sliderValue);
+    handleQSliderEnd(index, e) {
+        // Don't emit if this was a scroll gesture that got reverted
+        if (!this._sliderScrolling) {
+            this._emitBandsChanged();
+        }
+        this._sliderScrolling = false;
+    }
+
+    handleGainInputBlur(index, e) {
+        const gain = parseFloat(e.target.value);
+        if (!isNaN(gain)) {
+            this.state.bands[index] = {
+                ...this.state.bands[index],
+                gain: Math.max(-24, Math.min(24, gain))
+            };
+            this.state.isDirty = true;
+            this._applyToPlayer();
+            this._emitBandsChanged();
+        }
+        this.state.editingGainIndex = -1;
+        this.state.editingGainValue = '';
+    }
+
+    handleQInputFocus(index, e) {
+        // Set value BEFORE index to avoid empty render
+        this.state.editingQValue = e.target.value;
+        this.state.editingQIndex = index;
+    }
+
+    handleQInputChange(index, e) {
+        if (this.state.editingQIndex === index) {
+            this.state.editingQValue = e.target.value;
+        }
+    }
+
+    handleQInputBlur(index, e) {
+        const q = parseFloat(e.target.value);
+        if (!isNaN(q) && q >= 0.1 && q <= 18) {
             this.state.bands[index] = {
                 ...this.state.bands[index],
                 q: parseFloat(q.toFixed(3))
             };
             this.state.isDirty = true;
             this._applyToPlayer();
-            // Don't emit here - slider fires continuously during drag
-        },
-
-        handleQSliderEnd(index, e) {
-            // Don't emit if this was a scroll gesture that got reverted
-            if (!this._sliderScrolling) {
-                this._emitBandsChanged();
-            }
-            this._sliderScrolling = false;
-        },
-
-        handleGainInputBlur(index, e) {
-            const gain = parseFloat(e.target.value);
-            if (!isNaN(gain)) {
-                this.state.bands[index] = {
-                    ...this.state.bands[index],
-                    gain: Math.max(-24, Math.min(24, gain))
-                };
-                this.state.isDirty = true;
-                this._applyToPlayer();
-                this._emitBandsChanged();
-            }
-            this.state.editingGainIndex = -1;
-            this.state.editingGainValue = '';
-        },
-
-        handleQInputFocus(index, e) {
-            // Set value BEFORE index to avoid empty render
-            this.state.editingQValue = e.target.value;
-            this.state.editingQIndex = index;
-        },
-
-        handleQInputChange(index, e) {
-            if (this.state.editingQIndex === index) {
-                this.state.editingQValue = e.target.value;
-            }
-        },
-
-        handleQInputBlur(index, e) {
-            const q = parseFloat(e.target.value);
-            if (!isNaN(q) && q >= 0.1 && q <= 18) {
-                this.state.bands[index] = {
-                    ...this.state.bands[index],
-                    q: parseFloat(q.toFixed(3))
-                };
-                this.state.isDirty = true;
-                this._applyToPlayer();
-                this._emitBandsChanged();
-            }
-            this.state.editingQIndex = -1;
-            this.state.editingQValue = '';
-        },
-
-        addBand() {
-            const newBand = createDefaultBand();
-
-            // Try to pick a frequency that's not already used
-            const usedFreqs = new Set(this.state.bands.map(b => b.frequency));
-            const defaultFreqs = [1000, 500, 2000, 250, 4000, 125, 8000, 63, 16000];
-            for (const freq of defaultFreqs) {
-                if (!usedFreqs.has(freq)) {
-                    newBand.frequency = freq;
-                    break;
-                }
-            }
-
-            this.state.bands = [...this.state.bands, newBand];
-            this.state.selectedBand = this.state.bands.length - 1;
-            this.state.isDirty = true;
-            this._applyToPlayer();
             this._emitBandsChanged();
-        },
-
-        toggleBandEnabled(index) {
-            const band = this.state.bands[index];
-            this.state.bands[index] = {
-                ...band,
-                enabled: band.enabled === false ? true : false
-            };
-            this.state.isDirty = true;
-            this._applyToPlayer();
-            this._emitBandsChanged();
-        },
-
-        /**
-         * Set bands externally (for undo/redo support).
-         * @param {Object[]} bands - Band configurations
-         */
-        setBands(bands) {
-            this.state.bands = JSON.parse(JSON.stringify(bands));
-            this.state.isDirty = true;
-            this._applyToPlayer();
-        },
-
-        /**
-         * Emit event when bands are modified (for undo history).
-         */
-        _emitBandsChanged() {
-            this.dispatchEvent(new CustomEvent('bands-changed', {
-                bubbles: true,
-                detail: { bands: this.state.bands }
-            }));
-        },
-
-        removeBand(index) {
-            this.state.bands = this.state.bands.filter((_, i) => i !== index);
-            if (this.state.selectedBand >= this.state.bands.length) {
-                this.state.selectedBand = this.state.bands.length - 1;
-            }
-            this.state.isDirty = true;
-            this._applyToPlayer();
-            this._emitBandsChanged();
-        },
-
-        handlePresetChange(e) {
-            const uuid = e.target.value;
-            if (uuid === '' || uuid === '__new__') {
-                // Create New / unsaved preset
-                eqPresetsStore.setActivePreset(null, []);
-            } else if (uuid === '__from_graphic__') {
-                // Import from current graphic EQ
-                this._importFromGraphicEQ();
-            } else {
-                // Load preset
-                eqPresetsStore.setActivePreset(uuid);
-            }
-            this._syncFromStore();
-            this._applyToPlayer();
-        },
-
-        _importFromGraphicEQ() {
-            // Convert current 10-band graphic EQ to parametric
-            const gains = player.state.eqGains;
-            const bands = graphicToParametric(gains);
-            this.state.bands = bands;
-            this.state.isDirty = true;
-            eqPresetsStore.setActivePreset(null, bands);
-            this._applyToPlayer();
-            this._emitBandsChanged();
-        },
-
-        openSaveDialog(asNew = false) {
-            const activePreset = this.state.activePresetUuid
-                ? this.state.presets.find(p => p.uuid === this.state.activePresetUuid)
-                : null;
-
-            this.state.saveAsNew = asNew || !activePreset;
-            this.state.saveName = asNew ? '' : (activePreset?.name || '');
-            this.state.saveDialogVisible = true;
-        },
-
-        closeSaveDialog() {
-            this.state.saveDialogVisible = false;
-        },
-
-        async handleSave() {
-            const name = this.state.saveName.trim();
-            if (!name) {
-                this.state.error = 'Please enter a name';
-                return;
-            }
-
-            const uuid = this.state.saveAsNew ? null : this.state.activePresetUuid;
-            // Deep clone bands to strip reactive proxy (IndexedDB can't clone proxies)
-            const savedUuid = await eqPresetsStore.savePreset({
-                uuid,
-                name,
-                bands: JSON.parse(JSON.stringify(this.state.bands))
-            });
-
-            if (savedUuid) {
-                eqPresetsStore.setActivePreset(savedUuid);
-                this._syncFromStore();
-                this.closeSaveDialog();
-            }
-        },
-
-        handleDelete() {
-            if (!this.state.activePresetUuid) return;
-
-            const preset = this.state.presets.find(p => p.uuid === this.state.activePresetUuid);
-            if (!preset) return;
-
-            this.showConfirmDialog(
-                'Delete Preset',
-                `Delete preset "${preset.name}"?`,
-                'deletePreset'
-            );
-        },
-
-        async doDeletePreset() {
-            if (!this.state.activePresetUuid) return;
-            await eqPresetsStore.deletePreset(this.state.activePresetUuid);
-            this._syncFromStore();
-        },
-
-        showConfirmDialog(title, message, action) {
-            this.state.confirmDialog = { show: true, title, message, action };
-        },
-
-        handleConfirmDialogConfirm() {
-            const { action } = this.state.confirmDialog;
-            this.state.confirmDialog = { show: false, title: '', message: '', action: null };
-
-            if (action === 'deletePreset') {
-                this.doDeletePreset();
-            }
-        },
-
-        handleConfirmDialogCancel() {
-            this.state.confirmDialog = { show: false, title: '', message: '', action: null };
-        },
-
-        handleReset() {
-            // Reset to flat response
-            this.state.bands = [];
-            this.state.selectedBand = -1;
-            this.state.isDirty = true;
-            eqPresetsStore.setActivePreset(null, []);
-            this._applyToPlayer();
-            this._emitBandsChanged();
-        },
-
-        _applyToPlayer() {
-            // Filter out disabled bands when applying to player
-            const enabledBands = this.state.bands.filter(b => b.enabled !== false);
-
-            // Calculate auto-preamp based on peak of combined frequency response
-            const autoPreamp = this._calculateAutoPreamp(enabledBands);
-
-            // Apply current bands to the audio player with auto-preamp
-            player.setParametricEQ(enabledBands, autoPreamp);
-
-            // Also save to store as custom if no preset is active
-            if (!this.state.activePresetUuid) {
-                eqPresetsStore.setCustomBands(this.state.bands);
-            }
-        },
-
-        formatFreq(freq) {
-            if (freq >= 1000) {
-                return (freq / 1000).toFixed(freq >= 10000 ? 0 : 1) + 'k';
-            }
-            return freq.toString();
-        },
-
-        _calculateAutoPreamp(bandsOverride) {
-            const bands = bandsOverride || this.state.bands.filter(b => b.enabled !== false);
-            if (!bands || bands.length === 0) return 0;
-
-            // Create temporary AudioContext if needed
-            if (!this._tempAudioContext) {
-                try {
-                    this._tempAudioContext = new (window.AudioContext || window.webkitAudioContext)();
-                } catch (e) {
-                    // Fallback to simple calculation if no AudioContext
-                    const maxGain = bands.reduce((max, band) => {
-                        if (['peaking', 'lowshelf', 'highshelf'].includes(band.type) && band.gain > 0) {
-                            return Math.max(max, band.gain);
-                        }
-                        return max;
-                    }, 0);
-                    return maxGain > 0 ? -maxGain : 0;
-                }
-            }
-
-            // Calculate combined frequency response and find peak
-            const numPoints = 256;
-            const minFreq = 20;
-            const maxFreq = 20000;
-            const logMin = Math.log10(minFreq);
-            const logMax = Math.log10(maxFreq);
-
-            // Generate log-spaced frequencies
-            const frequencies = new Float32Array(numPoints);
-            for (let i = 0; i < numPoints; i++) {
-                const logFreq = logMin + (i / (numPoints - 1)) * (logMax - logMin);
-                frequencies[i] = Math.pow(10, logFreq);
-            }
-
-            // Combined magnitude in dB
-            const combinedMag = new Float32Array(numPoints).fill(0);
-
-            for (const band of bands) {
-                const filter = this._tempAudioContext.createBiquadFilter();
-                filter.type = band.type;
-                filter.frequency.value = band.frequency;
-                filter.gain.value = band.gain;
-                if (['peaking', 'notch', 'bandpass', 'allpass', 'lowpass', 'highpass'].includes(band.type)) {
-                    filter.Q.value = band.q || 1.0;
-                }
-
-                const magResponse = new Float32Array(numPoints);
-                const phaseResponse = new Float32Array(numPoints);
-                filter.getFrequencyResponse(frequencies, magResponse, phaseResponse);
-
-                for (let i = 0; i < numPoints; i++) {
-                    combinedMag[i] += 20 * Math.log10(magResponse[i]);
-                }
-            }
-
-            // Find peak of combined response
-            let peakDb = 0;
-            for (let i = 0; i < numPoints; i++) {
-                if (combinedMag[i] > peakDb) {
-                    peakDb = combinedMag[i];
-                }
-            }
-
-            // Round to 0.1 dB precision
-            return peakDb > 0 ? -Math.ceil(peakDb * 10) / 10 : 0;
-        },
-
-        // Export/Import functionality
-        _typeToExport(type) {
-            const map = {
-                'peaking': 'PK',
-                'lowshelf': 'LSC',
-                'highshelf': 'HSC',
-                'lowpass': 'LP',
-                'highpass': 'HP',
-                'notch': 'NO',
-                'bandpass': 'BP',
-                'allpass': 'AP'
-            };
-            return map[type] || 'PK';
-        },
-
-        _exportToType(code) {
-            const map = {
-                'PK': 'peaking',
-                'LSC': 'lowshelf',
-                'HSC': 'highshelf',
-                'LP': 'lowpass',
-                'HP': 'highpass',
-                'NO': 'notch',
-                'BP': 'bandpass',
-                'AP': 'allpass'
-            };
-            return map[code] || 'peaking';
-        },
-
-        handleExport() {
-            const bands = this.state.bands;
-
-            // Calculate auto-preamp from combined response peak
-            const preamp = this._calculateAutoPreamp();
-
-            let output = `Preamp: ${preamp.toFixed(1)} dB\n`;
-
-            bands.forEach((band, i) => {
-                const typeCode = this._typeToExport(band.type);
-                output += `Filter ${i + 1}: ON ${typeCode} Fc ${Math.round(band.frequency)} Hz Gain ${band.gain.toFixed(1)} dB Q ${band.q.toFixed(3)}\n`;
-            });
-
-            // Create and download file
-            const blob = new Blob([output], { type: 'text/plain' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'eq-preset.txt';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        },
-
-        openImportDialog() {
-            this.state.importText = '';
-            this.state.importDialogVisible = true;
-        },
-
-        closeImportDialog() {
-            this.state.importDialogVisible = false;
-        },
-
-        handleFileSelect(e) {
-            const file = e.target.files[0];
-            if (!file) return;
-
-            const reader = new FileReader();
-            reader.onload = (event) => {
-                this.state.importText = event.target.result;
-            };
-            reader.onerror = () => {
-                this.state.error = 'Failed to read file';
-            };
-            reader.readAsText(file);
-        },
-
-        handleImport() {
-            const text = this.state.importText.trim();
-            if (!text) {
-                this.state.error = 'Please paste EQ configuration text';
-                return;
-            }
-
-            const bands = [];
-            const lines = text.split('\n');
-
-            for (const line of lines) {
-                // Skip preamp line and empty lines
-                if (line.startsWith('Preamp:') || !line.trim()) continue;
-
-                // Parse filter line: Filter N: ON TYPE Fc FREQ Hz Gain GAIN dB Q Q
-                const match = line.match(/Filter\s+\d+:\s+ON\s+(\w+)\s+Fc\s+([\d.]+)\s+Hz\s+Gain\s+([-\d.]+)\s+dB\s+Q\s+([\d.]+)/i);
-                if (match) {
-                    const [, typeCode, freq, gain, q] = match;
-                    bands.push({
-                        type: this._exportToType(typeCode.toUpperCase()),
-                        frequency: parseFloat(freq),
-                        gain: parseFloat(gain),
-                        q: parseFloat(q)
-                    });
-                }
-            }
-
-            if (bands.length === 0) {
-                this.state.error = 'Could not parse any filters from the text';
-                return;
-            }
-
-            this.state.bands = bands;
-            this.state.isDirty = true;
-            this.state.error = null;
-            eqPresetsStore.setActivePreset(null, bands);
-            this._applyToPlayer();
-            this._emitBandsChanged();
-            this.closeImportDialog();
         }
-    },
+        this.state.editingQIndex = -1;
+        this.state.editingQValue = '';
+    }
+
+    addBand() {
+        const newBand = createDefaultBand();
+
+        // Try to pick a frequency that's not already used
+        const usedFreqs = new Set(this.state.bands.map(b => b.frequency));
+        const defaultFreqs = [1000, 500, 2000, 250, 4000, 125, 8000, 63, 16000];
+        for (const freq of defaultFreqs) {
+            if (!usedFreqs.has(freq)) {
+                newBand.frequency = freq;
+                break;
+            }
+        }
+
+        this.state.bands = [...this.state.bands, newBand];
+        this.state.selectedBand = this.state.bands.length - 1;
+        this.state.isDirty = true;
+        this._applyToPlayer();
+        this._emitBandsChanged();
+    }
+
+    toggleBandEnabled(index) {
+        const band = this.state.bands[index];
+        this.state.bands[index] = {
+            ...band,
+            enabled: band.enabled === false ? true : false
+        };
+        this.state.isDirty = true;
+        this._applyToPlayer();
+        this._emitBandsChanged();
+    }
+
+    /**
+     * Set bands externally (for undo/redo support).
+     * @param {Object[]} bands - Band configurations
+     */
+    setBands(bands) {
+        this.state.bands = JSON.parse(JSON.stringify(bands));
+        this.state.isDirty = true;
+        this._applyToPlayer();
+    }
+
+    /**
+     * Emit event when bands are modified (for undo history).
+     */
+    _emitBandsChanged() {
+        this.dispatchEvent(new CustomEvent('bands-changed', {
+            bubbles: true,
+            detail: { bands: this.state.bands }
+        }));
+    }
+
+    removeBand(index) {
+        this.state.bands = this.state.bands.filter((_, i) => i !== index);
+        if (this.state.selectedBand >= this.state.bands.length) {
+            this.state.selectedBand = this.state.bands.length - 1;
+        }
+        this.state.isDirty = true;
+        this._applyToPlayer();
+        this._emitBandsChanged();
+    }
+
+    handlePresetChange(e) {
+        const uuid = e.target.value;
+        if (uuid === '' || uuid === '__new__') {
+            // Create New / unsaved preset
+            eqPresetsStore.setActivePreset(null, []);
+        } else if (uuid === '__from_graphic__') {
+            // Import from current graphic EQ
+            this._importFromGraphicEQ();
+        } else {
+            // Load preset
+            eqPresetsStore.setActivePreset(uuid);
+        }
+        this._syncFromStore();
+        this._applyToPlayer();
+    }
+
+    _importFromGraphicEQ() {
+        // Convert current 10-band graphic EQ to parametric
+        const gains = player.state.eqGains;
+        const bands = graphicToParametric(gains);
+        this.state.bands = bands;
+        this.state.isDirty = true;
+        eqPresetsStore.setActivePreset(null, bands);
+        this._applyToPlayer();
+        this._emitBandsChanged();
+    }
+
+    openSaveDialog(asNew = false) {
+        const activePreset = this.state.activePresetUuid
+            ? this.state.presets.find(p => p.uuid === this.state.activePresetUuid)
+            : null;
+
+        this.state.saveAsNew = asNew || !activePreset;
+        this.state.saveName = asNew ? '' : (activePreset?.name || '');
+        this.state.saveDialogVisible = true;
+    }
+
+    closeSaveDialog() {
+        this.state.saveDialogVisible = false;
+    }
+
+    async handleSave() {
+        const name = this.state.saveName.trim();
+        if (!name) {
+            this.state.error = 'Please enter a name';
+            return;
+        }
+
+        const uuid = this.state.saveAsNew ? null : this.state.activePresetUuid;
+        // Deep clone bands to strip reactive proxy (IndexedDB can't clone proxies)
+        const savedUuid = await eqPresetsStore.savePreset({
+            uuid,
+            name,
+            bands: JSON.parse(JSON.stringify(this.state.bands))
+        });
+
+        if (savedUuid) {
+            eqPresetsStore.setActivePreset(savedUuid);
+            this._syncFromStore();
+            this.closeSaveDialog();
+        }
+    }
+
+    handleDelete() {
+        if (!this.state.activePresetUuid) return;
+
+        const preset = this.state.presets.find(p => p.uuid === this.state.activePresetUuid);
+        if (!preset) return;
+
+        this.showConfirmDialog(
+            'Delete Preset',
+            `Delete preset "${preset.name}"?`,
+            'deletePreset'
+        );
+    }
+
+    async doDeletePreset() {
+        if (!this.state.activePresetUuid) return;
+        await eqPresetsStore.deletePreset(this.state.activePresetUuid);
+        this._syncFromStore();
+    }
+
+    showConfirmDialog(title, message, action) {
+        this.state.confirmDialog = { show: true, title, message, action };
+    }
+
+    handleConfirmDialogConfirm() {
+        const { action } = this.state.confirmDialog;
+        this.state.confirmDialog = { show: false, title: '', message: '', action: null };
+
+        if (action === 'deletePreset') {
+            this.doDeletePreset();
+        }
+    }
+
+    handleConfirmDialogCancel() {
+        this.state.confirmDialog = { show: false, title: '', message: '', action: null };
+    }
+
+    handleReset() {
+        // Reset to flat response
+        this.state.bands = [];
+        this.state.selectedBand = -1;
+        this.state.isDirty = true;
+        eqPresetsStore.setActivePreset(null, []);
+        this._applyToPlayer();
+        this._emitBandsChanged();
+    }
+
+    _applyToPlayer() {
+        // Filter out disabled bands when applying to player
+        const enabledBands = this.state.bands.filter(b => b.enabled !== false);
+
+        // Calculate auto-preamp based on peak of combined frequency response
+        const autoPreamp = this._calculateAutoPreamp(enabledBands);
+
+        // Apply current bands to the audio player with auto-preamp
+        player.setParametricEQ(enabledBands, autoPreamp);
+
+        // Also save to store as custom if no preset is active
+        if (!this.state.activePresetUuid) {
+            eqPresetsStore.setCustomBands(this.state.bands);
+        }
+    }
+
+    formatFreq(freq) {
+        if (freq >= 1000) {
+            return (freq / 1000).toFixed(freq >= 10000 ? 0 : 1) + 'k';
+        }
+        return freq.toString();
+    }
+
+    _calculateAutoPreamp(bandsOverride) {
+        const bands = bandsOverride || this.state.bands.filter(b => b.enabled !== false);
+        if (!bands || bands.length === 0) return 0;
+
+        // Create temporary AudioContext if needed
+        if (!this._tempAudioContext) {
+            try {
+                this._tempAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+            } catch (e) {
+                // Fallback to simple calculation if no AudioContext
+                const maxGain = bands.reduce((max, band) => {
+                    if (['peaking', 'lowshelf', 'highshelf'].includes(band.type) && band.gain > 0) {
+                        return Math.max(max, band.gain);
+                    }
+                    return max;
+                }, 0);
+                return maxGain > 0 ? -maxGain : 0;
+            }
+        }
+
+        // Calculate combined frequency response and find peak
+        const numPoints = 256;
+        const minFreq = 20;
+        const maxFreq = 20000;
+        const logMin = Math.log10(minFreq);
+        const logMax = Math.log10(maxFreq);
+
+        // Generate log-spaced frequencies
+        const frequencies = new Float32Array(numPoints);
+        for (let i = 0; i < numPoints; i++) {
+            const logFreq = logMin + (i / (numPoints - 1)) * (logMax - logMin);
+            frequencies[i] = Math.pow(10, logFreq);
+        }
+
+        // Combined magnitude in dB
+        const combinedMag = new Float32Array(numPoints).fill(0);
+
+        for (const band of bands) {
+            const filter = this._tempAudioContext.createBiquadFilter();
+            filter.type = band.type;
+            filter.frequency.value = band.frequency;
+            filter.gain.value = band.gain;
+            if (['peaking', 'notch', 'bandpass', 'allpass', 'lowpass', 'highpass'].includes(band.type)) {
+                filter.Q.value = band.q || 1.0;
+            }
+
+            const magResponse = new Float32Array(numPoints);
+            const phaseResponse = new Float32Array(numPoints);
+            filter.getFrequencyResponse(frequencies, magResponse, phaseResponse);
+
+            for (let i = 0; i < numPoints; i++) {
+                combinedMag[i] += 20 * Math.log10(magResponse[i]);
+            }
+        }
+
+        // Find peak of combined response
+        let peakDb = 0;
+        for (let i = 0; i < numPoints; i++) {
+            if (combinedMag[i] > peakDb) {
+                peakDb = combinedMag[i];
+            }
+        }
+
+        // Round to 0.1 dB precision
+        return peakDb > 0 ? -Math.ceil(peakDb * 10) / 10 : 0;
+    }
+
+    // Export/Import functionality
+    _typeToExport(type) {
+        const map = {
+            'peaking': 'PK',
+            'lowshelf': 'LSC',
+            'highshelf': 'HSC',
+            'lowpass': 'LP',
+            'highpass': 'HP',
+            'notch': 'NO',
+            'bandpass': 'BP',
+            'allpass': 'AP'
+        };
+        return map[type] || 'PK';
+    }
+
+    _exportToType(code) {
+        const map = {
+            'PK': 'peaking',
+            'LSC': 'lowshelf',
+            'HSC': 'highshelf',
+            'LP': 'lowpass',
+            'HP': 'highpass',
+            'NO': 'notch',
+            'BP': 'bandpass',
+            'AP': 'allpass'
+        };
+        return map[code] || 'peaking';
+    }
+
+    handleExport() {
+        const bands = this.state.bands;
+
+        // Calculate auto-preamp from combined response peak
+        const preamp = this._calculateAutoPreamp();
+
+        let output = `Preamp: ${preamp.toFixed(1)} dB\n`;
+
+        bands.forEach((band, i) => {
+            const typeCode = this._typeToExport(band.type);
+            output += `Filter ${i + 1}: ON ${typeCode} Fc ${Math.round(band.frequency)} Hz Gain ${band.gain.toFixed(1)} dB Q ${band.q.toFixed(3)}\n`;
+        });
+
+        // Create and download file
+        const blob = new Blob([output], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'eq-preset.txt';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    openImportDialog() {
+        this.state.importText = '';
+        this.state.importDialogVisible = true;
+    }
+
+    closeImportDialog() {
+        this.state.importDialogVisible = false;
+    }
+
+    handleFileSelect(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            this.state.importText = event.target.result;
+        };
+        reader.onerror = () => {
+            this.state.error = 'Failed to read file';
+        };
+        reader.readAsText(file);
+    }
+
+    handleImport() {
+        const text = this.state.importText.trim();
+        if (!text) {
+            this.state.error = 'Please paste EQ configuration text';
+            return;
+        }
+
+        const bands = [];
+        const lines = text.split('\n');
+
+        for (const line of lines) {
+            // Skip preamp line and empty lines
+            if (line.startsWith('Preamp:') || !line.trim()) continue;
+
+            // Parse filter line: Filter N: ON TYPE Fc FREQ Hz Gain GAIN dB Q Q
+            const match = line.match(/Filter\s+\d+:\s+ON\s+(\w+)\s+Fc\s+([\d.]+)\s+Hz\s+Gain\s+([-\d.]+)\s+dB\s+Q\s+([\d.]+)/i);
+            if (match) {
+                const [, typeCode, freq, gain, q] = match;
+                bands.push({
+                    type: this._exportToType(typeCode.toUpperCase()),
+                    frequency: parseFloat(freq),
+                    gain: parseFloat(gain),
+                    q: parseFloat(q)
+                });
+            }
+        }
+
+        if (bands.length === 0) {
+            this.state.error = 'Could not parse any filters from the text';
+            return;
+        }
+
+        this.state.bands = bands;
+        this.state.isDirty = true;
+        this.state.error = null;
+        eqPresetsStore.setActivePreset(null, bands);
+        this._applyToPlayer();
+        this._emitBandsChanged();
+        this.closeImportDialog();
+    }
 
     template() {
         const { bands, selectedBand, presets, activePresetUuid, isLoading, error,
@@ -965,9 +965,9 @@ Filter 1: ON PK Fc 1000 Hz Gain -2.0 dB Q 1.500</pre>
                 `)}
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -1404,4 +1404,6 @@ Filter 1: ON PK Fc 1000 Hz Gain -2.0 dB Q 1.500</pre>
             }
         }
     `
-});
+}
+
+export default defineComponent('parametric-eq-editor', ParametricEqEditor);

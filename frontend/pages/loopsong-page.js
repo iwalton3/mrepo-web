@@ -8,7 +8,7 @@
  * - Uses player's audio pipeline (EQ, crossfeed, etc.)
  */
 
-import { defineComponent, html, when } from 'vdx/framework.js';
+import { defineComponent, html, when, Component } from 'vdx/framework.js';
 import { songs as songsApi, getStreamUrl } from '../offline/offline-api.js';
 import { getAudioUrl } from '../offline/offline-audio.js';
 import { player } from '../stores/player-store.js';
@@ -1121,13 +1121,15 @@ class CrossfadeLooper {
     }
 }
 
-export default defineComponent('loopsong-page', {
-    props: {
+export class LoopsongPage extends Component {
+    static props = {
         params: {}
-    },
+    }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             song: null,
             error: null,
             loading: true,
@@ -1140,7 +1142,7 @@ export default defineComponent('loopsong-page', {
             loopCount: 0,
             copied: false
         };
-    },
+    }
 
     async mounted() {
         // Load song from UUID
@@ -1152,7 +1154,7 @@ export default defineComponent('loopsong-page', {
         }
 
         await this._loadSong(uuid);
-    },
+    }
 
     propsChanged(prop, newValue) {
         // The router reuses this element for /loopsong/A/ → /loopsong/B/ and updates
@@ -1178,7 +1180,7 @@ export default defineComponent('loopsong-page', {
 
         // _loadSong bumps _loadRequestId, so a rapid A→B→C sequence can't interleave
         this._loadSong(uuid);
-    },
+    }
 
     unmounted() {
         // Stop the looper
@@ -1202,60 +1204,195 @@ export default defineComponent('loopsong-page', {
         if (this._audioContext) {
             this._audioContext.close().catch(() => {});
         }
-    },
+    }
 
-    methods: {
-        async _loadSong(uuid) {
-            // Mark this uuid as the current target and stamp the load so a newer
-            // navigation started mid-flight wins (rapid A→B→C can't interleave).
-            this._currentUuid = uuid;
-            // Nullish-safe bump so it works even if _loadSong runs before mounted()
-            // (propsChanged can fire first for property-delivered params).
-            const requestId = this._loadRequestId = (this._loadRequestId || 0) + 1;
+    async _loadSong(uuid) {
+        // Mark this uuid as the current target and stamp the load so a newer
+        // navigation started mid-flight wins (rapid A→B→C can't interleave).
+        this._currentUuid = uuid;
+        // Nullish-safe bump so it works even if _loadSong runs before mounted()
+        // (propsChanged can fire first for property-delivered params).
+        const requestId = this._loadRequestId = (this._loadRequestId || 0) + 1;
 
-            this.state.loading = true;
-            this.state.error = null;
+        this.state.loading = true;
+        this.state.error = null;
 
-            try {
-                // Fetch song metadata
-                const song = await songsApi.get(uuid);
-                if (this._loadRequestId !== requestId) return;  // Stale - newer load started
-                if (!song || song.error) {
-                    this.state.error = song?.error || 'Song not found';
-                    this.state.loading = false;
-                    return;
-                }
-
-                this.state.song = song;
-                this.state.duration = song.duration_seconds || 0;
-
-                // Get audio URL (try offline first, then streaming)
-                let audioUrl = await getAudioUrl(uuid);
-                if (this._loadRequestId !== requestId) return;  // Stale - newer load started
-                if (!audioUrl) {
-                    audioUrl = getStreamUrl(uuid, song.type);
-                }
-
-                this._audioUrl = audioUrl;
+        try {
+            // Fetch song metadata
+            const song = await songsApi.get(uuid);
+            if (this._loadRequestId !== requestId) return;  // Stale - newer load started
+            if (!song || song.error) {
+                this.state.error = song?.error || 'Song not found';
                 this.state.loading = false;
-            } catch (e) {
-                if (this._loadRequestId !== requestId) return;  // Stale - ignore late failure
-                console.error('Failed to load song:', e);
-                this.state.error = `Failed to load song: ${e.message}`;
-                this.state.loading = false;
+                return;
             }
-        },
 
-        /**
-         * Tear down the current song's playback/loop resources so a new uuid starts
-         * clean. Does NOT close the shared audio context (owned by the player and
-         * reused across songs); unmounted() handles full teardown.
-         */
-        _teardownSong() {
-            if (this._looper) {
-                this._looper.stop();
-                this._looper = null;
+            this.state.song = song;
+            this.state.duration = song.duration_seconds || 0;
+
+            // Get audio URL (try offline first, then streaming)
+            let audioUrl = await getAudioUrl(uuid);
+            if (this._loadRequestId !== requestId) return;  // Stale - newer load started
+            if (!audioUrl) {
+                audioUrl = getStreamUrl(uuid, song.type);
             }
+
+            this._audioUrl = audioUrl;
+            this.state.loading = false;
+        } catch (e) {
+            if (this._loadRequestId !== requestId) return;  // Stale - ignore late failure
+            console.error('Failed to load song:', e);
+            this.state.error = `Failed to load song: ${e.message}`;
+            this.state.loading = false;
+        }
+    }
+
+    /**
+     * Tear down the current song's playback/loop resources so a new uuid starts
+     * clean. Does NOT close the shared audio context (owned by the player and
+     * reused across songs); unmounted() handles full teardown.
+     */
+    _teardownSong() {
+        if (this._looper) {
+            this._looper.stop();
+            this._looper = null;
+        }
+        if (this._analysisAudio1) {
+            this._analysisAudio1.pause();
+            this._analysisAudio1.src = '';
+            this._analysisAudio1 = null;
+        }
+        if (this._analysisAudio2) {
+            this._analysisAudio2.pause();
+            this._analysisAudio2.src = '';
+            this._analysisAudio2 = null;
+        }
+        if (this._timeUpdateInterval) {
+            clearInterval(this._timeUpdateInterval);
+            this._timeUpdateInterval = null;
+        }
+        // Drop the decoded buffer/url so the next play re-inits the pipeline
+        this._audioBuffer = null;
+        this._audioUrl = null;
+    }
+
+    async _initAudioPipeline() {
+        console.log('Loop: Initializing audio pipeline...');
+        this.state.bufferLoading = true;
+
+        try {
+            // Create audio context via player (ensures correct latency hints)
+            this._audioContext = player.getAudioContext();
+            if (!this._audioContext) {
+                // Initialize player's audio context
+                const tempAudio = new Audio();
+                tempAudio.src = this._audioUrl;
+                const { disconnect } = await player.connectExternalAudio(tempAudio);
+                disconnect();
+                tempAudio.src = '';
+                this._audioContext = player.getAudioContext();
+            }
+
+            if (!this._audioContext) {
+                throw new Error('Failed to get audio context');
+            }
+
+            // Resume context if suspended
+            if (this._audioContext.state === 'suspended') {
+                await this._audioContext.resume();
+            }
+
+            // Fetch and decode audio into buffer
+            console.log('Loop: Fetching audio buffer...');
+            const response = await fetch(this._audioUrl);
+            const arrayBuffer = await response.arrayBuffer();
+
+            console.log('Loop: Decoding audio data...');
+            this._audioBuffer = await this._audioContext.decodeAudioData(arrayBuffer);
+            this.state.duration = this._audioBuffer.duration;
+
+            console.log('Loop: Audio buffer ready:', {
+                duration: this._audioBuffer.duration.toFixed(1) + 's',
+                sampleRate: this._audioBuffer.sampleRate,
+                channels: this._audioBuffer.numberOfChannels
+            });
+
+            // Get EQ filters for output routing
+            const eqFilters = player.getEQFilters();
+            const destination = (eqFilters && eqFilters.length > 0)
+                ? eqFilters[0]
+                : this._audioContext.destination;
+
+            // Create the crossfade looper with the audio buffer
+            this._looper = new CrossfadeLooper(this._audioBuffer, this._audioContext);
+            this._looper.connect(destination);
+            this._looper.setVolume(this.state.volume);
+            this._looper.onLoop = () => {
+                this.state.loopCount++;
+            };
+        } finally {
+            this.state.bufferLoading = false;
+        }
+    }
+
+    async _runAnalysis() {
+        this.state.analyzing = true;
+
+        try {
+            // Create two audio elements for analysis (same approach that worked before)
+            this._analysisAudio1 = new Audio();
+            this._analysisAudio2 = new Audio();
+
+            this._analysisAudio1.src = this._audioUrl;
+            this._analysisAudio2.src = this._audioUrl;
+            this._analysisAudio1.preload = 'auto';
+            this._analysisAudio2.preload = 'auto';
+            this._analysisAudio1.volume = 1;  // Full volume for analysis
+            this._analysisAudio2.volume = 1;
+
+            // Wait for both to be ready
+            await Promise.all([
+                new Promise((resolve, reject) => {
+                    this._analysisAudio1.addEventListener('canplaythrough', resolve, { once: true });
+                    this._analysisAudio1.addEventListener('error', reject, { once: true });
+                    this._analysisAudio1.load();
+                }),
+                new Promise((resolve, reject) => {
+                    this._analysisAudio2.addEventListener('canplaythrough', resolve, { once: true });
+                    this._analysisAudio2.addEventListener('error', reject, { once: true });
+                    this._analysisAudio2.load();
+                })
+            ]);
+
+            // Connect via player (this properly sets up MediaElementSource)
+            const { source: source1, disconnect: disconnect1 } = await player.connectExternalAudio(this._analysisAudio1);
+            const { source: source2, disconnect: disconnect2 } = await player.connectExternalAudio(this._analysisAudio2);
+
+            // Disconnect from EQ - we'll route through silent gain
+            disconnect1();
+            disconnect2();
+
+            // Create silent output (sources need to connect to destination to process)
+            const silentGain = this._audioContext.createGain();
+            silentGain.gain.value = 0;
+            silentGain.connect(this._audioContext.destination);
+
+            source1.connect(silentGain);
+            source2.connect(silentGain);
+
+            // Run the analysis
+            await this._looper.runAnalysis(
+                this._analysisAudio1, source1,
+                this._analysisAudio2, source2,
+                silentGain
+            );
+
+            // Clean up
+            silentGain.disconnect();
+            source1.disconnect();
+            source2.disconnect();
+        } finally {
+            // Clean up analysis audio elements
             if (this._analysisAudio1) {
                 this._analysisAudio1.pause();
                 this._analysisAudio1.src = '';
@@ -1266,34 +1403,28 @@ export default defineComponent('loopsong-page', {
                 this._analysisAudio2.src = '';
                 this._analysisAudio2 = null;
             }
+            this.state.analyzing = false;
+        }
+    }
+
+    async togglePlay() {
+        if (!this._audioUrl || this.state.bufferLoading) return;
+
+        if (this.state.isPlaying) {
+            // Pause
+            if (this._looper) {
+                this._looper.pause();
+            }
+            this.state.isPlaying = false;
             if (this._timeUpdateInterval) {
                 clearInterval(this._timeUpdateInterval);
                 this._timeUpdateInterval = null;
             }
-            // Drop the decoded buffer/url so the next play re-inits the pipeline
-            this._audioBuffer = null;
-            this._audioUrl = null;
-        },
-
-        async _initAudioPipeline() {
-            console.log('Loop: Initializing audio pipeline...');
-            this.state.bufferLoading = true;
-
+        } else {
             try {
-                // Create audio context via player (ensures correct latency hints)
-                this._audioContext = player.getAudioContext();
-                if (!this._audioContext) {
-                    // Initialize player's audio context
-                    const tempAudio = new Audio();
-                    tempAudio.src = this._audioUrl;
-                    const { disconnect } = await player.connectExternalAudio(tempAudio);
-                    disconnect();
-                    tempAudio.src = '';
-                    this._audioContext = player.getAudioContext();
-                }
-
-                if (!this._audioContext) {
-                    throw new Error('Failed to get audio context');
+                // Initialize audio pipeline on first play (requires user gesture)
+                if (!this._audioBuffer) {
+                    await this._initAudioPipeline();
                 }
 
                 // Resume context if suspended
@@ -1301,195 +1432,64 @@ export default defineComponent('loopsong-page', {
                     await this._audioContext.resume();
                 }
 
-                // Fetch and decode audio into buffer
-                console.log('Loop: Fetching audio buffer...');
-                const response = await fetch(this._audioUrl);
-                const arrayBuffer = await response.arrayBuffer();
-
-                console.log('Loop: Decoding audio data...');
-                this._audioBuffer = await this._audioContext.decodeAudioData(arrayBuffer);
-                this.state.duration = this._audioBuffer.duration;
-
-                console.log('Loop: Audio buffer ready:', {
-                    duration: this._audioBuffer.duration.toFixed(1) + 's',
-                    sampleRate: this._audioBuffer.sampleRate,
-                    channels: this._audioBuffer.numberOfChannels
-                });
-
-                // Get EQ filters for output routing
-                const eqFilters = player.getEQFilters();
-                const destination = (eqFilters && eqFilters.length > 0)
-                    ? eqFilters[0]
-                    : this._audioContext.destination;
-
-                // Create the crossfade looper with the audio buffer
-                this._looper = new CrossfadeLooper(this._audioBuffer, this._audioContext);
-                this._looper.connect(destination);
-                this._looper.setVolume(this.state.volume);
-                this._looper.onLoop = () => {
-                    this.state.loopCount++;
-                };
-            } finally {
-                this.state.bufferLoading = false;
-            }
-        },
-
-        async _runAnalysis() {
-            this.state.analyzing = true;
-
-            try {
-                // Create two audio elements for analysis (same approach that worked before)
-                this._analysisAudio1 = new Audio();
-                this._analysisAudio2 = new Audio();
-
-                this._analysisAudio1.src = this._audioUrl;
-                this._analysisAudio2.src = this._audioUrl;
-                this._analysisAudio1.preload = 'auto';
-                this._analysisAudio2.preload = 'auto';
-                this._analysisAudio1.volume = 1;  // Full volume for analysis
-                this._analysisAudio2.volume = 1;
-
-                // Wait for both to be ready
-                await Promise.all([
-                    new Promise((resolve, reject) => {
-                        this._analysisAudio1.addEventListener('canplaythrough', resolve, { once: true });
-                        this._analysisAudio1.addEventListener('error', reject, { once: true });
-                        this._analysisAudio1.load();
-                    }),
-                    new Promise((resolve, reject) => {
-                        this._analysisAudio2.addEventListener('canplaythrough', resolve, { once: true });
-                        this._analysisAudio2.addEventListener('error', reject, { once: true });
-                        this._analysisAudio2.load();
-                    })
-                ]);
-
-                // Connect via player (this properly sets up MediaElementSource)
-                const { source: source1, disconnect: disconnect1 } = await player.connectExternalAudio(this._analysisAudio1);
-                const { source: source2, disconnect: disconnect2 } = await player.connectExternalAudio(this._analysisAudio2);
-
-                // Disconnect from EQ - we'll route through silent gain
-                disconnect1();
-                disconnect2();
-
-                // Create silent output (sources need to connect to destination to process)
-                const silentGain = this._audioContext.createGain();
-                silentGain.gain.value = 0;
-                silentGain.connect(this._audioContext.destination);
-
-                source1.connect(silentGain);
-                source2.connect(silentGain);
-
-                // Run the analysis
-                await this._looper.runAnalysis(
-                    this._analysisAudio1, source1,
-                    this._analysisAudio2, source2,
-                    silentGain
-                );
-
-                // Clean up
-                silentGain.disconnect();
-                source1.disconnect();
-                source2.disconnect();
-            } finally {
-                // Clean up analysis audio elements
-                if (this._analysisAudio1) {
-                    this._analysisAudio1.pause();
-                    this._analysisAudio1.src = '';
-                    this._analysisAudio1 = null;
+                // Run analysis if not done yet (happens in background during first playback)
+                if (!this._looper.analysisComplete && !this.state.analyzing) {
+                    // Start analysis in background
+                    this._runAnalysis().catch(e => console.error('Analysis error:', e));
                 }
-                if (this._analysisAudio2) {
-                    this._analysisAudio2.pause();
-                    this._analysisAudio2.src = '';
-                    this._analysisAudio2 = null;
-                }
-                this.state.analyzing = false;
-            }
-        },
 
-        async togglePlay() {
-            if (!this._audioUrl || this.state.bufferLoading) return;
+                // Start playback from buffer
+                const startPosition = this._looper.getCurrentTime() || 0;
+                this._looper.play(startPosition);
 
-            if (this.state.isPlaying) {
-                // Pause
-                if (this._looper) {
-                    this._looper.pause();
-                }
-                this.state.isPlaying = false;
-                if (this._timeUpdateInterval) {
-                    clearInterval(this._timeUpdateInterval);
-                    this._timeUpdateInterval = null;
-                }
-            } else {
-                try {
-                    // Initialize audio pipeline on first play (requires user gesture)
-                    if (!this._audioBuffer) {
-                        await this._initAudioPipeline();
+                this.state.isPlaying = true;
+                this._timeUpdateInterval = setInterval(() => {
+                    if (this._looper && this._looper.isPlaying) {
+                        this.state.currentTime = this._looper.getCurrentTime();
                     }
-
-                    // Resume context if suspended
-                    if (this._audioContext.state === 'suspended') {
-                        await this._audioContext.resume();
-                    }
-
-                    // Run analysis if not done yet (happens in background during first playback)
-                    if (!this._looper.analysisComplete && !this.state.analyzing) {
-                        // Start analysis in background
-                        this._runAnalysis().catch(e => console.error('Analysis error:', e));
-                    }
-
-                    // Start playback from buffer
-                    const startPosition = this._looper.getCurrentTime() || 0;
-                    this._looper.play(startPosition);
-
-                    this.state.isPlaying = true;
-                    this._timeUpdateInterval = setInterval(() => {
-                        if (this._looper && this._looper.isPlaying) {
-                            this.state.currentTime = this._looper.getCurrentTime();
-                        }
-                    }, 250);
-                } catch (e) {
-                    console.error('Play failed:', e);
-                    this.state.error = 'Playback failed. Try clicking play again.';
-                }
-            }
-        },
-
-        handleSeek(e) {
-            const rect = e.currentTarget.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const percent = x / rect.width;
-            const newTime = percent * this.state.duration;
-
-            if (this._looper && this._looper.isPlaying) {
-                // Restart playback from new position
-                this._looper.play(newTime);
-            }
-            this.state.currentTime = newTime;
-        },
-
-        handleVolumeChange(e) {
-            const volume = parseFloat(e.target.value);
-            this.state.volume = volume;
-            if (this._looper) {
-                this._looper.setVolume(volume);
-            }
-            localStorage.setItem('loopsong-volume', String(volume));
-        },
-
-        async copyPermalink() {
-            try {
-                await navigator.clipboard.writeText(window.location.href);
-                this.state.copied = true;
-                setTimeout(() => { this.state.copied = false; }, 1500);
+                }, 250);
             } catch (e) {
-                console.error('Failed to copy:', e);
+                console.error('Play failed:', e);
+                this.state.error = 'Playback failed. Try clicking play again.';
             }
-        },
-
-        goToLibrary() {
-            window.location.hash = '/';
         }
-    },
+    }
+
+    handleSeek(e) {
+        const rect = e.currentTarget.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const percent = x / rect.width;
+        const newTime = percent * this.state.duration;
+
+        if (this._looper && this._looper.isPlaying) {
+            // Restart playback from new position
+            this._looper.play(newTime);
+        }
+        this.state.currentTime = newTime;
+    }
+
+    handleVolumeChange(e) {
+        const volume = parseFloat(e.target.value);
+        this.state.volume = volume;
+        if (this._looper) {
+            this._looper.setVolume(volume);
+        }
+        localStorage.setItem('loopsong-volume', String(volume));
+    }
+
+    async copyPermalink() {
+        try {
+            await navigator.clipboard.writeText(window.location.href);
+            this.state.copied = true;
+            setTimeout(() => { this.state.copied = false; }, 1500);
+        } catch (e) {
+            console.error('Failed to copy:', e);
+        }
+    }
+
+    goToLibrary() {
+        window.location.hash = '/';
+    }
 
     template() {
         const { song, error, loading, analyzing, isPlaying, currentTime, duration, volume, loopCount, copied } = this.state;
@@ -1575,9 +1575,9 @@ export default defineComponent('loopsong-page', {
                 </div>
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
             height: 100%;
@@ -1907,4 +1907,6 @@ export default defineComponent('loopsong-page', {
             }
         }
     `
-});
+}
+
+export default defineComponent('loopsong-page', LoopsongPage);

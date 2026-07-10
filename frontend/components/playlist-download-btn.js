@@ -5,7 +5,7 @@
  * or storage info with delete option if downloaded.
  */
 
-import { defineComponent, html, when, raw } from 'vdx/framework.js';
+import { defineComponent, html, when, raw, Component } from 'vdx/framework.js';
 import offlineStore, { formatBytes } from '../offline/offline-store.js';
 import {
     downloadPlaylist,
@@ -17,17 +17,19 @@ import {
 import 'vdxui/button/button.js';
 import 'vdxui/overlay/dialog.js';
 
-export default defineComponent('playlist-download-btn', {
-    props: {
+export class PlaylistDownloadBtn extends Component {
+    static props = {
         playlistId: null,
         playlistName: '',
         variant: 'compact'  // 'compact' (icon) or 'full' (button with text)
-    },
+    }
 
-    stores: { offline: offlineStore },
+    static stores = { offline: offlineStore }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             isOffline: false,
             storageSize: 0,
             isLoading: true,
@@ -35,111 +37,109 @@ export default defineComponent('playlist-download-btn', {
             downloadError: null,
             confirmDialog: { show: false, title: '', message: '', action: null }
         };
-    },
+    }
 
     async mounted() {
         await this.checkOfflineStatus();
-    },
+    }
 
     propsChanged(prop) {
         if (prop === 'playlistId') {
             this.checkOfflineStatus();
         }
-    },
+    }
 
-    methods: {
-        async checkOfflineStatus() {
-            if (!this.props.playlistId) {
-                this.state.isLoading = false;
-                return;
-            }
-
-            this.state.isLoading = true;
-            try {
-                this.state.isOffline = await isPlaylistOffline(this.props.playlistId);
-                if (this.state.isOffline) {
-                    this.state.storageSize = await getPlaylistStorageSize(this.props.playlistId);
-                }
-            } catch (e) {
-                console.error('Failed to check offline status:', e);
-            }
+    async checkOfflineStatus() {
+        if (!this.props.playlistId) {
             this.state.isLoading = false;
-        },
-
-        async handleDownload() {
-            this.state.downloadError = null;
-
-            const result = await downloadPlaylist(this.props.playlistId);
-
-            if (result.success) {
-                this.state.isOffline = true;
-                this.state.storageSize = result.totalSize;
-
-                if (result.errors && result.errors.length > 0) {
-                    console.warn('Some songs failed to download:', result.errors);
-                }
-
-                // Refresh status to get accurate storage size
-                await this.checkOfflineStatus();
-            } else if (result.reason !== 'cancelled') {
-                this.state.downloadError = result.error || result.reason;
-            }
-        },
-
-        handleCancel() {
-            cancelDownload();
-        },
-
-        handleDelete() {
-            this.showConfirmDialog(
-                'Remove Offline Playlist',
-                `Remove "${this.props.playlistName}" from offline storage?`,
-                'deletePlaylist'
-            );
-        },
-
-        async doDeletePlaylist() {
-            this.state.isDeleting = true;
-            try {
-                await deleteOfflinePlaylist(this.props.playlistId);
-                this.state.isOffline = false;
-                this.state.storageSize = 0;
-            } catch (e) {
-                console.error('Failed to delete offline playlist:', e);
-            }
-            this.state.isDeleting = false;
-        },
-
-        showConfirmDialog(title, message, action) {
-            this.state.confirmDialog = { show: true, title, message, action };
-        },
-
-        handleConfirmDialogConfirm() {
-            const { action } = this.state.confirmDialog;
-            this.state.confirmDialog = { show: false, title: '', message: '', action: null };
-
-            if (action === 'deletePlaylist') {
-                this.doDeletePlaylist();
-            }
-        },
-
-        handleConfirmDialogCancel() {
-            this.state.confirmDialog = { show: false, title: '', message: '', action: null };
-        },
-
-        isDownloading() {
-            const progress = this.stores.offline.downloadProgress;
-            return progress && progress.playlistId === this.props.playlistId;
-        },
-
-        getProgress() {
-            const progress = this.stores.offline.downloadProgress;
-            if (progress && progress.playlistId === this.props.playlistId) {
-                return progress;
-            }
-            return null;
+            return;
         }
-    },
+
+        this.state.isLoading = true;
+        try {
+            this.state.isOffline = await isPlaylistOffline(this.props.playlistId);
+            if (this.state.isOffline) {
+                this.state.storageSize = await getPlaylistStorageSize(this.props.playlistId);
+            }
+        } catch (e) {
+            console.error('Failed to check offline status:', e);
+        }
+        this.state.isLoading = false;
+    }
+
+    async handleDownload() {
+        this.state.downloadError = null;
+
+        const result = await downloadPlaylist(this.props.playlistId);
+
+        if (result.success) {
+            this.state.isOffline = true;
+            this.state.storageSize = result.totalSize;
+
+            if (result.errors && result.errors.length > 0) {
+                console.warn('Some songs failed to download:', result.errors);
+            }
+
+            // Refresh status to get accurate storage size
+            await this.checkOfflineStatus();
+        } else if (result.reason !== 'cancelled') {
+            this.state.downloadError = result.error || result.reason;
+        }
+    }
+
+    handleCancel() {
+        cancelDownload();
+    }
+
+    handleDelete() {
+        this.showConfirmDialog(
+            'Remove Offline Playlist',
+            `Remove "${this.props.playlistName}" from offline storage?`,
+            'deletePlaylist'
+        );
+    }
+
+    async doDeletePlaylist() {
+        this.state.isDeleting = true;
+        try {
+            await deleteOfflinePlaylist(this.props.playlistId);
+            this.state.isOffline = false;
+            this.state.storageSize = 0;
+        } catch (e) {
+            console.error('Failed to delete offline playlist:', e);
+        }
+        this.state.isDeleting = false;
+    }
+
+    showConfirmDialog(title, message, action) {
+        this.state.confirmDialog = { show: true, title, message, action };
+    }
+
+    handleConfirmDialogConfirm() {
+        const { action } = this.state.confirmDialog;
+        this.state.confirmDialog = { show: false, title: '', message: '', action: null };
+
+        if (action === 'deletePlaylist') {
+            this.doDeletePlaylist();
+        }
+    }
+
+    handleConfirmDialogCancel() {
+        this.state.confirmDialog = { show: false, title: '', message: '', action: null };
+    }
+
+    isDownloading() {
+        const progress = this.stores.offline.downloadProgress;
+        return progress && progress.playlistId === this.props.playlistId;
+    }
+
+    getProgress() {
+        const progress = this.stores.offline.downloadProgress;
+        if (progress && progress.playlistId === this.props.playlistId) {
+            return progress;
+        }
+        return null;
+    }
 
     template() {
         const { isOffline, storageSize, isLoading, isDeleting, downloadError, confirmDialog } = this.state;
@@ -229,9 +229,9 @@ export default defineComponent('playlist-download-btn', {
                 </cl-dialog>
             `)}
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: inline-block;
         }
@@ -351,4 +351,6 @@ export default defineComponent('playlist-download-btn', {
             width: 200px;
         }
     `
-});
+}
+
+export default defineComponent('playlist-download-btn', PlaylistDownloadBtn);

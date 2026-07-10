@@ -7,7 +7,7 @@
  * - Skip and filter controls
  */
 
-import { defineComponent, html, when, each, contain } from 'vdx/framework.js';
+import { defineComponent, html, when, each, contain, Component } from 'vdx/framework.js';
 import { browse } from '../offline/offline-api.js';
 import { player, playerStore } from '../stores/player-store.js';
 import offlineStore from '../offline/offline-store.js';
@@ -15,11 +15,13 @@ import 'vdxui/button/button.js';
 import 'vdxui/selection/dropdown.js';
 import 'vdxui/misc/spinner.js';
 
-export default defineComponent('radio-page', {
-    stores: { player: playerStore, offline: offlineStore },
+export class RadioPage extends Component {
+    static stores = { player: playerStore, offline: offlineStore }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             categories: [],
             genres: [],
             selectedCategory: '',
@@ -28,117 +30,115 @@ export default defineComponent('radio-page', {
             isLoading: false,
             showAdvanced: false
         };
-    },
+    }
 
     async mounted() {
         await this.loadCategories();
-    },
+    }
 
-    methods: {
-        async loadCategories() {
-            try {
-                const result = await browse.categories();
-                this.state.categories = result.items;
-            } catch (e) {
-                console.error('Failed to load categories:', e);
-            }
-        },
-
-        async loadGenres() {
-            if (!this.state.selectedCategory) {
-                this.state.genres = [];
-                return;
-            }
-
-            try {
-                const result = await browse.genres({ category: this.state.selectedCategory });
-                this.state.genres = result.items;
-            } catch (e) {
-                console.error('Failed to load genres:', e);
-            }
-        },
-
-        handleCategoryChange(e) {
-            this.state.selectedCategory = e.detail?.value || e.target?.value || '';
-            this.state.selectedGenre = '';
-            this.loadGenres();
-        },
-
-        handleGenreChange(e) {
-            this.state.selectedGenre = e.detail?.value || e.target?.value || '';
-        },
-
-        handleFilterChange(e) {
-            this.state.customFilter = e.target.value;
-        },
-
-        toggleAdvanced() {
-            this.state.showAdvanced = !this.state.showAdvanced;
-        },
-
-        buildFilter() {
-            const { selectedCategory, selectedGenre, customFilter } = this.state;
-            const parts = [];
-
-            if (selectedCategory) {
-                parts.push(`c:eq:${selectedCategory}`);
-            }
-            if (selectedGenre) {
-                parts.push(`g:eq:${selectedGenre}`);
-            }
-            if (customFilter.trim()) {
-                parts.push(customFilter.trim());
-            }
-
-            return parts.length > 0 ? parts.join(' AND ') : null;
-        },
-
-        async startRadio() {
-            this.state.isLoading = true;
-            const filter = this.buildFilter();
-
-            try {
-                await player.startRadio(null, filter);
-            } catch (e) {
-                console.error('Failed to start radio:', e);
-            } finally {
-                this.state.isLoading = false;
-            }
-        },
-
-        async startRandomRadio() {
-            this.state.isLoading = true;
-            try {
-                await player.startRadio(null, null);
-            } catch (e) {
-                console.error('Failed to start radio:', e);
-            } finally {
-                this.state.isLoading = false;
-            }
-        },
-
-        stopRadio() {
-            player.stopRadio();
-            player.stop();
-        },
-
-        handleSkip() {
-            player.skip();
-        },
-
-        formatTime(seconds) {
-            if (!seconds || isNaN(seconds)) return '0:00';
-            const mins = Math.floor(seconds / 60);
-            const secs = Math.floor(seconds % 60);
-            return `${mins}:${secs.toString().padStart(2, '0')}`;
-        },
-
-        getProgressPercent() {
-            const { currentTime, duration } = this.stores.player;
-            if (!duration) return 0;
-            return (currentTime / duration) * 100;
+    async loadCategories() {
+        try {
+            const result = await browse.categories();
+            this.state.categories = result.items;
+        } catch (e) {
+            console.error('Failed to load categories:', e);
         }
-    },
+    }
+
+    async loadGenres() {
+        if (!this.state.selectedCategory) {
+            this.state.genres = [];
+            return;
+        }
+
+        try {
+            const result = await browse.genres({ category: this.state.selectedCategory });
+            this.state.genres = result.items;
+        } catch (e) {
+            console.error('Failed to load genres:', e);
+        }
+    }
+
+    handleCategoryChange(e) {
+        this.state.selectedCategory = e.detail?.value || e.target?.value || '';
+        this.state.selectedGenre = '';
+        this.loadGenres();
+    }
+
+    handleGenreChange(e) {
+        this.state.selectedGenre = e.detail?.value || e.target?.value || '';
+    }
+
+    handleFilterChange(e) {
+        this.state.customFilter = e.target.value;
+    }
+
+    toggleAdvanced() {
+        this.state.showAdvanced = !this.state.showAdvanced;
+    }
+
+    buildFilter() {
+        const { selectedCategory, selectedGenre, customFilter } = this.state;
+        const parts = [];
+
+        if (selectedCategory) {
+            parts.push(`c:eq:${selectedCategory}`);
+        }
+        if (selectedGenre) {
+            parts.push(`g:eq:${selectedGenre}`);
+        }
+        if (customFilter.trim()) {
+            parts.push(customFilter.trim());
+        }
+
+        return parts.length > 0 ? parts.join(' AND ') : null;
+    }
+
+    async startRadio() {
+        this.state.isLoading = true;
+        const filter = this.buildFilter();
+
+        try {
+            await player.startRadio(null, filter);
+        } catch (e) {
+            console.error('Failed to start radio:', e);
+        } finally {
+            this.state.isLoading = false;
+        }
+    }
+
+    async startRandomRadio() {
+        this.state.isLoading = true;
+        try {
+            await player.startRadio(null, null);
+        } catch (e) {
+            console.error('Failed to start radio:', e);
+        } finally {
+            this.state.isLoading = false;
+        }
+    }
+
+    stopRadio() {
+        player.stopRadio();
+        player.stop();
+    }
+
+    handleSkip() {
+        player.skip();
+    }
+
+    formatTime(seconds) {
+        if (!seconds || isNaN(seconds)) return '0:00';
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    getProgressPercent() {
+        const { currentTime, duration } = this.stores.player;
+        if (!duration) return 0;
+        return (currentTime / duration) * 100;
+    }
 
     template() {
         const { categories, genres, selectedCategory, selectedGenre, showAdvanced, isLoading, customFilter } = this.state;
@@ -306,9 +306,9 @@ export default defineComponent('radio-page', {
                 `)}
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -628,4 +628,6 @@ export default defineComponent('radio-page', {
             }
         }
     `
-});
+}
+
+export default defineComponent('radio-page', RadioPage);
