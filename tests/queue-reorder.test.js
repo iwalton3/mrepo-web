@@ -305,7 +305,7 @@ async function touch(from, target) {
         for (let i = 0; i < 6; i++) songs.push({ uuid: String(i), title: 'S' + i, artist: 'A' + i, album: 'Al' + i });
         c.state.view = 'detail';
         c.state.currentPlaylist = { id: 1, name: 'Test', song_count: 6 };
-        c.state.playlistSongs = songs;
+        c.state.playlistSongs.replace(songs);
         c.state.totalCount = 6;
         c.state.isLoading = false;
     });
@@ -316,8 +316,8 @@ async function touch(from, target) {
         // -> 0,2,1,3,4,5 (S1 and S2 swap). Read synchronously (optimistic).
         const order = await test.page.evaluate(() => {
             const c = document.querySelector('playlists-page');
-            c.state.playlistSongs = ['0', '1', '2', '3', '4', '5'].map((u, i) =>
-                ({ uuid: u, title: 'S' + u, artist: 'A' + u, album: 'Al' + u }));
+            c.state.playlistSongs.replace(['0', '1', '2', '3', '4', '5'].map((u, i) =>
+                ({ uuid: u, title: 'S' + u, artist: 'A' + u, album: 'Al' + u })));
             c.handlePlaylistMoveDown(1, { stopPropagation() {} });   // do NOT await
             return c.state.playlistSongs.map(s => s.uuid).join('');
         });
@@ -329,8 +329,8 @@ async function touch(from, target) {
         // -> 0,2,1,3,4,5 (S2 and S1 swap).
         const order = await test.page.evaluate(() => {
             const c = document.querySelector('playlists-page');
-            c.state.playlistSongs = ['0', '1', '2', '3', '4', '5'].map((u, i) =>
-                ({ uuid: u, title: 'S' + u, artist: 'A' + u, album: 'Al' + u }));
+            c.state.playlistSongs.replace(['0', '1', '2', '3', '4', '5'].map((u, i) =>
+                ({ uuid: u, title: 'S' + u, artist: 'A' + u, album: 'Al' + u })));
             c.handlePlaylistMoveUp(2, { stopPropagation() {} });   // do NOT await
             return c.state.playlistSongs.map(s => s.uuid).join('');
         });
@@ -340,8 +340,8 @@ async function touch(from, target) {
     await test.test('playlist MoveUp on first row is a no-op', async () => {
         const order = await test.page.evaluate(() => {
             const c = document.querySelector('playlists-page');
-            c.state.playlistSongs = ['0', '1', '2', '3', '4', '5'].map((u) =>
-                ({ uuid: u, title: 'S' + u, artist: 'A' + u, album: 'Al' + u }));
+            c.state.playlistSongs.replace(['0', '1', '2', '3', '4', '5'].map((u) =>
+                ({ uuid: u, title: 'S' + u, artist: 'A' + u, album: 'Al' + u })));
             c.handlePlaylistMoveUp(0, { stopPropagation() {} });
             return c.state.playlistSongs.map(s => s.uuid).join('');
         });
@@ -351,8 +351,8 @@ async function touch(from, target) {
     await test.test('playlist MoveDown on last row is a no-op', async () => {
         const order = await test.page.evaluate(() => {
             const c = document.querySelector('playlists-page');
-            c.state.playlistSongs = ['0', '1', '2', '3', '4', '5'].map((u) =>
-                ({ uuid: u, title: 'S' + u, artist: 'A' + u, album: 'Al' + u }));
+            c.state.playlistSongs.replace(['0', '1', '2', '3', '4', '5'].map((u) =>
+                ({ uuid: u, title: 'S' + u, artist: 'A' + u, album: 'Al' + u })));
             c.handlePlaylistMoveDown(5, { stopPropagation() {} });
             return c.state.playlistSongs.map(s => s.uuid).join('');
         });

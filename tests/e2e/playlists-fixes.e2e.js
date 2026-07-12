@@ -84,19 +84,20 @@ const test = new TestHelper();
             const el = document.querySelector('playlists-page');
             const raf = () => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
             const songs = el.state.playlistSongs.filter(Boolean);
-            // Inject a duplicate: [A, B, A]
-            el.state.playlistSongs = [songs[0], songs[1], { ...songs[0] }];
+            // Inject a duplicate: [A, B, A]. replace() bumps the versionedList
+            // version, which the memoEach key reads (no manual counter needed).
+            el.state.playlistSongs.replace([songs[0], songs[1], { ...songs[0] }]);
             el.state.totalCount = 3;
-            el.state.playlistVersion++;
             await raf();
 
             const rows = [...el.querySelectorAll('.song-item')];
             const indices = rows.map((x) => x.dataset.index);
             const uuids = rows.map((x) => x.dataset.uuid);
 
-            // Enable selection mode and select ONLY the second copy (index 2)
+            // Enable selection mode and select ONLY the second copy (index 2).
+            // The selection bit lives in the memoEach key, so toggling
+            // selectionMode re-renders the rows (no manual version bump needed).
             el.state.selectionMode = true;
-            el.state.playlistVersion++;
             await raf();
             el.toggleSelection(2, { stopPropagation() {} });
             await raf();

@@ -8,7 +8,7 @@
  * - Sharing functionality
  */
 
-import { defineComponent, html, when, each, memoEach, untracked, Component } from 'vdx/framework.js';
+import { defineComponent, html, when, each, memoEach, versionedList, Component } from 'vdx/framework.js';
 import { createWindowing } from 'vdx/windowing.js';
 import { createRowGestures } from 'vdx/gestures.js';
 import { songs as songsApi, playlists as playlistsApi, auth, ai } from '../offline/offline-api.js';
@@ -94,7 +94,6 @@ export class PlaylistsPage extends Component {
                     for (let i = 0; i < sorted.length; i++) newSet.add(adjustedTarget + i);
                     this.reorderPlaylistSongsBatch(fromIndices, gap);
                     this.state.selectedIndices = newSet;
-                    this.state.playlistVersion++;
                 } else {
                     this.reorderPlaylistSongs(fromIndices[0], gap);
                 }
@@ -107,8 +106,7 @@ export class PlaylistsPage extends Component {
             myPlaylists: [],
             publicPlaylists: [],
             currentPlaylist: null,
-            playlistSongs: untracked([]),  // Large list - untracked for performance
-            playlistVersion: 0,  // Bumped on reorder to invalidate memoEach cache
+            playlistSongs: versionedList([]),  // Large list - raw items; structural edits (replace/splice) auto-notify
             isLoading: false,
             detailError: null,      // Error message for detail/shared load failures
             isAuthenticated: false,
@@ -253,7 +251,7 @@ export class PlaylistsPage extends Component {
 
     // Selection mode methods
     toggleSelectionMode() {
-        // No playlistVersion bump: selection mode/state live in the
+        // No list version bump: selection mode/state live in the
         // memoEach key, so only rows whose key bits change re-render.
         this.state.selectionMode = !this.state.selectionMode;
         if (!this.state.selectionMode) {
@@ -323,9 +321,8 @@ export class PlaylistsPage extends Component {
 
             // Update local state
             const newSongs = this.state.playlistSongs.filter((_, i) => !this.state.selectedIndices.has(i));
-            this.state.playlistSongs = newSongs;
+            this.state.playlistSongs.replace(newSongs);
             this.state.totalCount = newSongs.length;
-            this.state.playlistVersion++;
 
             this.clearSelection();
             this.state.selectionMode = false;
@@ -524,7 +521,7 @@ export class PlaylistsPage extends Component {
                 songs[i] = item;
             });
 
-            this.state.playlistSongs = songs;
+            this.state.playlistSongs.replace(songs);
             this.state.totalCount = totalCount;
             this.state.cursor = result.nextCursor;
             this.state.hasMore = result.hasMore;
@@ -599,7 +596,7 @@ export class PlaylistsPage extends Component {
                 songs[i] = item;
             });
 
-            this.state.playlistSongs = songs;
+            this.state.playlistSongs.replace(songs);
             this.state.totalCount = totalCount;
             this.state.cursor = result.nextCursor;
             this.state.hasMore = result.hasMore;
@@ -629,7 +626,7 @@ export class PlaylistsPage extends Component {
                 limit: 100
             });
 
-            this.state.playlistSongs = [...this.state.playlistSongs, ...result.items];
+            this.state.playlistSongs.replace([...this.state.playlistSongs, ...result.items]);
             this.state.cursor = result.nextCursor;
             this.state.hasMore = result.hasMore;
 
@@ -657,7 +654,7 @@ export class PlaylistsPage extends Component {
         this.state.view = 'list';
         this.state.currentPlaylist = null;
         this.state.detailError = null;
-        this.state.playlistSongs = [];
+        this.state.playlistSongs.replace([]);
         // Clear selection when leaving detail view
         this.state.selectionMode = false;
         this.state.selectedIndices = new Set();
@@ -1010,9 +1007,8 @@ export class PlaylistsPage extends Component {
             // Duplicate-safe: address the exact row by its index so only the
             // clicked copy is removed, even when the same song repeats.
             await playlistsApi.removeSong(this.state.currentPlaylist.id, song.uuid, index);
-            this.state.playlistSongs = this.state.playlistSongs.filter((_, i) => i !== index);
+            this.state.playlistSongs.replace(this.state.playlistSongs.filter((_, i) => i !== index));
             this.state.totalCount = this.state.playlistSongs.length;
-            this.state.playlistVersion++;  // Invalidate memoEach cache
         } catch (e) {
             console.error('Failed to remove song:', e);
         }
@@ -1051,9 +1047,9 @@ export class PlaylistsPage extends Component {
         const insertIndex = fromIndex < toIndex ? toIndex - 1 : toIndex;
         songs.splice(insertIndex, 0, moved);
 
-        // Optimistically update UI
-        this.state.playlistSongs = songs;
-        this.state.playlistVersion++;  // Invalidate memoEach cache for correct numbering
+        // Optimistically update UI (replace() bumps the versionedList version,
+        // which the memoEach key reads to force correct row renumbering)
+        this.state.playlistSongs.replace(songs);
 
         // Build positions array for API - backend expects [{uuid, position}, ...]
         const positions = songs.map((s, i) => ({ uuid: s.uuid, position: i }));
@@ -1098,8 +1094,7 @@ export class PlaylistsPage extends Component {
         songs.splice(adjustedTarget, 0, ...items);
 
         // Optimistically update UI
-        this.state.playlistSongs = songs;
-        this.state.playlistVersion++;
+        this.state.playlistSongs.replace(songs);
 
         // Build positions array for API
         const positions = songs.map((s, i) => ({ uuid: s.uuid, position: i }));
@@ -1154,9 +1149,8 @@ export class PlaylistsPage extends Component {
             await playlistsApi.addSong(this.state.currentPlaylist.id, song.uuid);
             // Duplicates are a first-class feature: always append the copy
             // just added, even if the song is already in the playlist.
-            this.state.playlistSongs = [...this.state.playlistSongs, song];
+            this.state.playlistSongs.replace([...this.state.playlistSongs, song]);
             this.state.totalCount = this.state.playlistSongs.length;
-            this.state.playlistVersion++;
         } catch (e) {
             console.error('Failed to add song:', e);
         }
@@ -1372,7 +1366,7 @@ export class PlaylistsPage extends Component {
                 result.items.forEach((item, i) => {
                     songs[offset + i] = item;
                 });
-                this.state.playlistSongs = songs;
+                this.state.playlistSongs.replace(songs);
                 this.state.hasMore = result.hasMore;
 
                 offset += result.items.length;
@@ -1767,7 +1761,7 @@ export class PlaylistsPage extends Component {
                                             const sel = this.state.selectionMode
                                                 ? (this.state.selectedIndices.has(actualIndex) ? 's' : 'u')
                                                 : 'n';
-                                            return `${song?.uuid ?? 'loading'}-${actualIndex}-${this.state.playlistVersion ?? 0}-${sel}`;
+                                            return `${song?.uuid ?? 'loading'}-${actualIndex}-${playlistSongs.version}-${sel}`;
                                         }, { trustKey: true })}
                                     </div>
                                 </div>

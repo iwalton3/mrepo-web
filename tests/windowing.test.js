@@ -267,7 +267,7 @@ const test = new TestHelper();
         for (let i = 0; i < N; i++) songs.push({ uuid: 'p' + i, title: 'Song ' + i, artist: 'Art ' + i, album: 'Alb ' + i });
         c.state.view = 'detail';
         c.state.currentPlaylist = { id: 1, name: 'Test', song_count: N };
-        c.state.playlistSongs = songs;
+        c.state.playlistSongs.replace(songs);
         c.state.totalCount = N;
         c.state.isLoading = false;
         if (c._win) c._win.refresh();
