@@ -47,10 +47,9 @@ async function installQueueHelpers() {
             ps.state.tempQueueMode = true;   // local-only queue, no backend sync
             ps.state.queueLoaded = true;
             ps.state.queueIndex = 0;
-            ps.state.queue = LETTERS.map((c, i) => ({
+            ps.state.queue.replace(LETTERS.map((c, i) => ({
                 uuid: c, title: c, artist: 'Art ' + c, position: i, track_number: (i % 20) + 1
-            }));
-            ps.state.queueVersion++;
+            })));
             el.state.selectionMode = false;
             el.state.selectedIndices = new Set();
             await raf();
@@ -373,9 +372,8 @@ async function touch(from, target) {
             ps.state.tempQueueMode = true;
             ps.state.queueLoaded = true;
             ps.state.queueIndex = 0;
-            ps.state.queue = ['A', 'B', 'C', 'D'].map((c, i) =>
-                ({ uuid: c, title: c, artist: 'Art ' + c, position: i, track_number: i + 1 }));
-            ps.state.queueVersion++;
+            ps.state.queue.replace(['A', 'B', 'C', 'D'].map((c, i) =>
+                ({ uuid: c, title: c, artist: 'Art ' + c, position: i, track_number: i + 1 })));
             el.state.selectionMode = true;
             el.state.selectedIndices = new Set();
             await raf();

@@ -9,7 +9,7 @@
  * - Media Session API for Android background playback
  */
 
-import { createStore, untracked } from 'vdx/framework.js';
+import { createStore, versionedList } from 'vdx/framework.js';
 import { getStreamUrl, history, queue as queueApi, playback, sca, radio, preferences, songs as songsApi, playlists as playlistsApi, getDeviceId, getCurrentQueueSeq } from '../offline/offline-api.js';
 import { getAudioUrl } from '../offline/offline-audio.js';
 import { profile } from '#profile';
@@ -279,10 +279,10 @@ export const playerStore = createStore({
     replayGainPreamp: 0,        // dB adjustment (-12 to +12)
     replayGainFallback: -6,     // Default gain for untagged tracks (dB)
 
-    // Queue (server-side) - marked untracked for performance with large playlists
-    queue: untracked([]),
+    // Queue (server-side) - versionedList: raw items (perf with large playlists),
+    // but structural edits (.replace()/splice/index) auto-bump a reactive version.
+    queue: versionedList([]),
     queueIndex: 0,
-    queueVersion: 0,  // Tracked counter to force re-renders when queue changes
 
     // Mode
     shuffle: false,
@@ -434,11 +434,10 @@ class AudioController {
             if (tempQueue && savedQueue) {
                 // Restore temp queue mode
                 this.store.state.tempQueueMode = true;
-                this.store.state.queue = tempQueue.items || [];
+                this.store.state.queue.replace(tempQueue.items || []);
                 this.store.state.queueIndex = tempQueue.queueIndex || 0;
                 this.store.state.shuffle = tempQueue.shuffle || false;
                 this.store.state.repeatMode = tempQueue.repeatMode || 'none';
-                this.store.state.queueVersion++;
 
                 if (this.store.state.queue.length > 0) {
                     const song = this.store.state.queue[this.store.state.queueIndex];
@@ -497,13 +496,12 @@ class AudioController {
                 const playingUuid = wasPlaying ? this.store.state.currentSong?.uuid : null;
 
                 const items = queueResult.items || [];
-                this.store.state.queue = items;
+                this.store.state.queue.replace(items);
                 // Clamp - a stale/foreign server index must not point past the queue
                 const serverIndex = items.length > 0
                     ? Math.max(0, Math.min(queueResult.queueIndex || 0, items.length - 1))
                     : 0;
                 this.store.state.scaEnabled = queueResult.scaEnabled || false;
-                this.store.state.queueVersion++;  // Trigger re-render
 
                 // Map server play_mode to local shuffle and repeatMode
                 const playMode = queueResult.playMode || 'sequential';
@@ -764,9 +762,8 @@ class AudioController {
             const currentUuid = this.store.state.currentSong?.uuid;
 
             // Update queue items
-            this.store.state.queue = result.items || [];
+            this.store.state.queue.replace(result.items || []);
             this.store.state.scaEnabled = result.scaEnabled || false;
-            this.store.state.queueVersion++;
 
             const oldQueueIndex = this.store.state.queueIndex;
             const queue = this.store.state.queue;
@@ -986,8 +983,7 @@ class AudioController {
         const oldIndex = this.store.state.queueIndex;
 
         // Update queue with restored items (full metadata)
-        this.store.state.queue = items;
-        this.store.state.queueVersion++;  // Trigger re-render
+        this.store.state.queue.replace(items);
 
         // Adopt the server index, but clamped into range, and never yank the
         // position out from under live playback - if this device is playing,
@@ -4458,8 +4454,7 @@ class AudioController {
                         // during the network call (focus refresh, addToQueue)
                         const cur = this.store.state.queue;
                         nextIndex = cur.length;  // First of newly added songs
-                        this.store.state.queue = [...cur, ...result.songs];
-                        this.store.state.queueVersion++;
+                        this.store.state.queue.replace([...cur, ...result.songs]);
                     } else {
                         // Pool exhausted
                         this.store.state.isPlaying = false;
@@ -4537,8 +4532,7 @@ class AudioController {
                 try {
                     const result = await this._populateScaQueue(10);
                     if (result.songs && result.songs.length > 0) {
-                        this.store.state.queue = [...this.store.state.queue, ...result.songs];
-                        this.store.state.queueVersion++;
+                        this.store.state.queue.replace([...this.store.state.queue, ...result.songs]);
                     }
                 } catch (e) {
                     console.error('Failed to pre-populate SCA queue:', e);
@@ -4725,8 +4719,7 @@ class AudioController {
         // Temp queue mode: add locally without server sync
         if (this.store.state.tempQueueMode) {
             const newIndex = this.store.state.queue.length;
-            this.store.state.queue = [...this.store.state.queue, ...songsArray];
-            this.store.state.queueVersion++;
+            this.store.state.queue.replace([...this.store.state.queue, ...songsArray]);
 
             if (playNow && songsArray.length > 0) {
                 this.store.state.queueIndex = newIndex;
@@ -4755,8 +4748,7 @@ class AudioController {
                 return;
             }
 
-            this.store.state.queue = queueResult.items || [];
-            this.store.state.queueVersion++;
+            this.store.state.queue.replace(queueResult.items || []);
 
             if (playNow) {
                 // Find the first added song's position and play it
@@ -4787,8 +4779,7 @@ class AudioController {
                 if (songs.length === 0) return;
 
                 const wasEmpty = this.store.state.queue.length === 0;
-                this.store.state.queue = [...this.store.state.queue, ...songs];
-                this.store.state.queueVersion++;
+                this.store.state.queue.replace([...this.store.state.queue, ...songs]);
 
                 await this._saveTempQueueState();
 
@@ -4815,8 +4806,7 @@ class AudioController {
 
             // Reload queue from server
             const queueResult = await queueApi.list({ limit: 10000 });
-            this.store.state.queue = queueResult.items || [];
-            this.store.state.queueVersion++;
+            this.store.state.queue.replace(queueResult.items || []);
 
             // Only autoplay if queue was empty before adding
             if (wasEmpty && this.store.state.queue.length > 0) {
@@ -4857,8 +4847,7 @@ class AudioController {
                 if (songs.length === 0) return;
 
                 const wasEmpty = this.store.state.queue.length === 0;
-                this.store.state.queue = [...this.store.state.queue, ...songs];
-                this.store.state.queueVersion++;
+                this.store.state.queue.replace([...this.store.state.queue, ...songs]);
 
                 await this._saveTempQueueState();
 
@@ -4885,8 +4874,7 @@ class AudioController {
 
             // Reload queue from server
             const queueResult = await queueApi.list({ limit: 10000 });
-            this.store.state.queue = queueResult.items || [];
-            this.store.state.queueVersion++;
+            this.store.state.queue.replace(queueResult.items || []);
 
             // Only autoplay if queue was empty before adding
             if (wasEmpty && this.store.state.queue.length > 0) {
@@ -4932,8 +4920,7 @@ class AudioController {
                 }
 
                 const wasEmpty = this.store.state.queue.length === 0;
-                this.store.state.queue = [...this.store.state.queue, ...songs];
-                this.store.state.queueVersion++;
+                this.store.state.queue.replace([...this.store.state.queue, ...songs]);
 
                 await this._saveTempQueueState();
 
@@ -4960,8 +4947,7 @@ class AudioController {
 
             // Reload queue from server
             const queueResult = await queueApi.list({ limit: 10000 });
-            this.store.state.queue = queueResult.items || [];
-            this.store.state.queueVersion++;
+            this.store.state.queue.replace(queueResult.items || []);
 
             // Only autoplay if queue was empty before adding
             if (wasEmpty && this.store.state.queue.length > 0) {
@@ -5042,9 +5028,8 @@ class AudioController {
 
         // Temp queue mode: clear locally only
         if (this.store.state.tempQueueMode) {
-            this.store.state.queue = [];
+            this.store.state.queue.replace([]);
             this.store.state.queueIndex = 0;
-            this.store.state.queueVersion++;
             this.stop();
             await this._saveTempQueueState();
             return;
@@ -5052,9 +5037,8 @@ class AudioController {
 
         try {
             await queueApi.clear();
-            this.store.state.queue = [];
+            this.store.state.queue.replace([]);
             this.store.state.queueIndex = 0;
-            this.store.state.queueVersion++;
             this.stop();
         } catch (e) {
             console.error('Failed to clear queue:', e);
@@ -5076,8 +5060,7 @@ class AudioController {
                 const oldQueueIndex = this.store.state.queueIndex;
                 const serverIndex = result.queueIndex || 0;
 
-                this.store.state.queue = result.items || [];
-                this.store.state.queueVersion++;  // Trigger re-render
+                this.store.state.queue.replace(result.items || []);
 
                 // Device-based conflict resolution
                 const serverDeviceId = result.activeDeviceId;
@@ -5187,7 +5170,7 @@ class AudioController {
         if (this.store.state.tempQueueMode) {
             const newQueue = [...queue];
             newQueue.splice(index, 1);
-            this.store.state.queue = newQueue;
+            this.store.state.queue.replace(newQueue);
 
             // Adjust queueIndex if needed
             if (index < queueIndex) {
@@ -5196,7 +5179,6 @@ class AudioController {
                 this.store.state.queueIndex = Math.max(0, newQueue.length - 1);
             }
 
-            this.store.state.queueVersion++;
             await this._saveTempQueueState();
             return;
         }
@@ -5210,9 +5192,8 @@ class AudioController {
 
             // Reload queue from server
             const result = await queueApi.list({ limit: 10000 });
-            this.store.state.queue = result.items || [];
+            this.store.state.queue.replace(result.items || []);
             this.store.state.queueIndex = result.queueIndex || 0;
-            this.store.state.queueVersion++;
         } catch (e) {
             console.error('Failed to remove from queue:', e);
         }
@@ -5240,7 +5221,7 @@ class AudioController {
             for (const idx of sortedIndices) {
                 newQueue.splice(idx, 1);
             }
-            this.store.state.queue = newQueue;
+            this.store.state.queue.replace(newQueue);
 
             // Adjust queueIndex - count how many removed items were before current
             const removedBefore = validIndices.filter(i => i < queueIndex).length;
@@ -5253,7 +5234,6 @@ class AudioController {
                 this.store.state.queueIndex = queueIndex - removedBefore;
             }
 
-            this.store.state.queueVersion++;
             await this._saveTempQueueState();
             return;
         }
@@ -5266,9 +5246,8 @@ class AudioController {
 
             // Reload queue from server
             const result = await queueApi.list({ limit: 10000 });
-            this.store.state.queue = result.items || [];
+            this.store.state.queue.replace(result.items || []);
             this.store.state.queueIndex = result.queueIndex || 0;
-            this.store.state.queueVersion++;
         } catch (e) {
             console.error('Failed to batch remove from queue:', e);
         }
@@ -5289,7 +5268,7 @@ class AudioController {
             const newQueue = [...queue];
             const [moved] = newQueue.splice(fromIndex, 1);
             newQueue.splice(toIndex, 0, moved);
-            this.store.state.queue = newQueue;
+            this.store.state.queue.replace(newQueue);
 
             // Adjust queueIndex if the currently playing song moved
             if (fromIndex === queueIndex) {
@@ -5300,7 +5279,6 @@ class AudioController {
                 this.store.state.queueIndex = queueIndex + 1;
             }
 
-            this.store.state.queueVersion++;
             await this._saveTempQueueState();
             return;
         }
@@ -5321,9 +5299,8 @@ class AudioController {
 
             // Reload queue from server to get updated positions
             const result = await queueApi.list({ limit: 10000 });
-            this.store.state.queue = result.items || [];
+            this.store.state.queue.replace(result.items || []);
             this.store.state.queueIndex = result.queueIndex ?? queueIndex;
-            this.store.state.queueVersion++;
         } catch (e) {
             console.error('Failed to reorder queue:', e);
         }
@@ -5366,7 +5343,7 @@ class AudioController {
         newQueue.splice(adjustedTarget, 0, ...itemsToMove);
 
         // Update state
-        this.store.state.queue = newQueue;
+        this.store.state.queue.replace(newQueue);
 
         // Adjust queueIndex
         const wasPlaying = validIndices.includes(queueIndex);
@@ -5385,7 +5362,6 @@ class AudioController {
             this.store.state.queueIndex = remIdx < adjustedTarget ? remIdx : remIdx + itemsToMove.length;
         }
 
-        this.store.state.queueVersion++;
 
         // Temp queue mode: save locally
         if (this.store.state.tempQueueMode) {
@@ -5466,9 +5442,8 @@ class AudioController {
         // this matters most for temp-queue mode, which returns early.)
         const sortCurrentUuid = this.store.state.currentSong?.uuid;
         const sortNewIndex = sortCurrentUuid ? sorted.findIndex(s => s.uuid === sortCurrentUuid) : -1;
-        this.store.state.queue = sorted;
+        this.store.state.queue.replace(sorted);
         this.store.state.queueIndex = sortNewIndex >= 0 ? sortNewIndex : 0;
-        this.store.state.queueVersion++;
 
         // Temp queue mode: save locally
         if (this.store.state.tempQueueMode) {
@@ -5595,9 +5570,8 @@ class AudioController {
             }
 
             this.store.state.scaEnabled = true;
-            this.store.state.queue = result.queue || [];
+            this.store.state.queue.replace(result.queue || []);
             this.store.state.queueIndex = 0;
-            this.store.state.queueVersion++;
 
             if (result.queue && result.queue.length > 0) {
                 await queueApi.setIndex(0);
@@ -5647,9 +5621,8 @@ class AudioController {
             }
 
             this.store.state.scaEnabled = true;
-            this.store.state.queue = result.queue || [];
+            this.store.state.queue.replace(result.queue || []);
             this.store.state.queueIndex = 0;
-            this.store.state.queueVersion++;
 
             if (result.queue && result.queue.length > 0) {
                 await queueApi.setIndex(0);
@@ -5711,9 +5684,8 @@ class AudioController {
             const fullQueue = result.seed ? [result.seed, ...result.queue] : result.queue;
 
             if (fullQueue && fullQueue.length > 0) {
-                this.store.state.queue = fullQueue;
+                this.store.state.queue.replace(fullQueue);
                 this.store.state.queueIndex = 0;
-                this.store.state.queueVersion++;
                 // No need to call queueApi.setIndex - backend already set it
                 await this.play(fullQueue[0]);
             }
@@ -5864,9 +5836,8 @@ class AudioController {
 
             // Clear queue and enter temp mode
             this.store.state.tempQueueMode = true;
-            this.store.state.queue = [];
+            this.store.state.queue.replace([]);
             this.store.state.queueIndex = 0;
-            this.store.state.queueVersion++;
             this.store.state.scaEnabled = false;
             this.stop();
 
@@ -5904,12 +5875,11 @@ class AudioController {
                 // index would make queue[queueIndex] undefined, leaving currentSong
                 // unset (stale temp song) while the queue shows the restored one.
                 const restoredItems = savedQueue.items || [];
-                this.store.state.queue = restoredItems;
+                this.store.state.queue.replace(restoredItems);
                 this.store.state.queueIndex = restoredItems.length > 0
                     ? Math.max(0, Math.min(savedQueue.queueIndex || 0, restoredItems.length - 1))
                     : 0;
                 this.store.state.scaEnabled = savedQueue.scaEnabled || false;
-                this.store.state.queueVersion++;
 
                 // Restore play mode
                 const playMode = savedQueue.playMode || 'sequential';
@@ -5955,9 +5925,8 @@ class AudioController {
                 // their positions would drive server mutations against a
                 // completely different queue. Clear and reload from server.
                 console.warn('[TempQueue] No saved queue snapshot - reloading from server');
-                this.store.state.queue = [];
+                this.store.state.queue.replace([]);
                 this.store.state.queueIndex = 0;
-                this.store.state.queueVersion++;
                 this.store.state.currentSong = null;
                 this.store.state.duration = 0;
             }
@@ -6139,12 +6108,11 @@ class AudioController {
                 }
             }
 
-            this.store.state.queue = items;
+            this.store.state.queue.replace(items);
             this.store.state.queueIndex = items.length > 0
                 ? Math.min(newIndex, items.length - 1)
                 : 0;
             this.store.state.scaEnabled = result.scaEnabled || false;
-            this.store.state.queueVersion++;  // Trigger re-render
         } catch (e) {
             console.error('Failed to reload queue:', e);
         }

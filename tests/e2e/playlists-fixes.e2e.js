@@ -44,16 +44,14 @@ const test = new TestHelper();
             const ps = mod.playerStore;
             ps.state.tempQueueMode = true;
             ps.state.queueLoaded = true;
-            ps.state.queue = [
+            ps.state.queue.replace([
                 { uuid: cU, title: 'c', position: 0 },
                 { uuid: dU, title: 'd', position: 1 },
-            ];
-            ps.state.queueVersion++;
+            ]);
             try {
                 return await mod.player.saveQueueAsPlaylist(name);
             } finally {
                 ps.state.tempQueueMode = false;
-                ps.state.queueVersion++;
             }
         }, c, d, plName);
 

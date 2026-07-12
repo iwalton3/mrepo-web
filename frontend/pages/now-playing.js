@@ -154,7 +154,7 @@ export class NowPlayingPage extends Component {
         // Non-reactive tracking for visibility (used in subscription to avoid recursion)
         this._isCurrentInView = true;
         // Track initial queue version to detect when queue loads
-        this._initialQueueVersion = this.stores.player.queueVersion;
+        this._initialQueueVersion = this.stores.player.queue.version;
         // Flag to track if we've done the initial scroll
         this._initialScrollDone = false;
 
@@ -165,7 +165,7 @@ export class NowPlayingPage extends Component {
         // Watch for queue index/version changes to auto-scroll
         this._unsubscribeQueueIndex = playerStore.subscribe((state) => {
             // Check if queue just loaded (version changed from initial) and we haven't scrolled yet
-            if (!this._initialScrollDone && state.queueVersion !== this._initialQueueVersion && state.queue.length > 0) {
+            if (!this._initialScrollDone && state.queue.version !== this._initialQueueVersion && state.queue.length > 0) {
                 this._tryInitialScroll();
             }
 
@@ -264,10 +264,10 @@ export class NowPlayingPage extends Component {
      */
     getVisibleQueue() {
         const queue = this.stores.player.queue;
-        const queueVersion = this.stores.player.queueVersion;
+        const queueVersion = queue.version;
         const isOffline = this.stores.offline.workOfflineMode || !this.stores.offline.isOnline;
 
-        // Cache key: queueVersion changes on queue modification
+        // Cache key: queue.version changes on queue modification
         // Note: queueIndex is NOT included - it doesn't affect queue content
         const cacheKey = `${queueVersion}-${isOffline}`;
 
@@ -732,11 +732,8 @@ export class NowPlayingPage extends Component {
                 addedCount = result.added?.length || 0;
             }
 
-            // Force visible range recalculation after queue grows
-            // (the untracked queue array grew; refresh() re-clamps the window)
-            requestAnimationFrame(() => {
-                this._win.refresh();
-            });
+            // Queue grew; the versionedList version bump makes the windowing
+            // count() reactive, so no manual _win.refresh() is needed.
 
             this.state.showExtendDialog = false;
             const toast = document.querySelector('cl-toast');
@@ -757,8 +754,7 @@ export class NowPlayingPage extends Component {
 
     async handleStartRadio() {
         await player.startScaFromQueue();
-        // Queue may grow - recalculate visible range
-        requestAnimationFrame(() => this._win.refresh());
+        // Queue may grow; versionedList makes the windowing count() reactive.
     }
 
     async handleStopRadio() {
@@ -771,8 +767,7 @@ export class NowPlayingPage extends Component {
 
     async handleToggleTempQueue() {
         await player.toggleTempQueueMode();
-        // Queue size changes - recalculate visible range
-        requestAnimationFrame(() => this._win.refresh());
+        // Queue size changes; versionedList makes the windowing count() reactive.
     }
 
     async loadPlaylists() {
@@ -1250,11 +1245,10 @@ export class NowPlayingPage extends Component {
         const scaEnabled = this.stores.player.scaEnabled;
         const queueIndex = this.stores.player.queueIndex;
         const eqEnabled = this.stores.player.eqEnabled;
-        // Read queueVersion directly to ensure reactivity tracking for untracked queue array
-        void this.stores.player.queueVersion;
         const { showSaveDialog, playlistName, isSaving, saveError, showEQMenu, showVolumePopup, showJumpToCurrent, jumpDirection } = this.state;
 
-        // Get visible queue (filtered when offline) - uses queueVersion for cache invalidation
+        // Get visible queue (filtered when offline). getVisibleQueue() reads
+        // queue.version, so the template tracks queue changes (no forced read).
         const visibleQueue = this.getVisibleQueue();
         const visibleQueueLength = visibleQueue.length;
         // Raw (unfiltered) queue count and initial-load flag for the empty-state gating.
