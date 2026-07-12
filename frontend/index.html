@@ -12,6 +12,12 @@
     <!-- Runtime configuration -->
     <script src="config.js"></script>
 
+    <!-- Preserve persisted localStorage (theme/settings) across the VDX v1 upgrade:
+         the framework's default localStore prefix changed from 'swapi' to 'vdx'.
+         Pin the old prefix BEFORE any module loads (darkTheme's key is fixed at
+         import time) so existing users keep their data. -->
+    <script>window.__VDX_LS_PREFIX = 'swapi';</script>
+
     <script type="importmap">{"imports": {"vdx/": "./lib/", "vdxui/": "./componentlib/", "#profile": "./profile.js"}}</script>
 
     <style>

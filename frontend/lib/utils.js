@@ -7,7 +7,7 @@ return true;}
 export function sleep(ms){return new Promise(resolve=>setTimeout(resolve,ms));}
 export function debounce(fn,delay=300){let timeout;return function(...args){clearTimeout(timeout);timeout=setTimeout(()=>fn.apply(this,args),delay);};}
 export function throttle(fn,limit=300){let inThrottle;return function(...args){if (!inThrottle){fn.apply(this,args);inThrottle=true;setTimeout(()=>inThrottle=false,limit);}};}
-export function rafThrottle(fn){let rafPending=false;return function(...args){if (!rafPending){rafPending=true;requestAnimationFrame(()=>{fn.apply(this,args);rafPending=false;});}};}
+export function rafThrottle(fn){let rafPending=false;return function(...args){if (!rafPending){rafPending=true;requestAnimationFrame(()=>{try{fn.apply(this,args);}finally{rafPending=false;}});}};}
 let notificationId=0;export const notifications=createStore({list:[]});export function notify(message,severity='info',ttl=5){const id=notificationId++;notifications.update(s=>({list:[...s.list,{id,message,severity,timestamp:Date.now()}]}));if (ttl>0){setTimeout(()=>{notifications.update(s=>({list:s.list.filter(n=>n.id!==id)}));},ttl*1000);}
 return id;}
 export function dismissNotification(id){notifications.update(s=>({list:s.list.filter(n=>n.id!==id)}));}
@@ -21,12 +21,13 @@ on(event,callback){if (!this.events[event]){this.events[event]=[];}
 this.events[event].push(callback);return ()=>this.off(event,callback);}
 off(event,callback){if (!this.events[event]) return;this.events[event]=this.events[event].filter(cb=>cb!==callback);}
 emit(event,...args){if (!this.events[event]) return;this.events[event].forEach(callback=>{try{callback(...args);}catch (error){console.error(`Error in event handler for "${event}":`,error);}});}
-once(event,callback){const onceWrapper=(...args)=>{callback(...args);this.off(event,onceWrapper);};return this.on(event,onceWrapper);}}
+once(event,callback){const onceWrapper=(...args)=>{this.off(event,onceWrapper);callback(...args);};return this.on(event,onceWrapper);}}
 export const eventBus=new EventBus();export function isEmpty(value){if (value==null) return true;if (typeof value==='string') return value.trim()==='';if (Array.isArray(value)) return value.length===0;if (typeof value==='object') return Object.keys(value).length===0;return false;}
 export function clamp(value,min,max){return Math.min(Math.max(value,min),max);}
-export function randomId(prefix='id'){return`${prefix}-${Math.random().toString(36).substr(2,9)}`;}
-export function relativeTime(date){const now=new Date();const then=new Date(date);const seconds=Math.floor((now-then)/1000);if (seconds<60) return'just now';if (seconds<3600) return`${Math.floor(seconds/60)} minutes ago`;if (seconds<86400) return`${Math.floor(seconds/3600)} hours ago`;if (seconds<604800) return`${Math.floor(seconds/86400)} days ago`;return then.toLocaleDateString();}
-const LOCALSTORAGE_PREFIX='swapi';export function localStore(name,initial){const key=`${LOCALSTORAGE_PREFIX}_${name}`;try{const data=window.localStorage.getItem(key);if (data!==null){initial=JSON.parse(data);}}catch (e){console.error('Failed to load from localStorage:',e);}
+export function randomId(prefix='id'){return`${prefix}-${Math.random().toString(36).slice(2,11)}`;}
+export function relativeTime(date){const now=new Date();const then=new Date(date);const seconds=Math.floor((now-then)/1000);if (seconds<60) return'just now';const unit=(n,word)=>`${n} ${word}${n===1?'':'s'} ago`;if (seconds<3600) return unit(Math.floor(seconds/60),'minute');if (seconds<86400) return unit(Math.floor(seconds/3600),'hour');if (seconds<604800) return unit(Math.floor(seconds/86400),'day');return then.toLocaleDateString();}
+let LOCALSTORAGE_PREFIX=(typeof window!=='undefined'&&typeof window.__VDX_LS_PREFIX==='string'&&window.__VDX_LS_PREFIX)||'vdx';export function setLocalStorePrefix(prefix){if (typeof prefix==='string'&&prefix){LOCALSTORAGE_PREFIX=prefix;}}
+export function localStore(name,initial){const key=`${LOCALSTORAGE_PREFIX}_${name}`;try{const data=window.localStorage.getItem(key);if (data!==null){initial=JSON.parse(data);}}catch (e){console.error('Failed to load from localStorage:',e);}
 const store=createStore(initial);store.subscribe(value=>{try{window.localStorage.setItem(key,JSON.stringify(value));}catch (e){console.error('Failed to save to localStorage:',e);}});return store;}
 export const THEME_MODES=['auto','light','dark'];export function systemPrefersDark(){return typeof window!=='undefined'&&typeof window.matchMedia==='function'&&window.matchMedia('(prefers-color-scheme: dark)').matches;}
 export function resolveDarkMode(mode){if (mode==='dark') return true;if (mode==='light') return false;return systemPrefersDark();}
