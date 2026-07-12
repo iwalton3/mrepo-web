@@ -72,29 +72,25 @@ export class EqPage extends Component {
         }
     }
 
-    _waitForParametricEditor() {
-        // Poll for editor to have bands loaded (max 2 seconds)
+    async _waitForParametricEditor() {
+        // Wait for the child to exist, be defined, render, and mount. whenMounted
+        // resolves at mounted() - before the editor's async loadPresets() has
+        // populated state.bands - and returns null if this page unmounts first.
+        const editor = await this.whenMounted('parametric-eq-editor');
+        if (!editor || !editor.state) return;
+
+        // Then wait (max ~2s) for the editor's bands to finish loading, and
+        // snapshot them as the undo/redo baseline.
         let attempts = 0;
         const maxAttempts = 40;
-        const checkEditor = () => {
-            const editor = this.querySelector('parametric-eq-editor');
-            if (editor && editor.state && editor.state.bands) {
-                // Editor is ready - capture its current state
-                const bands = editor.state.bands;
-                if (bands.length > 0 || attempts >= maxAttempts) {
-                    this.state.lastSavedState = {
-                        mode: 'parametric',
-                        bands: JSON.parse(JSON.stringify(bands))
-                    };
-                    return;
-                }
-            }
+        while (attempts < maxAttempts && !(editor.state.bands && editor.state.bands.length > 0)) {
+            await new Promise(resolve => setTimeout(resolve, 50));
             attempts++;
-            if (attempts < maxAttempts) {
-                setTimeout(checkEditor, 50);
-            }
+        }
+        this.state.lastSavedState = {
+            mode: 'parametric',
+            bands: JSON.parse(JSON.stringify(editor.state.bands || []))
         };
-        checkEditor();
     }
 
     _getCurrentState() {

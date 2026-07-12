@@ -88,7 +88,7 @@ export class QuickSearchPage extends Component {
         }
 
         // Focus search input on mount
-        requestAnimationFrame(() => {
+        this.nextRender().then(() => {
             const input = this.querySelector('.search-input');
             if (input) input.focus();
         });

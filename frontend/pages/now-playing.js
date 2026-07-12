@@ -184,10 +184,10 @@ export class NowPlayingPage extends Component {
 
         // Listen for temp queue exit to scroll to restored queue position
         this._onTempQueueExited = () => {
-            // Small delay to let the queue re-render
-            setTimeout(() => {
-                this._scrollToCurrentSong(false);
-            }, 100);
+            // Wait for the restored queue to re-render before scrolling
+            this.nextRender().then(() => {
+                if (this._isMounted) this._scrollToCurrentSong(false);
+            });
         };
         window.addEventListener('temp-queue-exited', this._onTempQueueExited);
 
@@ -1006,7 +1006,7 @@ export class NowPlayingPage extends Component {
      * If queue is loaded and DOM is ready, scroll immediately.
      * Otherwise this will be called again when queue loads.
      */
-    _tryInitialScroll(retryCount = 0) {
+    async _tryInitialScroll(retryCount = 0) {
         if (this._initialScrollDone) return;
 
         const queue = this.stores.player.queue;
@@ -1015,26 +1015,30 @@ export class NowPlayingPage extends Component {
         // Queue not loaded yet - wait for subscription to call us again
         if (queue.length === 0 || queueIndex < 0) return;
 
-        // Wait for DOM to update after queue loads
-        requestAnimationFrame(() => {
-            const scrollWrapper = this.refs.queueScrollWrapper;
+        // Wait for DOM to update after queue loads (nextRender resolves after
+        // the flush + DOM commit, incl. newly mounted conditional branches).
+        await this.nextRender();
+        if (!this._isMounted || this._initialScrollDone) return;
 
-            // Check if scroll wrapper is ready (visible with height)
-            if (!scrollWrapper || scrollWrapper.clientHeight === 0) {
-                // DOM not ready yet, retry a few times
-                if (retryCount < 10) {
-                    setTimeout(() => this._tryInitialScroll(retryCount + 1), 50);
-                }
-                return;
+        const scrollWrapper = this.refs.queueScrollWrapper;
+
+        // Check if scroll wrapper is ready (visible with height). The
+        // wait-for-measurable-height retry loop is kept: a rendered node can
+        // still report clientHeight 0 until layout settles.
+        if (!scrollWrapper || scrollWrapper.clientHeight === 0) {
+            // DOM not ready yet, retry a few times
+            if (retryCount < 10) {
+                setTimeout(() => this._tryInitialScroll(retryCount + 1), 50);
             }
+            return;
+        }
 
-            this._initialScrollDone = true;
-            // Scroll to the current song, then update visible range for the new position
-            this._scrollToCurrentSong(false);
-            // Force immediate update of visible range after instant scroll
-            this._win.refresh();
-            this._checkCurrentSongVisibility();
-        });
+        this._initialScrollDone = true;
+        // Scroll to the current song, then update visible range for the new position
+        this._scrollToCurrentSong(false);
+        // Force immediate update of visible range after instant scroll
+        this._win.refresh();
+        this._checkCurrentSongVisibility();
     }
 
     /**

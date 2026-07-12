@@ -170,7 +170,7 @@ export class SongContextMenu extends Component {
         });
 
         // Adjust position after render to stay within viewport
-        requestAnimationFrame(() => {
+        this.nextRender().then(() => {
             const menu = this.querySelector('.context-menu');
             if (!menu) return;
 
@@ -264,7 +264,7 @@ export class SongContextMenu extends Component {
         this.state.showPlaylistSubmenu = true;
 
         // After render, check if it overflows and adjust
-        requestAnimationFrame(() => {
+        this.nextRender().then(() => {
             const submenu = this.refs.playlistSubmenu;
             if (!submenu) return;
 

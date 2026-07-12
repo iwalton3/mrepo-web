@@ -558,8 +558,7 @@ export class BrowsePage extends Component {
 
     _setupInfiniteScroll() {
         // Legacy - kept for hierarchy mode which doesn't use windowed rendering
-        requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
+        this.nextRender().then(() => {
                 const sentinel = this.refs.sentinel;
                 if (!sentinel) return;
 
@@ -578,7 +577,6 @@ export class BrowsePage extends Component {
                 );
 
                 this._intersectionObserver.observe(sentinel);
-            });
         });
     }
 
