@@ -123,6 +123,29 @@ export interface ComponentInstance<
   render(): void;
 
   /**
+   * Resolve after the next effect flush and DOM commit complete.
+   * Rendering is globally batched - this delegates to the global nextRender().
+   */
+  nextRender(): Promise<void>;
+
+  /**
+   * Resolve when a matched child exists in this subtree, its custom element is
+   * defined (covers lazy import()ed definitions), and its first render +
+   * mounted() have completed. Resolves null if THIS component unmounts first.
+   *
+   * @param selectorOrElement - CSS selector (scoped to this subtree) or element
+   */
+  whenMounted(selectorOrElement: string | Element): Promise<Element | null>;
+
+  /**
+   * Create a latest-wins async task bound to this component's lifetime
+   * (auto-cancelled and disposed at unmount).
+   */
+  createTask<T = unknown>(
+    fn: (signal: AbortSignal, ...args: any[]) => Promise<T> | T
+  ): Task<T>;
+
+  /**
    * Get a bound method by name
    */
   $method<T extends (...args: any[]) => any>(name: string): T | undefined;
@@ -423,6 +446,28 @@ export abstract class Component<P = any, S = any, St = any> extends HTMLElement 
 
   /** Get a bound method by name */
   $method<T extends (...args: any[]) => any>(name: string): T | undefined;
+
+  /**
+   * Resolve after the next effect flush and DOM commit complete.
+   * Delegates to the global nextRender() (rendering is globally batched).
+   */
+  nextRender(): Promise<void>;
+
+  /**
+   * Resolve when a matched child exists in this subtree, its custom element is
+   * defined, and its first render + mounted() completed. Resolves null if this
+   * component unmounts first.
+   * @param selectorOrElement - CSS selector (scoped to this subtree) or element
+   */
+  whenMounted(selectorOrElement: string | Element): Promise<Element | null>;
+
+  /**
+   * Create a latest-wins async task bound to this component's lifetime
+   * (auto-cancelled and disposed at unmount).
+   */
+  createTask<T = unknown>(
+    fn: (signal: AbortSignal, ...args: any[]) => Promise<T> | T
+  ): Task<T>;
 
   /** Template function returning an html`` tagged template */
   abstract template(): HtmlTemplate;
@@ -749,6 +794,112 @@ export function flushSync<T>(fn: () => T): T;
  */
 export function flushRenders(): void;
 
+/**
+ * Resolve after the next effect flush AND DOM commit complete. If no flush is
+ * pending, one is scheduled, so `mutate; await nextRender()` always works.
+ * Newly mounted conditional branches are present when it resolves.
+ *
+ * Also available as `this.nextRender()` on components (delegates to this).
+ *
+ * @returns Promise that resolves once the DOM is up to date
+ *
+ * @example
+ * this.state.showPanel = true;
+ * await nextRender();          // DOM updated; new branches mounted
+ * this.refs.panel.scrollTop = 0;
+ */
+export function nextRender(): Promise<void>;
+
+// =============================================================================
+// Versioned List
+// =============================================================================
+
+/**
+ * A reactive array wrapper. Behaves like the array it wraps, plus:
+ * structural edits bump a reactive version; reads of length/index/iteration
+ * subscribe to it; items are returned raw (no per-item proxying).
+ *
+ * @template T - Item type
+ */
+export type VersionedList<T> = T[] & {
+  /** Manually bump the version (for in-place item-field edits). */
+  touch(): void;
+  /** Replace all contents in one operation (single version bump). */
+  replace(next: T[]): void;
+  /** Reactive version integer - reading it subscribes to structural changes. */
+  readonly version: number;
+};
+
+/**
+ * Create a versioned list: a thin reactive wrapper over a raw array. Structural
+ * edits (push/pop/shift/unshift/splice/sort/reverse/fill/copyWithin, index and
+ * length writes) bump one reactive version cell; reads of length, numeric
+ * indices, and iteration subscribe to it. Items are returned RAW - the same
+ * performance contract as untracked() - so in-place item-field edits are NOT
+ * tracked (use `.touch()` for those).
+ *
+ * Windowing integration is automatic: `count: () => list.length` becomes a
+ * reactive read, so createWindowing refreshes with no manual refresh() call.
+ *
+ * @param initialArray - Backing array (used directly, not copied)
+ * @returns The array wrapper with touch()/replace()/version
+ *
+ * @example
+ * state = { songs: versionedList([]) };
+ * this.state.songs.push(track);   // auto version bump -> re-render
+ * this.state.songs.replace(next); // wholesale swap, single bump
+ */
+export function versionedList<T = any>(initialArray?: T[]): VersionedList<T>;
+
+// =============================================================================
+// Tasks
+// =============================================================================
+
+/**
+ * A latest-wins async task. Carries STATUS (pending/error), never data -
+ * commit results to real state from inside the task body.
+ *
+ * @template T - The task body's return type
+ */
+export interface Task<T = unknown> {
+  /**
+   * Abort the previous in-flight run and start a new one: `fn(signal, ...args)`.
+   * Never rejects - resolves the body's return value when the run completed and
+   * is still current, or undefined when superseded, aborted, or failed.
+   */
+  run(...args: any[]): Promise<T | undefined>;
+  /** Abort the in-flight run (clears pending). */
+  cancel(): void;
+  /** Reactive: true while the latest run is in flight. */
+  readonly pending: boolean;
+  /** Reactive: the latest current run's failure (cleared when a new run starts). */
+  readonly error: any;
+  /** Cancel and permanently deactivate the task. */
+  dispose(): void;
+}
+
+/**
+ * Create a latest-wins async task (the imperative replacement-flow primitive;
+ * awaitThen is the declarative one). `run()` aborts the previous run via an
+ * AbortSignal passed to `fn`, so a superseded body's abort-aware awaits reject
+ * before their state commits run - no manual request-ID guards needed.
+ *
+ * Also available as `this.createTask(fn)` on components (auto-disposed at unmount).
+ *
+ * @param fn - Task body; receives an AbortSignal that aborts on supersession
+ * @returns The task (with a manual dispose())
+ *
+ * @example
+ * const search = createTask(async (signal, q) => {
+ *   const r = await fetch('/api/search?q=' + q, { signal });
+ *   store.state.hits = (await r.json()).hits;   // reached only if still current
+ * });
+ * search.run('hello');
+ */
+export function createTask<T = unknown>(
+  fn: (signal: AbortSignal, ...args: any[]) => Promise<T> | T
+): Task<T>;
+
 // =============================================================================
 // Template System
 // =============================================================================
@@ -941,16 +1092,26 @@ export function pruneTemplateCache(): void;
 
 /**
  * A reactive store with subscription support.
+ *
+ * This is both the shape returned by createStore() AND the base class for
+ * class-authored stores (`class CartStore extends Store`). Class stores seed
+ * reactive state in the constructor (`super(); this.state = {...}`); top-level
+ * state keys are promoted onto the instance, getters become cached computeds,
+ * and methods are auto-bound. The index signature covers those promoted
+ * fields, computed getters, and methods on subclasses.
+ *
  * @template T - State type
  */
-export interface Store<T> {
-  /** The reactive state object */
+export declare class Store<T = any> {
+  constructor();
+
+  /** The reactive state object (assign a plain object in the constructor to seed it) */
   readonly state: T;
 
   /**
    * Subscribe to store changes.
-   * Callback is called immediately with current state, then on each change.
-   * @param callback - Function called with state on changes
+   * Callback is called immediately, then on each change (fine-grained).
+   * @param callback - Function called on changes
    * @returns Unsubscribe function
    */
   subscribe(callback: (state: T) => void): () => void;
@@ -966,6 +1127,12 @@ export interface Store<T> {
    * @param updater - Function that receives current state and returns new state
    */
   update(updater: (state: T) => Partial<T> | void): void;
+
+  /** Dispose computed getters. Rarely needed - stores are usually singletons. */
+  dispose(): void;
+
+  /** Promoted state fields, computed getters, and methods on subclasses. */
+  [key: string]: any;
 }
 
 /**
