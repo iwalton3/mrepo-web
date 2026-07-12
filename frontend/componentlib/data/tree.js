@@ -1,21 +1,26 @@
 /**
  * Tree - Hierarchical tree view component
  */
-import { defineComponent, html, when, each } from '../../lib/framework.js';
+import { defineComponent, html, when, each, Component } from '../../lib/framework.js';
 
-export default defineComponent('cl-tree', {
-    props: {
+/**
+ * @fires change - detail: { value } - the selected node values
+ */
+export class ClTree extends Component {
+    static props = {
         value: [],
         selectionmode: 'none', // 'none', 'single', 'multiple'
         selection: null
-    },
+    }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             expandedKeys: new Set(),
             selectedKeys: new Set()
         };
-    },
+    }
 
     mounted() {
         if (this.props.selection) {
@@ -24,64 +29,57 @@ export default defineComponent('cl-tree', {
                 : [this.props.selection];
             this.state.selectedKeys = new Set(keys);
         }
-    },
+    }
 
-    methods: {
-        toggleNode(node) {
-            const newExpanded = new Set(this.state.expandedKeys);
-            if (newExpanded.has(node.key)) {
-                newExpanded.delete(node.key);
+    toggleNode(node) {
+        if (this.state.expandedKeys.has(node.key)) {
+            this.state.expandedKeys.delete(node.key);
+        } else {
+            this.state.expandedKeys.add(node.key);
+        }
+    }
+
+    selectNode(node, event) {
+        event.stopPropagation();
+
+        if (this.props.selectionmode === 'none') return;
+
+        if (this.props.selectionmode === 'single') {
+            this.state.selectedKeys.clear();
+            this.state.selectedKeys.add(node.key);
+        } else if (this.props.selectionmode === 'multiple') {
+            if (this.state.selectedKeys.has(node.key)) {
+                this.state.selectedKeys.delete(node.key);
             } else {
-                newExpanded.add(node.key);
+                this.state.selectedKeys.add(node.key);
             }
-            this.state.expandedKeys = newExpanded;
-        },
+        }
 
-        selectNode(node, event) {
-            event.stopPropagation();
+        const selectedValues = this.props.selectionmode === 'single'
+            ? node.key
+            : Array.from(this.state.selectedKeys);
 
-            if (this.props.selectionmode === 'none') return;
+        this.emitChange(null, selectedValues);
+    }
 
-            const newSelected = new Set(this.state.selectedKeys);
+    isExpanded(node) {
+        return this.state.expandedKeys.has(node.key);
+    }
 
-            if (this.props.selectionmode === 'single') {
-                newSelected.clear();
-                newSelected.add(node.key);
-            } else if (this.props.selectionmode === 'multiple') {
-                if (newSelected.has(node.key)) {
-                    newSelected.delete(node.key);
-                } else {
-                    newSelected.add(node.key);
-                }
-            }
+    isSelected(node) {
+        return this.state.selectedKeys.has(node.key);
+    }
 
-            this.state.selectedKeys = newSelected;
+    hasChildren(node) {
+        return node.children && node.children.length > 0;
+    }
 
-            const selectedValues = this.props.selectionmode === 'single'
-                ? node.key
-                : Array.from(newSelected);
+    renderNode(node, level = 0) {
+        const hasChildren = this.hasChildren(node);
+        const isExpanded = this.isExpanded(node);
+        const isSelected = this.isSelected(node);
 
-            this.emitChange(null, selectedValues);
-        },
-
-        isExpanded(node) {
-            return this.state.expandedKeys.has(node.key);
-        },
-
-        isSelected(node) {
-            return this.state.selectedKeys.has(node.key);
-        },
-
-        hasChildren(node) {
-            return node.children && node.children.length > 0;
-        },
-
-        renderNode(node, level = 0) {
-            const hasChildren = this.hasChildren(node);
-            const isExpanded = this.isExpanded(node);
-            const isSelected = this.isSelected(node);
-
-            return html`
+        return html`
                 <div class="tree-node" style="padding-left: ${level * 20}px">
                     <div
                         class="node-content ${isSelected ? 'selected' : ''}"
@@ -90,9 +88,9 @@ export default defineComponent('cl-tree', {
                             <span
                                 class="node-toggle"
                                 on-click="${(e) => {
-                                    e.stopPropagation();
-                                    this.toggleNode(node);
-                                }}">
+                                e.stopPropagation();
+                                this.toggleNode(node);
+                            }}">
                                 ${isExpanded ? '▼' : '▶'}
                             </span>
                         `, html`
@@ -110,8 +108,7 @@ export default defineComponent('cl-tree', {
                     `)}
                 </div>
             `;
-        }
-    },
+    }
 
     template() {
         const nodes = this.props.value || [];
@@ -124,9 +121,9 @@ export default defineComponent('cl-tree', {
                 ${each(nodes, node => this.renderNode(node))}
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -194,4 +191,6 @@ export default defineComponent('cl-tree', {
             color: var(--text-muted, #6c757d);
         }
     `
-});
+}
+
+export default defineComponent('cl-tree', ClTree);

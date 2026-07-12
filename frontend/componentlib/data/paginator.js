@@ -1,75 +1,74 @@
 /**
  * Paginator - Pagination controls
  */
-import { defineComponent, html, when, each } from '../../lib/framework.js';
+import { defineComponent, html, when, each, Component } from '../../lib/framework.js';
 
-export default defineComponent('cl-paginator', {
-    props: {
+/**
+ * @fires change - detail: { value: { first, page, rows } }
+ */
+export class ClPaginator extends Component {
+    static props = {
         totalrecords: 0,
         rows: 10,
         first: 0,
         pagerlinksize: 5
-    },
+    }
 
-    methods: {
-        changePage(page) {
-            if (page < 0 || page >= this.totalPages) return;
+    changePage(page) {
+        if (page < 0 || page >= this.totalPages) return;
 
-            const first = page * this.props.rows;
-            this.emitChange(null, {
-                first,
-                page,
-                rows: this.props.rows
-            });
-        },
+        const first = page * this.props.rows;
+        this.emitChange(null, {
+            first,
+            page,
+            rows: this.props.rows
+        });
+    }
 
-        goToFirstPage() {
-            this.changePage(0);
-        },
+    goToFirstPage() {
+        this.changePage(0);
+    }
 
-        goToLastPage() {
-            this.changePage(this.totalPages - 1);
-        },
+    goToLastPage() {
+        this.changePage(this.totalPages - 1);
+    }
 
-        goToPreviousPage() {
-            this.changePage(this.currentPage - 1);
-        },
+    goToPreviousPage() {
+        this.changePage(this.currentPage - 1);
+    }
 
-        goToNextPage() {
-            this.changePage(this.currentPage + 1);
+    goToNextPage() {
+        this.changePage(this.currentPage + 1);
+    }
+
+    get totalPages() {
+        return Math.ceil(this.props.totalrecords / this.props.rows);
+    }
+
+    get currentPage() {
+        return Math.floor(this.props.first / this.props.rows);
+    }
+
+    get pageNumbers() {
+        const current = this.currentPage;
+        const total = this.totalPages;
+        const linkSize = this.props.pagerlinksize;
+
+        let start = Math.max(0, current - Math.floor(linkSize / 2));
+        let end = Math.min(total, start + linkSize);
+
+        // Adjust start if we're near the end
+        if (end - start < linkSize) {
+            start = Math.max(0, end - linkSize);
         }
-    },
 
-    computed: {
-        totalPages() {
-            return Math.ceil(this.props.totalrecords / this.props.rows);
-        },
-
-        currentPage() {
-            return Math.floor(this.props.first / this.props.rows);
-        },
-
-        pageNumbers() {
-            const current = this.currentPage;
-            const total = this.totalPages;
-            const linkSize = this.props.pagerlinksize;
-
-            let start = Math.max(0, current - Math.floor(linkSize / 2));
-            let end = Math.min(total, start + linkSize);
-
-            // Adjust start if we're near the end
-            if (end - start < linkSize) {
-                start = Math.max(0, end - linkSize);
-            }
-
-            const pages = [];
-            for (let i = start; i < end; i++) {
-                pages.push(i);
-            }
-
-            return pages;
+        const pages = [];
+        for (let i = start; i < end; i++) {
+            pages.push(i);
         }
-    },
+
+        return pages;
+    }
 
     template() {
         const pages = this.pageNumbers;
@@ -116,9 +115,9 @@ export default defineComponent('cl-paginator', {
                 </div>
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -172,4 +171,6 @@ export default defineComponent('cl-paginator', {
             border-color: var(--primary-color, #007bff);
         }
     `
-});
+}
+
+export default defineComponent('cl-paginator', ClPaginator);

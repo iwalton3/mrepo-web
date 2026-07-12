@@ -9,13 +9,16 @@
  * - Keyboard navigation: Arrow keys, Enter, Escape, Home, End
  * - Type-ahead search when focused
  */
-import { defineComponent, html, when, each } from '../../lib/framework.js';
+import { defineComponent, html, when, each, Component } from '../../lib/framework.js';
 
 // Counter for unique IDs
 let dropdownIdCounter = 0;
 
-export default defineComponent('cl-dropdown', {
-    props: {
+/**
+ * @fires change - detail: { value }
+ */
+export class ClDropdown extends Component {
+    static props = {
         options: [],
         value: null,
         placeholder: 'Select an option',
@@ -24,10 +27,12 @@ export default defineComponent('cl-dropdown', {
         label: '',
         optionlabel: 'label',
         optionvalue: 'value'
-    },
+    }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             showPanel: false,
             filterValue: '',
             activeIndex: -1,
@@ -35,7 +40,7 @@ export default defineComponent('cl-dropdown', {
             typeaheadBuffer: '',
             typeaheadTimeout: null
         };
-    },
+    }
 
     mounted() {
         // Global keydown for escape
@@ -46,7 +51,7 @@ export default defineComponent('cl-dropdown', {
             }
         };
         document.addEventListener('keydown', this._handleGlobalKeyDown);
-    },
+    }
 
     unmounted() {
         if (this._handleGlobalKeyDown) {
@@ -55,217 +60,213 @@ export default defineComponent('cl-dropdown', {
         if (this.state.typeaheadTimeout) {
             clearTimeout(this.state.typeaheadTimeout);
         }
-    },
+    }
 
-    methods: {
-        closePanel() {
-            this.state.showPanel = false;
-            this.state.activeIndex = -1;
-            this.state.filterValue = '';
-        },
+    closePanel() {
+        this.state.showPanel = false;
+        this.state.activeIndex = -1;
+        this.state.filterValue = '';
+    }
 
-        togglePanel() {
-            if (!this.props.disabled) {
-                if (this.state.showPanel) {
-                    this.closePanel();
-                } else {
-                    this.openPanel();
-                }
+    togglePanel() {
+        if (!this.props.disabled) {
+            if (this.state.showPanel) {
+                this.closePanel();
+            } else {
+                this.openPanel();
             }
-        },
+        }
+    }
 
-        openPanel() {
-            this.state.showPanel = true;
-            this.state.filterValue = '';
-            // Set active index to currently selected option
-            const options = this.filteredOptions;
-            const selectedIndex = options.findIndex(opt => this.isSelected(opt));
-            this.state.activeIndex = selectedIndex >= 0 ? selectedIndex : 0;
+    openPanel() {
+        this.state.showPanel = true;
+        this.state.filterValue = '';
+        // Set active index to currently selected option
+        const options = this.filteredOptions;
+        const selectedIndex = options.findIndex(opt => this.isSelected(opt));
+        this.state.activeIndex = selectedIndex >= 0 ? selectedIndex : 0;
 
-            // Focus filter input if present, otherwise focus listbox
-            requestAnimationFrame(() => {
-                if (this.props.filter) {
-                    const filterInput = this.querySelector('.filter-input');
-                    if (filterInput) filterInput.focus();
-                }
-            });
-        },
-
-        selectOption(option) {
-            const value = typeof option === 'object' ? option[this.props.optionvalue] : option;
-            this.emitChange(null, value);
-            this.closePanel();
-            this._focusTrigger();
-        },
-
-        handleFilterInput(e) {
-            this.state.filterValue = e.target.value;
-            this.state.activeIndex = 0; // Reset to first option when filtering
-        },
-
-        getOptionLabel(option) {
-            return typeof option === 'object' ? option[this.props.optionlabel] : option;
-        },
-
-        getOptionValue(option) {
-            return typeof option === 'object' ? option[this.props.optionvalue] : option;
-        },
-
-        isSelected(option) {
-            const value = this.getOptionValue(option);
-            return value === this.props.value;
-        },
-
-        getOptionId(index) {
-            return `${this.state.dropdownId}-option-${index}`;
-        },
-
-        _focusTrigger() {
-            const trigger = this.querySelector('.dropdown-trigger');
-            if (trigger) trigger.focus();
-        },
-
-        /**
-         * Handle keyboard navigation
-         */
-        handleKeyDown(e) {
-            const options = this.filteredOptions;
-
-            switch (e.key) {
-                case 'ArrowDown':
-                    e.preventDefault();
-                    if (!this.state.showPanel) {
-                        this.openPanel();
-                    } else {
-                        this.state.activeIndex = Math.min(this.state.activeIndex + 1, options.length - 1);
-                        this._scrollActiveIntoView();
-                    }
-                    break;
-
-                case 'ArrowUp':
-                    e.preventDefault();
-                    if (this.state.showPanel) {
-                        this.state.activeIndex = Math.max(this.state.activeIndex - 1, 0);
-                        this._scrollActiveIntoView();
-                    }
-                    break;
-
-                case 'Home':
-                    if (this.state.showPanel) {
-                        e.preventDefault();
-                        this.state.activeIndex = 0;
-                        this._scrollActiveIntoView();
-                    }
-                    break;
-
-                case 'End':
-                    if (this.state.showPanel) {
-                        e.preventDefault();
-                        this.state.activeIndex = options.length - 1;
-                        this._scrollActiveIntoView();
-                    }
-                    break;
-
-                case 'Enter':
-                case ' ':
-                    if (this.state.showPanel && this.state.activeIndex >= 0) {
-                        e.preventDefault();
-                        const option = options[this.state.activeIndex];
-                        if (option) this.selectOption(option);
-                    } else if (!this.state.showPanel && e.key === ' ') {
-                        e.preventDefault();
-                        this.openPanel();
-                    }
-                    break;
-
-                case 'Tab':
-                    if (this.state.showPanel) {
-                        this.closePanel();
-                    }
-                    break;
-
-                default:
-                    // Type-ahead search (when not using filter input)
-                    if (!this.props.filter && e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
-                        this._handleTypeahead(e.key);
-                    }
+        // Focus filter input if present, otherwise focus listbox
+        requestAnimationFrame(() => {
+            if (this.props.filter) {
+                const filterInput = this.querySelector('.filter-input');
+                if (filterInput) filterInput.focus();
             }
-        },
+        });
+    }
 
-        /**
-         * Handle type-ahead search
-         */
-        _handleTypeahead(char) {
-            // Clear previous timeout
-            if (this.state.typeaheadTimeout) {
-                clearTimeout(this.state.typeaheadTimeout);
-            }
+    selectOption(option) {
+        const value = typeof option === 'object' ? option[this.props.optionvalue] : option;
+        this.emitChange(null, value);
+        this.closePanel();
+        this._focusTrigger();
+    }
 
-            // Add character to buffer
-            this.state.typeaheadBuffer += char.toLowerCase();
+    handleFilterInput(e) {
+        this.state.filterValue = e.target.value;
+        this.state.activeIndex = 0; // Reset to first option when filtering
+    }
 
-            // Find matching option
-            const options = this.filteredOptions;
-            const matchIndex = options.findIndex(opt => {
-                const label = this.getOptionLabel(opt);
-                return String(label).toLowerCase().startsWith(this.state.typeaheadBuffer);
-            });
+    getOptionLabel(option) {
+        return typeof option === 'object' ? option[this.props.optionlabel] : option;
+    }
 
-            if (matchIndex >= 0) {
-                this.state.activeIndex = matchIndex;
+    getOptionValue(option) {
+        return typeof option === 'object' ? option[this.props.optionvalue] : option;
+    }
+
+    isSelected(option) {
+        const value = this.getOptionValue(option);
+        return value === this.props.value;
+    }
+
+    getOptionId(index) {
+        return `${this.state.dropdownId}-option-${index}`;
+    }
+
+    _focusTrigger() {
+        const trigger = this.querySelector('.dropdown-trigger');
+        if (trigger) trigger.focus();
+    }
+
+    /**
+     * Handle keyboard navigation
+     */
+    handleKeyDown(e) {
+        const options = this.filteredOptions;
+
+        switch (e.key) {
+            case 'ArrowDown':
+                e.preventDefault();
                 if (!this.state.showPanel) {
                     this.openPanel();
+                } else {
+                    this.state.activeIndex = Math.min(this.state.activeIndex + 1, options.length - 1);
+                    this._scrollActiveIntoView();
                 }
-                this._scrollActiveIntoView();
-            }
+                break;
 
-            // Clear buffer after 500ms of no typing
-            this.state.typeaheadTimeout = setTimeout(() => {
-                this.state.typeaheadBuffer = '';
-            }, 500);
-        },
-
-        _scrollActiveIntoView() {
-            requestAnimationFrame(() => {
-                const activeOption = this.querySelector('.option.active');
-                if (activeOption) {
-                    activeOption.scrollIntoView({ block: 'nearest' });
+            case 'ArrowUp':
+                e.preventDefault();
+                if (this.state.showPanel) {
+                    this.state.activeIndex = Math.max(this.state.activeIndex - 1, 0);
+                    this._scrollActiveIntoView();
                 }
-            });
-        },
+                break;
 
-        handleOptionMouseEnter(index) {
-            this.state.activeIndex = index;
+            case 'Home':
+                if (this.state.showPanel) {
+                    e.preventDefault();
+                    this.state.activeIndex = 0;
+                    this._scrollActiveIntoView();
+                }
+                break;
+
+            case 'End':
+                if (this.state.showPanel) {
+                    e.preventDefault();
+                    this.state.activeIndex = options.length - 1;
+                    this._scrollActiveIntoView();
+                }
+                break;
+
+            case 'Enter':
+            case ' ':
+                if (this.state.showPanel && this.state.activeIndex >= 0) {
+                    e.preventDefault();
+                    const option = options[this.state.activeIndex];
+                    if (option) this.selectOption(option);
+                } else if (!this.state.showPanel && e.key === ' ') {
+                    e.preventDefault();
+                    this.openPanel();
+                }
+                break;
+
+            case 'Tab':
+                if (this.state.showPanel) {
+                    this.closePanel();
+                }
+                break;
+
+            default:
+                // Type-ahead search (when not using filter input)
+                if (!this.props.filter && e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+                    this._handleTypeahead(e.key);
+                }
         }
-    },
+    }
 
-    computed: {
-        filteredOptions() {
-            if (!this.props.filter || !this.state.filterValue) {
-                return this.props.options || [];
-            }
-
-            const filter = this.state.filterValue.toLowerCase();
-            return (this.props.options || []).filter(option => {
-                const label = typeof option === 'object' ? option[this.props.optionlabel] : option;
-                return String(label).toLowerCase().includes(filter);
-            });
-        },
-
-        selectedLabel() {
-            if (this.props.value == null) {
-                return this.props.placeholder;
-            }
-
-            const option = (this.props.options || []).find(opt => {
-                const value = typeof opt === 'object' ? opt[this.props.optionvalue] : opt;
-                return value === this.props.value;
-            });
-
-            if (!option) return this.props.placeholder;
-            return typeof option === 'object' ? option[this.props.optionlabel] : option;
+    /**
+     * Handle type-ahead search
+     */
+    _handleTypeahead(char) {
+        // Clear previous timeout
+        if (this.state.typeaheadTimeout) {
+            clearTimeout(this.state.typeaheadTimeout);
         }
-    },
+
+        // Add character to buffer
+        this.state.typeaheadBuffer += char.toLowerCase();
+
+        // Find matching option
+        const options = this.filteredOptions;
+        const matchIndex = options.findIndex(opt => {
+            const label = this.getOptionLabel(opt);
+            return String(label).toLowerCase().startsWith(this.state.typeaheadBuffer);
+        });
+
+        if (matchIndex >= 0) {
+            this.state.activeIndex = matchIndex;
+            if (!this.state.showPanel) {
+                this.openPanel();
+            }
+            this._scrollActiveIntoView();
+        }
+
+        // Clear buffer after 500ms of no typing
+        this.state.typeaheadTimeout = setTimeout(() => {
+            this.state.typeaheadBuffer = '';
+        }, 500);
+    }
+
+    _scrollActiveIntoView() {
+        requestAnimationFrame(() => {
+            const activeOption = this.querySelector('.option.active');
+            if (activeOption) {
+                activeOption.scrollIntoView({ block: 'nearest' });
+            }
+        });
+    }
+
+    handleOptionMouseEnter(index) {
+        this.state.activeIndex = index;
+    }
+
+    get filteredOptions() {
+        if (!this.props.filter || !this.state.filterValue) {
+            return this.props.options || [];
+        }
+
+        const filter = this.state.filterValue.toLowerCase();
+        return (this.props.options || []).filter(option => {
+            const label = typeof option === 'object' ? option[this.props.optionlabel] : option;
+            return String(label).toLowerCase().includes(filter);
+        });
+    }
+
+    get selectedLabel() {
+        if (this.props.value == null) {
+            return this.props.placeholder;
+        }
+
+        const option = (this.props.options || []).find(opt => {
+            const value = typeof opt === 'object' ? opt[this.props.optionvalue] : opt;
+            return value === this.props.value;
+        });
+
+        if (!option) return this.props.placeholder;
+        return typeof option === 'object' ? option[this.props.optionlabel] : option;
+    }
 
     template() {
         const filteredOptions = this.filteredOptions;
@@ -295,7 +296,7 @@ export default defineComponent('cl-dropdown', {
                          tabindex="${this.props.disabled ? -1 : 0}"
                          on-click="togglePanel"
                          on-keydown="handleKeyDown">
-                        <span class="${hasValue ? '' : 'placeholder'}">${selectedLabel}</span>
+                        <span class="dropdown-value ${hasValue ? '' : 'placeholder'}">${selectedLabel}</span>
                         <span class="dropdown-icon" aria-hidden="true">${this.state.showPanel ? '▲' : '▼'}</span>
                     </div>
                     ${when(this.state.showPanel, html`
@@ -336,9 +337,9 @@ export default defineComponent('cl-dropdown', {
                 </div>
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -364,12 +365,24 @@ export default defineComponent('cl-dropdown', {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 10px 12px;
+            gap: 8px;
+            box-sizing: border-box;
+            /* Match the height of a standard text input by default. */
+            height: var(--cl-control-height, 38px);
+            padding: 0 12px;
             border: 1px solid var(--input-border, #ced4da);
             border-radius: 4px;
             background: var(--input-bg, #fff);
             cursor: pointer;
             transition: all 0.2s;
+        }
+
+        .dropdown-value {
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
 
         .dropdown-trigger:hover:not(.disabled) {
@@ -478,4 +491,6 @@ export default defineComponent('cl-dropdown', {
             font-size: 14px;
         }
     `
-});
+}
+
+export default defineComponent('cl-dropdown', ClDropdown);

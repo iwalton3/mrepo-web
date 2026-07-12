@@ -7,13 +7,16 @@
  * - aria-label fallback when no visible label provided
  * - Native keyboard support via range input (Arrow keys, Home, End)
  */
-import { defineComponent, html, when } from '../../lib/framework.js';
+import { defineComponent, html, when, Component } from '../../lib/framework.js';
 
 // Counter for unique IDs
 let sliderIdCounter = 0;
 
-export default defineComponent('cl-slider', {
-    props: {
+/**
+ * @fires change - detail: { value }
+ */
+export class ClSlider extends Component {
+    static props = {
         value: 0,
         min: 0,
         max: 100,
@@ -22,48 +25,48 @@ export default defineComponent('cl-slider', {
         label: '',
         showvalue: true,
         arialabel: '' // Fallback for when no visible label
-    },
+    }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             internalValue: 0, // Will be synced in mounted()
             sliderId: `cl-slider-${++sliderIdCounter}`
         };
-    },
+    }
 
     mounted() {
         // Initialize internal value from props
         this.state.internalValue = this.props.value || 0;
-    },
+    }
 
     propsChanged(prop, newValue, oldValue) {
         // Sync internal value when prop changes (controlled mode)
         if (prop === 'value' && newValue !== this.state.internalValue) {
             this.state.internalValue = newValue || 0;
         }
-    },
+    }
 
-    methods: {
-        handleInput(e) {
-            const value = parseFloat(e.target.value);
-            this.state.internalValue = value;
-            // Stop native event from bubbling
-            if (e && e.stopPropagation) {
-                e.stopPropagation();
-            }
-            this.emitChange(e, value);
-        },
-
-        handleChange(e) {
-            // Native change event fires on release - stop it and emit our own
-            if (e && e.stopPropagation) {
-                e.stopPropagation();
-            }
-            const value = parseFloat(e.target.value);
-            this.state.internalValue = value;
-            this.emitChange(e, value);
+    handleInput(e) {
+        const value = parseFloat(e.target.value);
+        this.state.internalValue = value;
+        // Stop native event from bubbling
+        if (e && e.stopPropagation) {
+            e.stopPropagation();
         }
-    },
+        this.emitChange(e, value);
+    }
+
+    handleChange(e) {
+        // Native change event fires on release - stop it and emit our own
+        if (e && e.stopPropagation) {
+            e.stopPropagation();
+        }
+        const value = parseFloat(e.target.value);
+        this.state.internalValue = value;
+        this.emitChange(e, value);
+    }
 
     template() {
         const percentage = ((this.state.internalValue - this.props.min) / (this.props.max - this.props.min)) * 100;
@@ -104,9 +107,9 @@ export default defineComponent('cl-slider', {
                 </div>
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -201,4 +204,6 @@ export default defineComponent('cl-slider', {
             background: transparent;
         }
     `
-});
+}
+
+export default defineComponent('cl-slider', ClSlider);

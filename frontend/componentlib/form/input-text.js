@@ -7,13 +7,17 @@
  * - aria-invalid for error state
  * - aria-required for required fields
  */
-import { defineComponent, html, when } from '../../lib/framework.js';
+import { defineComponent, html, when, Component } from '../../lib/framework.js';
 
 // Counter for unique IDs
 let inputTextIdCounter = 0;
 
-export default defineComponent('cl-input-text', {
-    props: {
+/**
+ * @fires input - detail: { value } - on each keystroke
+ * @fires change - detail: { value }
+ */
+export class ClInputText extends Component {
+    static props = {
         value: '',
         placeholder: '',
         disabled: false,
@@ -24,20 +28,22 @@ export default defineComponent('cl-input-text', {
         error: '',
         label: '',
         helptext: ''
-    },
+    }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             internalError: '',
             internalValue: '', // Will be synced in mounted()
             inputId: `cl-input-text-${++inputTextIdCounter}`
         };
-    },
+    }
 
     mounted() {
         // Initialize internal value from props
         this.state.internalValue = this.props.value || '';
-    },
+    }
 
     propsChanged(prop, newValue, oldValue) {
         // Sync internal value when prop changes (controlled mode)
@@ -50,76 +56,74 @@ export default defineComponent('cl-input-text', {
             }
             this.state.internalValue = newValue || '';
         }
-    },
+    }
 
-    methods: {
-        handleInput(e) {
-            if (!e.target) return;
-            const value = e.target.value;
-            this.state.internalValue = value;
-            this.validateInput(value);
-            // Emit both input and change events for flexibility
-            this.emitInput(e, value);
-            this.emitChange(e, value);
-        },
+    handleInput(e) {
+        if (!e.target) return;
+        const value = e.target.value;
+        this.state.internalValue = value;
+        this.validateInput(value);
+        // Emit both input and change events for flexibility
+        this.emitInput(e, value);
+        this.emitChange(e, value);
+    }
 
-        emitInput(e, value) {
-            // Stop the native event from bubbling
-            if (e && e.stopPropagation) {
-                e.stopPropagation();
-            }
-            // Emit CustomEvent with detail for on-input handlers
-            this.dispatchEvent(new CustomEvent('input', {
-                bubbles: true,
-                composed: true,
-                detail: { value }
-            }));
-        },
-
-        handleBlur(e) {
-            if (!e.target) return;
-            this.validateInput(e.target.value);
-        },
-
-        handleChange(e) {
-            // Stop the native change event from bubbling up
-            // This prevents x-model from receiving the native event (which lacks detail.value)
-            // Instead, we emit our own CustomEvent with the proper format
-            if (e && e.stopPropagation) {
-                e.stopPropagation();
-            }
-            // Emit a proper change event with the current value
-            this.emitChange(e, this.state.internalValue);
-        },
-
-        validateInput(value) {
-            if (this.props.required && !value) {
-                this.state.internalError = 'This field is required';
-                return false;
-            }
-
-            if (this.props.pattern && value) {
-                const regex = new RegExp(this.props.pattern);
-                if (!regex.test(value)) {
-                    this.state.internalError = 'Invalid format';
-                    return false;
-                }
-            }
-
-            if (this.props.minlength && value.length < this.props.minlength) {
-                this.state.internalError = `Minimum length is ${this.props.minlength}`;
-                return false;
-            }
-
-            if (this.props.maxlength && value.length > this.props.maxlength) {
-                this.state.internalError = `Maximum length is ${this.props.maxlength}`;
-                return false;
-            }
-
-            this.state.internalError = '';
-            return true;
+    emitInput(e, value) {
+        // Stop the native event from bubbling
+        if (e && e.stopPropagation) {
+            e.stopPropagation();
         }
-    },
+        // Emit CustomEvent with detail for on-input handlers
+        this.dispatchEvent(new CustomEvent('input', {
+            bubbles: true,
+            composed: true,
+            detail: { value }
+        }));
+    }
+
+    handleBlur(e) {
+        if (!e.target) return;
+        this.validateInput(e.target.value);
+    }
+
+    handleChange(e) {
+        // Stop the native change event from bubbling up
+        // This prevents x-model from receiving the native event (which lacks detail.value)
+        // Instead, we emit our own CustomEvent with the proper format
+        if (e && e.stopPropagation) {
+            e.stopPropagation();
+        }
+        // Emit a proper change event with the current value
+        this.emitChange(e, this.state.internalValue);
+    }
+
+    validateInput(value) {
+        if (this.props.required && !value) {
+            this.state.internalError = 'This field is required';
+            return false;
+        }
+
+        if (this.props.pattern && value) {
+            const regex = new RegExp(this.props.pattern);
+            if (!regex.test(value)) {
+                this.state.internalError = 'Invalid format';
+                return false;
+            }
+        }
+
+        if (this.props.minlength && value.length < this.props.minlength) {
+            this.state.internalError = `Minimum length is ${this.props.minlength}`;
+            return false;
+        }
+
+        if (this.props.maxlength && value.length > this.props.maxlength) {
+            this.state.internalError = `Maximum length is ${this.props.maxlength}`;
+            return false;
+        }
+
+        this.state.internalError = '';
+        return true;
+    }
 
     template() {
         const inputId = this.state.inputId;
@@ -158,9 +162,9 @@ export default defineComponent('cl-input-text', {
                 `)}
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -222,4 +226,6 @@ export default defineComponent('cl-input-text', {
             color: var(--error-color, #dc3545);
         }
     `
-});
+}
+
+export default defineComponent('cl-input-text', ClInputText);

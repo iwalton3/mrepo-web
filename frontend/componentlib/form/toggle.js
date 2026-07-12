@@ -5,10 +5,14 @@
  * - Use `checked` for manual boolean binding
  * - Use `value` with x-model for automatic two-way binding
  */
-import { defineComponent, html, when } from '../../lib/framework.js';
+import { defineComponent, html, when, Component } from '../../lib/framework.js';
 
-export default defineComponent('cl-toggle', {
-    props: {
+/**
+ * @fires change - detail: { value } - the toggled state
+ * @fires input - detail: { value }
+ */
+export class ClToggle extends Component {
+    static props = {
         checked: false,
         value: null,             // Used for x-model compatibility - null means "not set by x-model"
         disabled: false,
@@ -17,61 +21,65 @@ export default defineComponent('cl-toggle', {
         size: 'medium',          // 'small', 'medium', 'large'
         checkedLabel: '',        // Text shown when on
         uncheckedLabel: ''       // Text shown when off
-    },
+    }
 
-    data() {
-        return {
-            internalChecked: false
+    constructor(props) {
+        super(props);
+
+        this.state = {
+            internalChecked: false,
+            animated: false
         };
-    },
+    }
 
     mounted() {
         this.state.internalChecked = this._getCheckedState();
-    },
+        // Enable the slide/colour transition only after the initial state has
+        // painted, so mounting a checked toggle doesn't animate on -> off -> on.
+        requestAnimationFrame(() => { this.state.animated = true; });
+    }
 
     propsChanged(prop, newValue, oldValue) {
         if (prop === 'checked' || prop === 'value') {
             this.state.internalChecked = this._getCheckedState();
         }
-    },
+    }
 
-    methods: {
-        _getCheckedState() {
-            // x-model sets 'value' prop, manual usage sets 'checked' prop
-            // If value is a boolean, use it; otherwise use checked
-            if (typeof this.props.value === 'boolean') {
-                return this.props.value;
-            }
-            return this.props.checked === true || this.props.checked === 'true';
-        },
-
-        toggle() {
-            if (this.props.disabled) return;
-
-            this.state.internalChecked = !this.state.internalChecked;
-
-            // x-model for custom elements listens to 'change' and expects detail.value
-            this.dispatchEvent(new CustomEvent('change', {
-                bubbles: true,
-                composed: true,
-                detail: { value: this.state.internalChecked, checked: this.state.internalChecked }
-            }));
-
-            // Also emit 'input' for additional compatibility
-            this.dispatchEvent(new CustomEvent('input', {
-                bubbles: true,
-                composed: true,
-                detail: { value: this.state.internalChecked }
-            }));
-        },
-
-        handleKeyDown(e) {
-            if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                this.toggle();
-            }
+    _getCheckedState() {
+        // x-model sets 'value' prop, manual usage sets 'checked' prop
+        // If value is a boolean, use it; otherwise use checked
+        if (typeof this.props.value === 'boolean') {
+            return this.props.value;
         }
-    },
+        return this.props.checked === true || this.props.checked === 'true';
+    }
+
+    toggle() {
+        if (this.props.disabled) return;
+
+        this.state.internalChecked = !this.state.internalChecked;
+
+        // x-model for custom elements listens to 'change' and expects detail.value
+        this.dispatchEvent(new CustomEvent('change', {
+            bubbles: true,
+            composed: true,
+            detail: { value: this.state.internalChecked, checked: this.state.internalChecked }
+        }));
+
+        // Also emit 'input' for additional compatibility
+        this.dispatchEvent(new CustomEvent('input', {
+            bubbles: true,
+            composed: true,
+            detail: { value: this.state.internalChecked }
+        }));
+    }
+
+    handleKeyDown(e) {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            this.toggle();
+        }
+    }
 
     template() {
         const sizeClass = `size-${this.props.size}`;
@@ -80,7 +88,7 @@ export default defineComponent('cl-toggle', {
 
         return html`
             <div
-                class="cl-toggle-wrapper ${positionClass}"
+                class="cl-toggle-wrapper ${positionClass} ${this.state.animated ? 'animated' : ''}"
                 on-click="toggle"
                 on-keydown="handleKeyDown"
                 tabindex="${this.props.disabled ? '-1' : '0'}"
@@ -100,9 +108,9 @@ export default defineComponent('cl-toggle', {
                 `)}
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: inline-block;
         }
@@ -129,9 +137,15 @@ export default defineComponent('cl-toggle', {
             position: relative;
             background: var(--input-border, #ccc);
             border-radius: 100px;
-            transition: all 0.2s;
             display: flex;
             align-items: center;
+        }
+
+        /* Transitions are enabled only after the first paint (see mounted()) so
+           a toggle that mounts in the "on" state doesn't animate into it. */
+        .cl-toggle-wrapper.animated .toggle-track,
+        .cl-toggle-wrapper.animated .toggle-thumb {
+            transition: all 0.2s;
         }
 
         .toggle-track.size-small {
@@ -162,7 +176,6 @@ export default defineComponent('cl-toggle', {
             position: absolute;
             background: var(--input-bg, white);
             border-radius: 50%;
-            transition: all 0.2s;
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
         }
 
@@ -217,4 +230,6 @@ export default defineComponent('cl-toggle', {
             opacity: 1;
         }
     `
-});
+}
+
+export default defineComponent('cl-toggle', ClToggle);

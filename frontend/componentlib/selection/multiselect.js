@@ -9,13 +9,16 @@
  * - Keyboard navigation: Arrow keys, Enter, Space, Escape, Home, End
  * - aria-label on chip remove buttons
  */
-import { defineComponent, html, when, each } from '../../lib/framework.js';
+import { defineComponent, html, when, each, Component } from '../../lib/framework.js';
 
 // Counter for unique IDs
 let multiselectIdCounter = 0;
 
-export default defineComponent('cl-multiselect', {
-    props: {
+/**
+ * @fires change - detail: { value } - array of selected values
+ */
+export class ClMultiselect extends Component {
+    static props = {
         options: [],
         value: [],
         placeholder: 'Select options',
@@ -25,16 +28,18 @@ export default defineComponent('cl-multiselect', {
         optionlabel: 'label',
         optionvalue: 'value',
         maxselected: 0
-    },
+    }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             showPanel: false,
             filterValue: '',
             activeIndex: -1,
             multiselectId: `cl-multiselect-${++multiselectIdCounter}`
         };
-    },
+    }
 
     mounted() {
         // Global keydown for escape
@@ -45,191 +50,187 @@ export default defineComponent('cl-multiselect', {
             }
         };
         document.addEventListener('keydown', this._handleGlobalKeyDown);
-    },
+    }
 
     unmounted() {
         if (this._handleGlobalKeyDown) {
             document.removeEventListener('keydown', this._handleGlobalKeyDown);
         }
-    },
+    }
 
-    methods: {
-        closePanel() {
-            this.state.showPanel = false;
-            this.state.activeIndex = -1;
-            this.state.filterValue = '';
-        },
+    closePanel() {
+        this.state.showPanel = false;
+        this.state.activeIndex = -1;
+        this.state.filterValue = '';
+    }
 
-        togglePanel() {
-            if (!this.props.disabled) {
-                if (this.state.showPanel) {
-                    this.closePanel();
+    togglePanel() {
+        if (!this.props.disabled) {
+            if (this.state.showPanel) {
+                this.closePanel();
+            } else {
+                this.openPanel();
+            }
+        }
+    }
+
+    openPanel() {
+        this.state.showPanel = true;
+        this.state.filterValue = '';
+        this.state.activeIndex = 0;
+
+        // Focus filter input if present
+        requestAnimationFrame(() => {
+            if (this.props.filter) {
+                const filterInput = this.querySelector('.filter-input');
+                if (filterInput) filterInput.focus();
+            }
+        });
+    }
+
+    _focusTrigger() {
+        const trigger = this.querySelector('.multiselect-trigger');
+        if (trigger) trigger.focus();
+    }
+
+    getOptionId(index) {
+        return `${this.state.multiselectId}-option-${index}`;
+    }
+
+    handleKeyDown(e) {
+        const options = this.filteredOptions;
+
+        switch (e.key) {
+            case 'ArrowDown':
+                e.preventDefault();
+                if (!this.state.showPanel) {
+                    this.openPanel();
                 } else {
+                    this.state.activeIndex = Math.min(this.state.activeIndex + 1, options.length - 1);
+                    this._scrollActiveIntoView();
+                }
+                break;
+
+            case 'ArrowUp':
+                e.preventDefault();
+                if (this.state.showPanel) {
+                    this.state.activeIndex = Math.max(this.state.activeIndex - 1, 0);
+                    this._scrollActiveIntoView();
+                }
+                break;
+
+            case 'Home':
+                if (this.state.showPanel) {
+                    e.preventDefault();
+                    this.state.activeIndex = 0;
+                    this._scrollActiveIntoView();
+                }
+                break;
+
+            case 'End':
+                if (this.state.showPanel) {
+                    e.preventDefault();
+                    this.state.activeIndex = options.length - 1;
+                    this._scrollActiveIntoView();
+                }
+                break;
+
+            case 'Enter':
+            case ' ':
+                if (this.state.showPanel && this.state.activeIndex >= 0) {
+                    e.preventDefault();
+                    const option = options[this.state.activeIndex];
+                    if (option) this.toggleOption(option);
+                } else if (!this.state.showPanel && e.key === ' ') {
+                    e.preventDefault();
                     this.openPanel();
                 }
-            }
-        },
+                break;
 
-        openPanel() {
-            this.state.showPanel = true;
-            this.state.filterValue = '';
-            this.state.activeIndex = 0;
-
-            // Focus filter input if present
-            requestAnimationFrame(() => {
-                if (this.props.filter) {
-                    const filterInput = this.querySelector('.filter-input');
-                    if (filterInput) filterInput.focus();
+            case 'Tab':
+                if (this.state.showPanel) {
+                    this.closePanel();
                 }
-            });
-        },
-
-        _focusTrigger() {
-            const trigger = this.querySelector('.multiselect-trigger');
-            if (trigger) trigger.focus();
-        },
-
-        getOptionId(index) {
-            return `${this.state.multiselectId}-option-${index}`;
-        },
-
-        handleKeyDown(e) {
-            const options = this.filteredOptions;
-
-            switch (e.key) {
-                case 'ArrowDown':
-                    e.preventDefault();
-                    if (!this.state.showPanel) {
-                        this.openPanel();
-                    } else {
-                        this.state.activeIndex = Math.min(this.state.activeIndex + 1, options.length - 1);
-                        this._scrollActiveIntoView();
-                    }
-                    break;
-
-                case 'ArrowUp':
-                    e.preventDefault();
-                    if (this.state.showPanel) {
-                        this.state.activeIndex = Math.max(this.state.activeIndex - 1, 0);
-                        this._scrollActiveIntoView();
-                    }
-                    break;
-
-                case 'Home':
-                    if (this.state.showPanel) {
-                        e.preventDefault();
-                        this.state.activeIndex = 0;
-                        this._scrollActiveIntoView();
-                    }
-                    break;
-
-                case 'End':
-                    if (this.state.showPanel) {
-                        e.preventDefault();
-                        this.state.activeIndex = options.length - 1;
-                        this._scrollActiveIntoView();
-                    }
-                    break;
-
-                case 'Enter':
-                case ' ':
-                    if (this.state.showPanel && this.state.activeIndex >= 0) {
-                        e.preventDefault();
-                        const option = options[this.state.activeIndex];
-                        if (option) this.toggleOption(option);
-                    } else if (!this.state.showPanel && e.key === ' ') {
-                        e.preventDefault();
-                        this.openPanel();
-                    }
-                    break;
-
-                case 'Tab':
-                    if (this.state.showPanel) {
-                        this.closePanel();
-                    }
-                    break;
-            }
-        },
-
-        _scrollActiveIntoView() {
-            requestAnimationFrame(() => {
-                const activeOption = this.querySelector('.option.active');
-                if (activeOption) {
-                    activeOption.scrollIntoView({ block: 'nearest' });
-                }
-            });
-        },
-
-        handleOptionMouseEnter(index) {
-            this.state.activeIndex = index;
-        },
-
-        toggleOption(option) {
-            const value = this.getOptionValue(option);
-            const currentValue = this.props.value || [];
-            const index = currentValue.indexOf(value);
-
-            let newValue;
-            if (index >= 0) {
-                newValue = currentValue.filter((_, i) => i !== index);
-            } else {
-                if (this.props.maxselected > 0 && currentValue.length >= this.props.maxselected) {
-                    return; // Max selection reached
-                }
-                newValue = [...currentValue, value];
-            }
-
-            this.emitChange(null, newValue);
-        },
-
-        removeValue(value) {
-            const currentValue = this.props.value || [];
-            const newValue = currentValue.filter(v => v !== value);
-            this.emitChange(null, newValue);
-        },
-
-        handleFilterInput(e) {
-            this.state.filterValue = e.target.value;
-        },
-
-        getOptionLabel(option) {
-            return typeof option === 'object' ? option[this.props.optionlabel] : option;
-        },
-
-        getOptionValue(option) {
-            return typeof option === 'object' ? option[this.props.optionvalue] : option;
-        },
-
-        isSelected(option) {
-            const value = this.getOptionValue(option);
-            const currentValue = this.props.value || [];
-            return currentValue.includes(value);
+                break;
         }
-    },
+    }
 
-    computed: {
-        filteredOptions() {
-            if (!this.props.filter || !this.state.filterValue) {
-                return this.props.options || [];
+    _scrollActiveIntoView() {
+        requestAnimationFrame(() => {
+            const activeOption = this.querySelector('.option.active');
+            if (activeOption) {
+                activeOption.scrollIntoView({ block: 'nearest' });
             }
+        });
+    }
 
-            const filter = this.state.filterValue.toLowerCase();
-            return (this.props.options || []).filter(option => {
-                const label = this.getOptionLabel(option);
-                return String(label).toLowerCase().includes(filter);
-            });
-        },
+    handleOptionMouseEnter(index) {
+        this.state.activeIndex = index;
+    }
 
-        selectedOptions() {
-            const currentValue = this.props.value || [];
-            return currentValue.map(val => {
-                const option = (this.props.options || []).find(opt => {
-                    return this.getOptionValue(opt) === val;
-                });
-                return option || val;
-            });
+    toggleOption(option) {
+        const value = this.getOptionValue(option);
+        const currentValue = this.props.value || [];
+        const index = currentValue.indexOf(value);
+
+        let newValue;
+        if (index >= 0) {
+            newValue = currentValue.filter((_, i) => i !== index);
+        } else {
+            if (this.props.maxselected > 0 && currentValue.length >= this.props.maxselected) {
+                return; // Max selection reached
+            }
+            newValue = [...currentValue, value];
         }
-    },
+
+        this.emitChange(null, newValue);
+    }
+
+    removeValue(value) {
+        const currentValue = this.props.value || [];
+        const newValue = currentValue.filter(v => v !== value);
+        this.emitChange(null, newValue);
+    }
+
+    handleFilterInput(e) {
+        this.state.filterValue = e.target.value;
+    }
+
+    getOptionLabel(option) {
+        return typeof option === 'object' ? option[this.props.optionlabel] : option;
+    }
+
+    getOptionValue(option) {
+        return typeof option === 'object' ? option[this.props.optionvalue] : option;
+    }
+
+    isSelected(option) {
+        const value = this.getOptionValue(option);
+        const currentValue = this.props.value || [];
+        return currentValue.includes(value);
+    }
+
+    get filteredOptions() {
+        if (!this.props.filter || !this.state.filterValue) {
+            return this.props.options || [];
+        }
+
+        const filter = this.state.filterValue.toLowerCase();
+        return (this.props.options || []).filter(option => {
+            const label = this.getOptionLabel(option);
+            return String(label).toLowerCase().includes(filter);
+        });
+    }
+
+    get selectedOptions() {
+        const currentValue = this.props.value || [];
+        return currentValue.map(val => {
+            const option = (this.props.options || []).find(opt => {
+                return this.getOptionValue(opt) === val;
+            });
+            return option || val;
+        });
+    }
 
     template() {
         const filteredOptions = this.filteredOptions;
@@ -325,9 +326,9 @@ export default defineComponent('cl-multiselect', {
                 </div>
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -353,8 +354,11 @@ export default defineComponent('cl-multiselect', {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            min-height: 42px;
-            padding: 6px 12px;
+            box-sizing: border-box;
+            /* Match a standard text input by default; grows to fit wrapped
+               chips when several are selected. */
+            min-height: var(--cl-control-height, 38px);
+            padding: 4px 12px;
             border: 1px solid var(--input-border, #ced4da);
             border-radius: 4px;
             background: var(--input-bg, #fff);
@@ -381,7 +385,6 @@ export default defineComponent('cl-multiselect', {
 
         .placeholder {
             color: var(--text-muted, #6c757d);
-            line-height: 30px;
         }
 
         .chip {
@@ -502,4 +505,6 @@ export default defineComponent('cl-multiselect', {
             font-size: 14px;
         }
     `
-});
+}
+
+export default defineComponent('cl-multiselect', ClMultiselect);

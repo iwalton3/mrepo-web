@@ -1,25 +1,30 @@
 /**
  * Shell - Responsive layout with top bar, sidebar, and hamburger menu
  */
-import { defineComponent, html, when, each } from '../../lib/framework.js';
+import { defineComponent, html, when, each, Component } from '../../lib/framework.js';
 
-export default defineComponent('cl-shell', {
-    props: {
+/**
+ * @fires change - detail: { value } - the activated nav item key
+ */
+export class ClShell extends Component {
+    static props = {
         title: 'VDX',
         subtitle: '',
         logo: '',
         menuItems: [],      // [{label, icon, key, items?}] - items is for submenu
         activeItem: null,
         sidebarWidth: '280px'
-    },
+    }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             sidebarOpen: false,
             isMobile: false,
             expandedGroups: {}
         };
-    },
+    }
 
     mounted() {
         this.checkMobile();
@@ -28,88 +33,86 @@ export default defineComponent('cl-shell', {
 
         // Auto-expand group containing active item on initial load
         this.expandActiveItemGroup();
-    },
+    }
 
     unmounted() {
         window.removeEventListener('resize', this._resizeHandler);
-    },
+    }
 
     propsChanged(prop, newValue, oldValue) {
         // When activeItem changes (e.g., navigation), expand its parent group
         if (prop === 'activeItem' && newValue !== oldValue) {
             this.expandActiveItemGroup();
         }
-    },
+    }
 
-    methods: {
-        checkMobile() {
-            const wasMobile = this.state.isMobile;
-            this.state.isMobile = window.innerWidth < 768;
-            // Close sidebar when switching to desktop
-            if (wasMobile && !this.state.isMobile) {
-                this.state.sidebarOpen = false;
-            }
-        },
+    checkMobile() {
+        const wasMobile = this.state.isMobile;
+        this.state.isMobile = window.innerWidth < 768;
+        // Close sidebar when switching to desktop
+        if (wasMobile && !this.state.isMobile) {
+            this.state.sidebarOpen = false;
+        }
+    }
 
-        toggleSidebar() {
-            this.state.sidebarOpen = !this.state.sidebarOpen;
-        },
+    toggleSidebar() {
+        this.state.sidebarOpen = !this.state.sidebarOpen;
+    }
 
-        closeSidebar() {
-            if (this.state.isMobile) {
-                this.state.sidebarOpen = false;
-            }
-        },
+    closeSidebar() {
+        if (this.state.isMobile) {
+            this.state.sidebarOpen = false;
+        }
+    }
 
-        handleItemClick(item) {
-            if (item.items && item.items.length > 0) {
-                // Toggle group expansion
-                const key = item.key || item.label;
-                this.state.expandedGroups = {
-                    ...this.state.expandedGroups,
-                    [key]: !this.state.expandedGroups[key]
-                };
-            } else {
-                // Emit change event
-                this.emitChange(null, item.key || item.label, 'activeItem');
-                this.closeSidebar();
-            }
-        },
-
-        isItemActive(item) {
-            return this.props.activeItem === (item.key || item.label);
-        },
-
-        isGroupExpanded(item) {
+    handleItemClick(item) {
+        if (item.items && item.items.length > 0) {
+            // Toggle group expansion
             const key = item.key || item.label;
-            return this.state.expandedGroups[key] || false;
-        },
+            this.state.expandedGroups = {
+                ...this.state.expandedGroups,
+                [key]: !this.state.expandedGroups[key]
+            };
+        } else {
+            // Emit change event
+            this.emitChange(null, item.key || item.label, 'activeItem');
+            this.closeSidebar();
+        }
+    }
 
-        expandActiveItemGroup() {
-            const activeItem = this.props.activeItem;
-            if (!activeItem) return;
+    isItemActive(item) {
+        return this.props.activeItem === (item.key || item.label);
+    }
 
-            // Find which group contains the active item
-            for (const item of this.props.menuItems) {
-                if (item.items && item.items.length > 0) {
-                    // Check if any subitem matches the active item
-                    const hasActiveChild = item.items.some(
-                        subitem => (subitem.key || subitem.label) === activeItem
-                    );
-                    if (hasActiveChild) {
-                        const groupKey = item.key || item.label;
-                        if (!this.state.expandedGroups[groupKey]) {
-                            this.state.expandedGroups = {
-                                ...this.state.expandedGroups,
-                                [groupKey]: true
-                            };
-                        }
-                        break;
+    isGroupExpanded(item) {
+        const key = item.key || item.label;
+        return this.state.expandedGroups[key] || false;
+    }
+
+    expandActiveItemGroup() {
+        const activeItem = this.props.activeItem;
+        if (!activeItem) return;
+
+        // Find which group contains the active item
+        for (const item of this.props.menuItems) {
+            if (item.items && item.items.length > 0) {
+                // Check if any subitem matches the active item
+                const hasActiveChild = item.items.some(
+                    subitem => (subitem.key || subitem.label) === activeItem
+                );
+                if (hasActiveChild) {
+                    const groupKey = item.key || item.label;
+                    if (!this.state.expandedGroups[groupKey]) {
+                        this.state.expandedGroups = {
+                            ...this.state.expandedGroups,
+                            [groupKey]: true
+                        };
                     }
+                    break;
                 }
             }
         }
-    },
+    }
 
     template() {
         const sidebarClass = this.state.isMobile
@@ -194,9 +197,9 @@ export default defineComponent('cl-shell', {
                 </div>
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
             height: 100dvh;  /* Dynamic viewport height - excludes mobile browser UI */
@@ -443,4 +446,6 @@ export default defineComponent('cl-shell', {
             }
         }
     `
-});
+}
+
+export default defineComponent('cl-shell', ClShell);

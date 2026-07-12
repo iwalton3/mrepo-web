@@ -11,13 +11,19 @@
  * - aria-label on checkboxes for row selection
  * - Keyboard navigation for selection (Enter/Space on rows)
  */
-import { defineComponent, html, when, each } from '../../lib/framework.js';
+import { defineComponent, html, when, each, Component } from '../../lib/framework.js';
 
 // Counter for unique IDs
 let datatableIdCounter = 0;
 
-export default defineComponent('cl-datatable', {
-    props: {
+/**
+ * @fires sort - detail: { field, order }
+ * @fires row-select - detail: { data, index }
+ * @fires row-unselect - detail: { data, index }
+ * @fires change - detail: { value } - the selected row (single) or rows (multiple)
+ */
+export class ClDatatable extends Component {
+    static props = {
         value: [],
         columns: [],
         selectionmode: 'none', // 'none', 'single', 'multiple'
@@ -28,158 +34,156 @@ export default defineComponent('cl-datatable', {
         rows: 10,
         currentpage: 0,
         arialabel: '' // Optional aria-label for the table
-    },
+    }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             sortBy: '',
             sortDirection: 1,
             datatableId: `cl-datatable-${++datatableIdCounter}`
         };
-    },
+    }
 
     mounted() {
         this.state.sortBy = this.props.sortfield;
         this.state.sortDirection = this.props.sortorder;
-    },
+    }
 
-    methods: {
-        getSelectedRows() {
-            const selection = this.props.selection;
-            if (!selection) return [];
-            return Array.isArray(selection) ? selection : [selection];
-        },
+    getSelectedRows() {
+        const selection = this.props.selection;
+        if (!selection) return [];
+        return Array.isArray(selection) ? selection : [selection];
+    }
 
-        handleSort(column) {
-            if (!column.sortable) return;
+    handleSort(column) {
+        if (!column.sortable) return;
 
-            if (this.state.sortBy === column.field) {
-                this.state.sortDirection = this.state.sortDirection * -1;
+        if (this.state.sortBy === column.field) {
+            this.state.sortDirection = this.state.sortDirection * -1;
+        } else {
+            this.state.sortBy = column.field;
+            this.state.sortDirection = 1;
+        }
+
+        this.emitEvent('sort', {
+            field: this.state.sortBy,
+            order: this.state.sortDirection
+        });
+    }
+
+    handleRowClick(row, index) {
+        if (this.props.selectionmode === 'single') {
+            this.emitEvent('row-select', { data: row, index });
+            this.emitChange(null, row);
+        } else if (this.props.selectionmode === 'multiple') {
+            const selectedRows = this.getSelectedRows();
+            const idx = selectedRows.indexOf(row);
+            let newSelection;
+            if (idx >= 0) {
+                newSelection = selectedRows.filter((_, i) => i !== idx);
+                this.emitEvent('row-unselect', { data: row, index });
             } else {
-                this.state.sortBy = column.field;
-                this.state.sortDirection = 1;
-            }
-
-            this.emitEvent('sort', {
-                field: this.state.sortBy,
-                order: this.state.sortDirection
-            });
-        },
-
-        handleRowClick(row, index) {
-            if (this.props.selectionmode === 'single') {
+                newSelection = [...selectedRows, row];
                 this.emitEvent('row-select', { data: row, index });
-                this.emitChange(null, row);
-            } else if (this.props.selectionmode === 'multiple') {
-                const selectedRows = this.getSelectedRows();
-                const idx = selectedRows.indexOf(row);
-                let newSelection;
-                if (idx >= 0) {
-                    newSelection = selectedRows.filter((_, i) => i !== idx);
-                    this.emitEvent('row-unselect', { data: row, index });
-                } else {
-                    newSelection = [...selectedRows, row];
-                    this.emitEvent('row-select', { data: row, index });
-                }
-                this.emitChange(null, newSelection);
             }
-        },
-
-        isRowSelected(row) {
-            const selected = this.getSelectedRows();
-            // Use both reference and value equality for robustness with reactive proxies
-            if (selected.includes(row)) return true;
-
-            // If row has an id property, compare by id
-            if (row && typeof row === 'object' && 'id' in row) {
-                return selected.some(s => s && typeof s === 'object' && s.id === row.id);
-            }
-
-            // Deep equality check as fallback
-            return selected.some(s => JSON.stringify(s) === JSON.stringify(row));
-        },
-
-        getCellValue(row, column) {
-            if (column.body) {
-                return column.body(row);
-            }
-            return row[column.field];
-        },
-
-        getSortIcon(column) {
-            if (!column.sortable) return '';
-            if (this.state.sortBy !== column.field) return '⇅';
-            return this.state.sortDirection === 1 ? '↑' : '↓';
-        },
-
-        emitEvent(name, detail) {
-            this.dispatchEvent(new CustomEvent(name, { detail, bubbles: true }));
-        },
-
-        /**
-         * Get aria-sort value for a column
-         */
-        getAriaSort(column) {
-            if (!column.sortable) return undefined;
-            if (this.state.sortBy !== column.field) return 'none';
-            return this.state.sortDirection === 1 ? 'ascending' : 'descending';
-        },
-
-        /**
-         * Handle keyboard navigation for row selection
-         */
-        handleRowKeyDown(e, row, index) {
-            if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                this.handleRowClick(row, index);
-            }
-        },
-
-        /**
-         * Get a label for a row for screen readers
-         */
-        getRowLabel(row, index) {
-            // Try to get a meaningful label from the first column
-            const columns = this.props.columns || [];
-            if (columns.length > 0) {
-                const firstValue = this.getCellValue(row, columns[0]);
-                return `Row ${index + 1}: ${firstValue}`;
-            }
-            return `Row ${index + 1}`;
+            this.emitChange(null, newSelection);
         }
-    },
+    }
 
-    computed: {
-        sortedData() {
-            const value = this.props.value;
-            let data = Array.isArray(value) ? [...value] : [];
+    isRowSelected(row) {
+        const selected = this.getSelectedRows();
+        // Use both reference and value equality for robustness with reactive proxies
+        if (selected.includes(row)) return true;
 
-            if (this.state.sortBy) {
-                data.sort((a, b) => {
-                    const aVal = a[this.state.sortBy];
-                    const bVal = b[this.state.sortBy];
+        // If row has an id property, compare by id
+        if (row && typeof row === 'object' && 'id' in row) {
+            return selected.some(s => s && typeof s === 'object' && s.id === row.id);
+        }
 
-                    if (aVal < bVal) return -1 * this.state.sortDirection;
-                    if (aVal > bVal) return 1 * this.state.sortDirection;
-                    return 0;
-                });
-            }
+        // Deep equality check as fallback
+        return selected.some(s => JSON.stringify(s) === JSON.stringify(row));
+    }
 
+    getCellValue(row, column) {
+        if (column.body) {
+            return column.body(row);
+        }
+        return row[column.field];
+    }
+
+    getSortIcon(column) {
+        if (!column.sortable) return '';
+        if (this.state.sortBy !== column.field) return '⇅';
+        return this.state.sortDirection === 1 ? '↑' : '↓';
+    }
+
+    emitEvent(name, detail) {
+        this.dispatchEvent(new CustomEvent(name, { detail, bubbles: true }));
+    }
+
+    /**
+     * Get aria-sort value for a column
+     */
+    getAriaSort(column) {
+        if (!column.sortable) return undefined;
+        if (this.state.sortBy !== column.field) return 'none';
+        return this.state.sortDirection === 1 ? 'ascending' : 'descending';
+    }
+
+    /**
+     * Handle keyboard navigation for row selection
+     */
+    handleRowKeyDown(e, row, index) {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            this.handleRowClick(row, index);
+        }
+    }
+
+    /**
+     * Get a label for a row for screen readers
+     */
+    getRowLabel(row, index) {
+        // Try to get a meaningful label from the first column
+        const columns = this.props.columns || [];
+        if (columns.length > 0) {
+            const firstValue = this.getCellValue(row, columns[0]);
+            return `Row ${index + 1}: ${firstValue}`;
+        }
+        return `Row ${index + 1}`;
+    }
+
+    get sortedData() {
+        const value = this.props.value;
+        let data = Array.isArray(value) ? [...value] : [];
+
+        if (this.state.sortBy) {
+            data.sort((a, b) => {
+                const aVal = a[this.state.sortBy];
+                const bVal = b[this.state.sortBy];
+
+                if (aVal < bVal) return -1 * this.state.sortDirection;
+                if (aVal > bVal) return 1 * this.state.sortDirection;
+                return 0;
+            });
+        }
+
+        return data;
+    }
+
+    get paginatedData() {
+        const data = this.sortedData;
+
+        if (!this.props.paginator) {
             return data;
-        },
-
-        paginatedData() {
-            const data = this.sortedData;
-
-            if (!this.props.paginator) {
-                return data;
-            }
-
-            const start = this.props.currentpage * this.props.rows;
-            const end = start + this.props.rows;
-            return data.slice(start, end);
         }
-    },
+
+        const start = this.props.currentpage * this.props.rows;
+        const end = start + this.props.rows;
+        return data.slice(start, end);
+    }
 
     template() {
         const data = this.paginatedData;
@@ -251,9 +255,9 @@ export default defineComponent('cl-datatable', {
                 </div>
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -366,4 +370,6 @@ export default defineComponent('cl-datatable', {
             outline-offset: -2px;
         }
     `
-});
+}
+
+export default defineComponent('cl-datatable', ClDatatable);

@@ -1,10 +1,13 @@
 /**
  * Chips - Tag input component
  */
-import { defineComponent, html, when, each } from '../../lib/framework.js';
+import { defineComponent, html, when, each, Component } from '../../lib/framework.js';
 
-export default defineComponent('cl-chips', {
-    props: {
+/**
+ * @fires change - detail: { value } - array of chip values
+ */
+export class ClChips extends Component {
+    static props = {
         value: [],
         placeholder: 'Add item...',
         disabled: false,
@@ -12,19 +15,21 @@ export default defineComponent('cl-chips', {
         max: 0,
         allowduplicates: false,
         separator: ','
-    },
+    }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             inputValue: '',
             internalValue: [] // Will be synced in mounted()
         };
-    },
+    }
 
     mounted() {
         // Initialize internal value from props
         this.state.internalValue = Array.isArray(this.props.value) ? this.props.value : [];
-    },
+    }
 
     propsChanged(prop, newValue, oldValue) {
         // Sync internal value when prop changes (controlled mode)
@@ -33,96 +38,94 @@ export default defineComponent('cl-chips', {
         } else if (prop === 'value' && !newValue) {
             this.state.internalValue = [];
         }
-    },
+    }
 
-    methods: {
-        handleKeyDown(e) {
-            if (e.key === 'Enter' || e.key === this.props.separator) {
-                e.preventDefault();
-                this.addChip();
-            } else if (e.key === 'Backspace' && !this.state.inputValue) {
-                this.removeLastChip();
-            }
-        },
-
-        handleInput(e) {
-            let value = e.target.value;
-
-            // Check for separator
-            if (value.includes(this.props.separator)) {
-                const parts = value.split(this.props.separator);
-                value = parts.pop() || '';
-
-                // Add all parts as chips
-                parts.forEach(part => {
-                    const trimmed = part.trim();
-                    if (trimmed) {
-                        this.addChipValue(trimmed);
-                    }
-                });
-            }
-
-            this.state.inputValue = value;
-        },
-
-        handleBlur() {
-            if (this.state.inputValue.trim()) {
-                this.addChip();
-            }
-        },
-
-        handleChange(e) {
-            // Stop the native change event from bubbling up
-            // This prevents x-model from receiving the native event (which lacks detail.value)
-            if (e && e.stopPropagation) {
-                e.stopPropagation();
-            }
-            // Emit proper change event with current chips value
-            this.emitChange(e, this.state.internalValue);
-        },
-
-        addChip() {
-            const value = this.state.inputValue.trim();
-            if (value) {
-                this.addChipValue(value);
-                this.state.inputValue = '';
-            }
-        },
-
-        addChipValue(value) {
-            const currentValue = this.state.internalValue;
-
-            // Check duplicates
-            if (!this.props.allowduplicates && currentValue.includes(value)) {
-                return;
-            }
-
-            // Check max
-            if (this.props.max > 0 && currentValue.length >= this.props.max) {
-                return;
-            }
-
-            const newValue = [...currentValue, value];
-            this.state.internalValue = newValue;
-            this.emitChange(null, newValue);
-        },
-
-        removeChip(index) {
-            const currentValue = this.state.internalValue;
-            const newValue = currentValue.filter((_, i) => i !== index);
-            this.state.internalValue = newValue;
-            this.emitChange(null, newValue);
-        },
-
-        removeLastChip() {
-            const currentValue = this.state.internalValue;
-            if (currentValue.length > 0) {
-                const newValue = currentValue.slice(0, -1);
-                this.state.internalValue = newValue;
-                this.emitChange(null, newValue);
-            }
+    handleKeyDown(e) {
+        if (e.key === 'Enter' || e.key === this.props.separator) {
+            e.preventDefault();
+            this.addChip();
+        } else if (e.key === 'Backspace' && !this.state.inputValue) {
+            this.removeLastChip();
         }
-    },
+    }
+
+    handleInput(e) {
+        let value = e.target.value;
+
+        // Check for separator
+        if (value.includes(this.props.separator)) {
+            const parts = value.split(this.props.separator);
+            value = parts.pop() || '';
+
+            // Add all parts as chips
+            parts.forEach(part => {
+                const trimmed = part.trim();
+                if (trimmed) {
+                    this.addChipValue(trimmed);
+                }
+            });
+        }
+
+        this.state.inputValue = value;
+    }
+
+    handleBlur() {
+        if (this.state.inputValue.trim()) {
+            this.addChip();
+        }
+    }
+
+    handleChange(e) {
+        // Stop the native change event from bubbling up
+        // This prevents x-model from receiving the native event (which lacks detail.value)
+        if (e && e.stopPropagation) {
+            e.stopPropagation();
+        }
+        // Emit proper change event with current chips value
+        this.emitChange(e, this.state.internalValue);
+    }
+
+    addChip() {
+        const value = this.state.inputValue.trim();
+        if (value) {
+            this.addChipValue(value);
+            this.state.inputValue = '';
+        }
+    }
+
+    addChipValue(value) {
+        const currentValue = this.state.internalValue;
+
+        // Check duplicates
+        if (!this.props.allowduplicates && currentValue.includes(value)) {
+            return;
+        }
+
+        // Check max
+        if (this.props.max > 0 && currentValue.length >= this.props.max) {
+            return;
+        }
+
+        const newValue = [...currentValue, value];
+        this.state.internalValue = newValue;
+        this.emitChange(null, newValue);
+    }
+
+    removeChip(index) {
+        const currentValue = this.state.internalValue;
+        const newValue = currentValue.filter((_, i) => i !== index);
+        this.state.internalValue = newValue;
+        this.emitChange(null, newValue);
+    }
+
+    removeLastChip() {
+        const currentValue = this.state.internalValue;
+        if (currentValue.length > 0) {
+            const newValue = currentValue.slice(0, -1);
+            this.state.internalValue = newValue;
+            this.emitChange(null, newValue);
+        }
+    }
 
     template() {
         const chips = this.state.internalValue;
@@ -152,9 +155,9 @@ export default defineComponent('cl-chips', {
                 </div>
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -233,4 +236,6 @@ export default defineComponent('cl-chips', {
             cursor: not-allowed;
         }
     `
-});
+}
+
+export default defineComponent('cl-chips', ClChips);

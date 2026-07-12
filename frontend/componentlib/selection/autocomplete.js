@@ -9,13 +9,16 @@
  * - Keyboard navigation: Arrow keys, Enter, Escape
  * - Proper label association
  */
-import { defineComponent, html, when, each } from '../../lib/framework.js';
+import { defineComponent, html, when, each, Component } from '../../lib/framework.js';
 
 // Counter for unique IDs
 let autocompleteIdCounter = 0;
 
-export default defineComponent('cl-autocomplete', {
-    props: {
+/**
+ * @fires change - detail: { value }
+ */
+export class ClAutocomplete extends Component {
+    static props = {
         value: '',
         suggestions: [],
         placeholder: '',
@@ -23,10 +26,12 @@ export default defineComponent('cl-autocomplete', {
         label: '',
         minlength: 1,
         delay: 300
-    },
+    }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             showSuggestions: false,
             filteredSuggestions: [],
             inputValue: '',
@@ -34,7 +39,7 @@ export default defineComponent('cl-autocomplete', {
             activeIndex: -1,
             autocompleteId: `cl-autocomplete-${++autocompleteIdCounter}`
         };
-    },
+    }
 
     mounted() {
         this.state.inputValue = this.props.value;
@@ -47,7 +52,7 @@ export default defineComponent('cl-autocomplete', {
             }
         };
         document.addEventListener('keydown', this._handleGlobalKeyDown);
-    },
+    }
 
     unmounted() {
         if (this._handleGlobalKeyDown) {
@@ -56,121 +61,119 @@ export default defineComponent('cl-autocomplete', {
         if (this.state.timeout) {
             clearTimeout(this.state.timeout);
         }
-    },
+    }
 
-    methods: {
-        handleInput(e) {
-            const value = e.target.value;
-            this.state.inputValue = value;
+    handleInput(e) {
+        const value = e.target.value;
+        this.state.inputValue = value;
 
-            // Clear existing timeout
-            if (this.state.timeout) {
-                clearTimeout(this.state.timeout);
-            }
+        // Clear existing timeout
+        if (this.state.timeout) {
+            clearTimeout(this.state.timeout);
+        }
 
-            // Delay filtering
-            this.state.timeout = setTimeout(() => {
-                this.filterSuggestions(value);
-                this.emitChange(e, value);
-            }, this.props.delay);
-        },
+        // Delay filtering
+        this.state.timeout = setTimeout(() => {
+            this.filterSuggestions(value);
+            this.emitChange(e, value);
+        }, this.props.delay);
+    }
 
-        filterSuggestions(value) {
-            if (!value || value.length < this.props.minlength) {
-                this.state.showSuggestions = false;
-                this.state.filteredSuggestions = [];
-                this.state.activeIndex = -1;
-                return;
-            }
+    filterSuggestions(value) {
+        if (!value || value.length < this.props.minlength) {
+            this.state.showSuggestions = false;
+            this.state.filteredSuggestions = [];
+            this.state.activeIndex = -1;
+            return;
+        }
 
-            const filter = value.toLowerCase();
-            const filtered = (this.props.suggestions || []).filter(suggestion => {
-                const text = typeof suggestion === 'object' ? suggestion.label : suggestion;
-                return String(text).toLowerCase().includes(filter);
-            });
+        const filter = value.toLowerCase();
+        const filtered = (this.props.suggestions || []).filter(suggestion => {
+            const text = typeof suggestion === 'object' ? suggestion.label : suggestion;
+            return String(text).toLowerCase().includes(filter);
+        });
 
-            this.state.filteredSuggestions = filtered;
-            this.state.showSuggestions = filtered.length > 0;
-            this.state.activeIndex = filtered.length > 0 ? 0 : -1;
-        },
+        this.state.filteredSuggestions = filtered;
+        this.state.showSuggestions = filtered.length > 0;
+        this.state.activeIndex = filtered.length > 0 ? 0 : -1;
+    }
 
-        selectSuggestion(suggestion) {
-            const value = typeof suggestion === 'object' ? suggestion.value : suggestion;
-            const displayValue = typeof suggestion === 'object' ? suggestion.label : suggestion;
+    selectSuggestion(suggestion) {
+        const value = typeof suggestion === 'object' ? suggestion.value : suggestion;
+        const displayValue = typeof suggestion === 'object' ? suggestion.label : suggestion;
 
-            this.state.inputValue = displayValue;
+        this.state.inputValue = displayValue;
+        this.state.showSuggestions = false;
+        this.state.activeIndex = -1;
+        this.emitChange(null, value);
+    }
+
+    handleBlur() {
+        // Delay hiding to allow click on suggestion
+        setTimeout(() => {
             this.state.showSuggestions = false;
             this.state.activeIndex = -1;
-            this.emitChange(null, value);
-        },
+        }, 200);
+    }
 
-        handleBlur() {
-            // Delay hiding to allow click on suggestion
-            setTimeout(() => {
-                this.state.showSuggestions = false;
-                this.state.activeIndex = -1;
-            }, 200);
-        },
+    getSuggestionLabel(suggestion) {
+        return typeof suggestion === 'object' ? suggestion.label : suggestion;
+    }
 
-        getSuggestionLabel(suggestion) {
-            return typeof suggestion === 'object' ? suggestion.label : suggestion;
-        },
+    getOptionId(index) {
+        return `${this.state.autocompleteId}-option-${index}`;
+    }
 
-        getOptionId(index) {
-            return `${this.state.autocompleteId}-option-${index}`;
-        },
+    handleKeyDown(e) {
+        const suggestions = this.state.filteredSuggestions;
 
-        handleKeyDown(e) {
-            const suggestions = this.state.filteredSuggestions;
-
-            switch (e.key) {
-                case 'ArrowDown':
-                    e.preventDefault();
-                    if (this.state.showSuggestions) {
-                        this.state.activeIndex = Math.min(this.state.activeIndex + 1, suggestions.length - 1);
-                        this._scrollActiveIntoView();
-                    }
-                    break;
-
-                case 'ArrowUp':
-                    e.preventDefault();
-                    if (this.state.showSuggestions) {
-                        this.state.activeIndex = Math.max(this.state.activeIndex - 1, 0);
-                        this._scrollActiveIntoView();
-                    }
-                    break;
-
-                case 'Enter':
-                    if (this.state.showSuggestions && this.state.activeIndex >= 0) {
-                        e.preventDefault();
-                        const suggestion = suggestions[this.state.activeIndex];
-                        if (suggestion) this.selectSuggestion(suggestion);
-                    }
-                    break;
-
-                case 'Escape':
-                    if (this.state.showSuggestions) {
-                        e.preventDefault();
-                        this.state.showSuggestions = false;
-                        this.state.activeIndex = -1;
-                    }
-                    break;
-            }
-        },
-
-        _scrollActiveIntoView() {
-            requestAnimationFrame(() => {
-                const activeOption = this.querySelector('.suggestion.active');
-                if (activeOption) {
-                    activeOption.scrollIntoView({ block: 'nearest' });
+        switch (e.key) {
+            case 'ArrowDown':
+                e.preventDefault();
+                if (this.state.showSuggestions) {
+                    this.state.activeIndex = Math.min(this.state.activeIndex + 1, suggestions.length - 1);
+                    this._scrollActiveIntoView();
                 }
-            });
-        },
+                break;
 
-        handleSuggestionMouseEnter(index) {
-            this.state.activeIndex = index;
+            case 'ArrowUp':
+                e.preventDefault();
+                if (this.state.showSuggestions) {
+                    this.state.activeIndex = Math.max(this.state.activeIndex - 1, 0);
+                    this._scrollActiveIntoView();
+                }
+                break;
+
+            case 'Enter':
+                if (this.state.showSuggestions && this.state.activeIndex >= 0) {
+                    e.preventDefault();
+                    const suggestion = suggestions[this.state.activeIndex];
+                    if (suggestion) this.selectSuggestion(suggestion);
+                }
+                break;
+
+            case 'Escape':
+                if (this.state.showSuggestions) {
+                    e.preventDefault();
+                    this.state.showSuggestions = false;
+                    this.state.activeIndex = -1;
+                }
+                break;
         }
-    },
+    }
+
+    _scrollActiveIntoView() {
+        requestAnimationFrame(() => {
+            const activeOption = this.querySelector('.suggestion.active');
+            if (activeOption) {
+                activeOption.scrollIntoView({ block: 'nearest' });
+            }
+        });
+    }
+
+    handleSuggestionMouseEnter(index) {
+        this.state.activeIndex = index;
+    }
 
     template() {
         const inputId = `${this.state.autocompleteId}-input`;
@@ -220,9 +223,9 @@ export default defineComponent('cl-autocomplete', {
                 </div>
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -295,4 +298,6 @@ export default defineComponent('cl-autocomplete', {
             background: var(--hover-bg, #f8f9fa);
         }
     `
-});
+}
+
+export default defineComponent('cl-autocomplete', ClAutocomplete);

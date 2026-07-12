@@ -11,7 +11,7 @@
  * - Auto-focus first focusable element on open
  * - Returns focus to trigger element on close
  */
-import { defineComponent, html, when } from '../../lib/framework.js';
+import { defineComponent, html, when, Component } from '../../lib/framework.js';
 
 // Counter for generating unique IDs for dialog titles
 let dialogIdCounter = 0;
@@ -19,8 +19,11 @@ let dialogIdCounter = 0;
 // Selector for focusable elements
 const FOCUSABLE_SELECTOR = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
-export default defineComponent('cl-dialog', {
-    props: {
+/**
+ * @fires change - detail: { value: false } - the dialog was closed
+ */
+export class ClDialog extends Component {
+    static props = {
         visible: false,
         header: '',
         footer: '',
@@ -28,13 +31,15 @@ export default defineComponent('cl-dialog', {
         closable: true,
         dismissablemask: true,
         style: ''
-    },
+    }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             dialogId: `cl-dialog-${++dialogIdCounter}`
         };
-    },
+    }
 
     mounted() {
         // Add global escape key listener
@@ -44,7 +49,7 @@ export default defineComponent('cl-dialog', {
             }
         };
         document.addEventListener('keydown', this._handleKeyDown);
-    },
+    }
 
     unmounted() {
         // Clean up escape key listener
@@ -53,7 +58,7 @@ export default defineComponent('cl-dialog', {
         }
         // Restore body scroll if we were preventing it
         document.body.style.overflow = '';
-    },
+    }
 
     propsChanged(prop, newValue, oldValue) {
         if (prop === 'visible') {
@@ -78,80 +83,78 @@ export default defineComponent('cl-dialog', {
                 }
             }
         }
-    },
+    }
 
-    methods: {
-        close() {
-            this.emitChange(null, false, 'visible');
-        },
+    close() {
+        this.emitChange(null, false, 'visible');
+    }
 
-        handleMaskClick() {
-            if (this.props.dismissablemask) {
-                this.close();
-            }
-        },
+    handleMaskClick() {
+        if (this.props.dismissablemask) {
+            this.close();
+        }
+    }
 
-        handleDialogClick(e) {
+    handleDialogClick(e) {
+        e.stopPropagation();
+    }
+
+    /**
+     * Prevent change events from form elements bubbling up and
+     * triggering the dialog's on-change handler
+     */
+    handleDialogChange(e) {
+        // Only stop propagation for events from form elements inside the dialog
+        // (not our own change event from close())
+        if (e.target !== this) {
             e.stopPropagation();
-        },
+        }
+    }
 
-        /**
-         * Prevent change events from form elements bubbling up and
-         * triggering the dialog's on-change handler
-         */
-        handleDialogChange(e) {
-            // Only stop propagation for events from form elements inside the dialog
-            // (not our own change event from close())
-            if (e.target !== this) {
-                e.stopPropagation();
+    /**
+     * Focus the first focusable element in the dialog
+     */
+    _focusFirstElement() {
+        const dialog = this.querySelector('.cl-dialog');
+        if (!dialog) return;
+
+        const focusable = dialog.querySelectorAll(FOCUSABLE_SELECTOR);
+        if (focusable.length > 0) {
+            focusable[0].focus();
+        }
+    }
+
+    /**
+     * Handle Tab key for focus trapping
+     */
+    handleFocusTrap(e) {
+        if (e.key !== 'Tab' || !this.props.modal) return;
+
+        const dialog = this.querySelector('.cl-dialog');
+        if (!dialog) return;
+
+        const focusable = Array.from(dialog.querySelectorAll(FOCUSABLE_SELECTOR))
+            .filter(el => el.offsetParent !== null); // Filter out hidden elements
+
+        if (focusable.length === 0) return;
+
+        const firstFocusable = focusable[0];
+        const lastFocusable = focusable[focusable.length - 1];
+
+        if (e.shiftKey) {
+            // Shift+Tab: if on first element, go to last
+            if (document.activeElement === firstFocusable) {
+                e.preventDefault();
+                lastFocusable.focus();
             }
-        },
-
-        /**
-         * Focus the first focusable element in the dialog
-         */
-        _focusFirstElement() {
-            const dialog = this.querySelector('.cl-dialog');
-            if (!dialog) return;
-
-            const focusable = dialog.querySelectorAll(FOCUSABLE_SELECTOR);
-            if (focusable.length > 0) {
-                focusable[0].focus();
-            }
-        },
-
-        /**
-         * Handle Tab key for focus trapping
-         */
-        handleFocusTrap(e) {
-            if (e.key !== 'Tab' || !this.props.modal) return;
-
-            const dialog = this.querySelector('.cl-dialog');
-            if (!dialog) return;
-
-            const focusable = Array.from(dialog.querySelectorAll(FOCUSABLE_SELECTOR))
-                .filter(el => el.offsetParent !== null); // Filter out hidden elements
-
-            if (focusable.length === 0) return;
-
-            const firstFocusable = focusable[0];
-            const lastFocusable = focusable[focusable.length - 1];
-
-            if (e.shiftKey) {
-                // Shift+Tab: if on first element, go to last
-                if (document.activeElement === firstFocusable) {
-                    e.preventDefault();
-                    lastFocusable.focus();
-                }
-            } else {
-                // Tab: if on last element, go to first
-                if (document.activeElement === lastFocusable) {
-                    e.preventDefault();
-                    firstFocusable.focus();
-                }
+        } else {
+            // Tab: if on last element, go to first
+            if (document.activeElement === lastFocusable) {
+                e.preventDefault();
+                firstFocusable.focus();
             }
         }
-    },
+    }
 
     template() {
         // children is always an array, slots has named slots
@@ -198,9 +201,9 @@ export default defineComponent('cl-dialog', {
                 </div>
             `)}
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: contents;
         }
@@ -303,4 +306,6 @@ export default defineComponent('cl-dialog', {
             gap: 8px;
         }
     `
-});
+}
+
+export default defineComponent('cl-dialog', ClDialog);

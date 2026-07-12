@@ -1,24 +1,25 @@
 /**
  * RadioButton - Radio button input
  */
-import { defineComponent, html, when } from '../../lib/framework.js';
+import { defineComponent, html, when, Component } from '../../lib/framework.js';
 
-export default defineComponent('cl-radio-button', {
-    props: {
+/**
+ * @fires change - detail: { value } - the selected value
+ */
+export class ClRadioButton extends Component {
+    static props = {
         value: '',
         modelvalue: '',
         name: '',
         disabled: false,
         label: ''
-    },
+    }
 
-    methods: {
-        handleChange(e) {
-            if (e.target.checked) {
-                this.emitChange(e, this.props.value);
-            }
+    handleChange(e) {
+        if (e.target.checked) {
+            this.emitChange(e, this.props.value);
         }
-    },
+    }
 
     template() {
         const isChecked = this.props.value === this.props.modelvalue;
@@ -40,9 +41,9 @@ export default defineComponent('cl-radio-button', {
                 </label>
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: inline-block;
         }
@@ -116,4 +117,6 @@ export default defineComponent('cl-radio-button', {
             color: var(--text-color, #333);
         }
     `
-});
+}
+
+export default defineComponent('cl-radio-button', ClRadioButton);

@@ -1,16 +1,16 @@
 /**
  * Spinner - Loading spinner/indicator
  */
-import { defineComponent, html, when } from '../../lib/framework.js';
+import { defineComponent, html, when, Component } from '../../lib/framework.js';
 
-export default defineComponent('cl-spinner', {
-    props: {
+export class ClSpinner extends Component {
+    static props = {
         size: 'medium', // 'small', 'medium', 'large', or pixel value like '48px'
         variant: 'border', // 'border', 'dots', 'bars', 'pulse'
         color: '',
         label: '',
         labelposition: 'bottom' // 'bottom', 'right'
-    },
+    }
 
     template() {
         const variant = this.props.variant || 'border';
@@ -43,9 +43,9 @@ export default defineComponent('cl-spinner', {
                 `)}
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: inline-block;
         }
@@ -214,4 +214,6 @@ export default defineComponent('cl-spinner', {
             }
         }
     `
-});
+}
+
+export default defineComponent('cl-spinner', ClSpinner);

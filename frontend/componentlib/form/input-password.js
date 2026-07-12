@@ -1,10 +1,14 @@
 /**
  * InputPassword - Password input with visibility toggle and strength meter
  */
-import { defineComponent, html, when } from '../../lib/framework.js';
+import { defineComponent, html, when, Component } from '../../lib/framework.js';
 
-export default defineComponent('cl-input-password', {
-    props: {
+/**
+ * @fires input - detail: { value }
+ * @fires change - detail: { value }
+ */
+export class ClInputPassword extends Component {
+    static props = {
         value: '',
         placeholder: '',
         disabled: false,
@@ -17,24 +21,26 @@ export default defineComponent('cl-input-password', {
         showStrength: false,    // Show password strength meter
         showToggle: true,       // Show visibility toggle button
         feedback: true          // Show feedback messages
-    },
+    }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             internalError: '',
             internalValue: '',
             passwordVisible: false,
             strength: 0,
             strengthLabel: ''
         };
-    },
+    }
 
     mounted() {
         this.state.internalValue = this.props.value || '';
         if (this.props.showStrength) {
             this.calculateStrength(this.state.internalValue);
         }
-    },
+    }
 
     propsChanged(prop, newValue, oldValue) {
         if (prop === 'value' && newValue !== this.state.internalValue) {
@@ -43,151 +49,147 @@ export default defineComponent('cl-input-password', {
                 this.calculateStrength(this.state.internalValue);
             }
         }
-    },
+    }
 
-    methods: {
-        handleInput(e) {
-            if (!e.target) return;
-            const value = e.target.value;
-            this.state.internalValue = value;
-            this.validateInput(value);
+    handleInput(e) {
+        if (!e.target) return;
+        const value = e.target.value;
+        this.state.internalValue = value;
+        this.validateInput(value);
 
-            if (this.props.showStrength) {
-                this.calculateStrength(value);
-            }
-
-            this.emitInput(e, value);
-            this.emitChange(e, value);
-        },
-
-        emitInput(e, value) {
-            if (e && e.stopPropagation) {
-                e.stopPropagation();
-            }
-            this.dispatchEvent(new CustomEvent('input', {
-                bubbles: true,
-                composed: true,
-                detail: { value }
-            }));
-        },
-
-        handleBlur(e) {
-            if (!e.target) return;
-            this.validateInput(e.target.value);
-        },
-
-        handleChange(e) {
-            // Stop the native change event from bubbling up
-            // This prevents x-model from receiving the native event (which lacks detail.value)
-            if (e && e.stopPropagation) {
-                e.stopPropagation();
-            }
-            // Emit a proper change event with the current value
-            this.emitChange(e, this.state.internalValue);
-        },
-
-        toggleVisibility() {
-            this.state.passwordVisible = !this.state.passwordVisible;
-        },
-
-        validateInput(value) {
-            if (this.props.required && !value) {
-                this.state.internalError = 'This field is required';
-                return false;
-            }
-
-            if (this.props.minlength && value.length < this.props.minlength) {
-                this.state.internalError = `Minimum length is ${this.props.minlength}`;
-                return false;
-            }
-
-            if (this.props.maxlength && value.length > this.props.maxlength) {
-                this.state.internalError = `Maximum length is ${this.props.maxlength}`;
-                return false;
-            }
-
-            this.state.internalError = '';
-            return true;
-        },
-
-        calculateStrength(password) {
-            if (!password) {
-                this.state.strength = 0;
-                this.state.strengthLabel = '';
-                return;
-            }
-
-            let score = 0;
-            const checks = {
-                length: password.length >= 8,
-                lowercase: /[a-z]/.test(password),
-                uppercase: /[A-Z]/.test(password),
-                numbers: /[0-9]/.test(password),
-                special: /[!@#$%^&*(),.?":{}|<>]/.test(password),
-                longLength: password.length >= 12
-            };
-
-            if (checks.length) score += 1;
-            if (checks.lowercase) score += 1;
-            if (checks.uppercase) score += 1;
-            if (checks.numbers) score += 1;
-            if (checks.special) score += 1;
-            if (checks.longLength) score += 1;
-
-            // Normalize to 0-100
-            this.state.strength = Math.min(100, (score / 6) * 100);
-
-            // Set label
-            if (score <= 2) {
-                this.state.strengthLabel = 'Weak';
-            } else if (score <= 4) {
-                this.state.strengthLabel = 'Medium';
-            } else {
-                this.state.strengthLabel = 'Strong';
-            }
-        },
-
-        getStrengthColor() {
-            if (this.state.strength <= 33) return 'var(--error-color, #dc3545)';
-            if (this.state.strength <= 66) return 'var(--warning-color, #ffc107)';
-            return 'var(--success-color, #28a745)';
-        },
-
-        getFeedback() {
-            if (!this.state.internalValue || !this.props.showStrength || !this.props.feedback) {
-                return [];
-            }
-
-            const feedback = [];
-            const password = this.state.internalValue;
-
-            if (password.length < 8) {
-                feedback.push('Use at least 8 characters');
-            }
-            if (!/[a-z]/.test(password)) {
-                feedback.push('Add lowercase letters');
-            }
-            if (!/[A-Z]/.test(password)) {
-                feedback.push('Add uppercase letters');
-            }
-            if (!/[0-9]/.test(password)) {
-                feedback.push('Add numbers');
-            }
-            if (!/[!@#$%^&*(),.?":{}|<>]/.test(password)) {
-                feedback.push('Add special characters');
-            }
-
-            return feedback.slice(0, 2); // Show max 2 suggestions
+        if (this.props.showStrength) {
+            this.calculateStrength(value);
         }
-    },
 
-    computed: {
-        strengthClass() {
-            if (this.state.strength <= 33) return 'weak';
-            if (this.state.strength <= 66) return 'medium';
-            return 'strong';
+        this.emitInput(e, value);
+        this.emitChange(e, value);
+    }
+
+    emitInput(e, value) {
+        if (e && e.stopPropagation) {
+            e.stopPropagation();
         }
-    },
+        this.dispatchEvent(new CustomEvent('input', {
+            bubbles: true,
+            composed: true,
+            detail: { value }
+        }));
+    }
+
+    handleBlur(e) {
+        if (!e.target) return;
+        this.validateInput(e.target.value);
+    }
+
+    handleChange(e) {
+        // Stop the native change event from bubbling up
+        // This prevents x-model from receiving the native event (which lacks detail.value)
+        if (e && e.stopPropagation) {
+            e.stopPropagation();
+        }
+        // Emit a proper change event with the current value
+        this.emitChange(e, this.state.internalValue);
+    }
+
+    toggleVisibility() {
+        this.state.passwordVisible = !this.state.passwordVisible;
+    }
+
+    validateInput(value) {
+        if (this.props.required && !value) {
+            this.state.internalError = 'This field is required';
+            return false;
+        }
+
+        if (this.props.minlength && value.length < this.props.minlength) {
+            this.state.internalError = `Minimum length is ${this.props.minlength}`;
+            return false;
+        }
+
+        if (this.props.maxlength && value.length > this.props.maxlength) {
+            this.state.internalError = `Maximum length is ${this.props.maxlength}`;
+            return false;
+        }
+
+        this.state.internalError = '';
+        return true;
+    }
+
+    calculateStrength(password) {
+        if (!password) {
+            this.state.strength = 0;
+            this.state.strengthLabel = '';
+            return;
+        }
+
+        let score = 0;
+        const checks = {
+            length: password.length >= 8,
+            lowercase: /[a-z]/.test(password),
+            uppercase: /[A-Z]/.test(password),
+            numbers: /[0-9]/.test(password),
+            special: /[!@#$%^&*(),.?":{}|<>]/.test(password),
+            longLength: password.length >= 12
+        };
+
+        if (checks.length) score += 1;
+        if (checks.lowercase) score += 1;
+        if (checks.uppercase) score += 1;
+        if (checks.numbers) score += 1;
+        if (checks.special) score += 1;
+        if (checks.longLength) score += 1;
+
+        // Normalize to 0-100
+        this.state.strength = Math.min(100, (score / 6) * 100);
+
+        // Set label
+        if (score <= 2) {
+            this.state.strengthLabel = 'Weak';
+        } else if (score <= 4) {
+            this.state.strengthLabel = 'Medium';
+        } else {
+            this.state.strengthLabel = 'Strong';
+        }
+    }
+
+    getStrengthColor() {
+        if (this.state.strength <= 33) return 'var(--error-color, #dc3545)';
+        if (this.state.strength <= 66) return 'var(--warning-color, #ffc107)';
+        return 'var(--success-color, #28a745)';
+    }
+
+    getFeedback() {
+        if (!this.state.internalValue || !this.props.showStrength || !this.props.feedback) {
+            return [];
+        }
+
+        const feedback = [];
+        const password = this.state.internalValue;
+
+        if (password.length < 8) {
+            feedback.push('Use at least 8 characters');
+        }
+        if (!/[a-z]/.test(password)) {
+            feedback.push('Add lowercase letters');
+        }
+        if (!/[A-Z]/.test(password)) {
+            feedback.push('Add uppercase letters');
+        }
+        if (!/[0-9]/.test(password)) {
+            feedback.push('Add numbers');
+        }
+        if (!/[!@#$%^&*(),.?":{}|<>]/.test(password)) {
+            feedback.push('Add special characters');
+        }
+
+        return feedback.slice(0, 2); // Show max 2 suggestions
+    }
+
+    get strengthClass() {
+        if (this.state.strength <= 33) return 'weak';
+        if (this.state.strength <= 66) return 'medium';
+        return 'strong';
+    }
 
     template() {
         const feedback = this.getFeedback();
@@ -252,9 +254,9 @@ export default defineComponent('cl-input-password', {
                 `)}
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -415,4 +417,6 @@ export default defineComponent('cl-input-password', {
             color: var(--error-color, #dc3545);
         }
     `
-});
+}
+
+export default defineComponent('cl-input-password', ClInputPassword);

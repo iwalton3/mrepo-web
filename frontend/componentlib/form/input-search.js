@@ -1,10 +1,18 @@
 /**
  * InputSearch - Search input with clear button and optional suggestions
  */
-import { defineComponent, html, when, each } from '../../lib/framework.js';
+import { defineComponent, html, when, each, Component } from '../../lib/framework.js';
 
-export default defineComponent('cl-input-search', {
-    props: {
+/**
+ * @fires input - detail: { value } - on each keystroke
+ * @fires search - detail: { value } - debounced
+ * @fires submit - detail: { value } - Enter pressed
+ * @fires clear - the field was cleared
+ * @fires select - detail: { value, suggestion }
+ * @fires change - detail: { value }
+ */
+export class ClInputSearch extends Component {
+    static props = {
         value: '',
         placeholder: 'Search...',
         disabled: false,
@@ -14,15 +22,17 @@ export default defineComponent('cl-input-search', {
         debounce: 300,          // Debounce delay in ms for search event
         loading: false,
         showClear: true
-    },
+    }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             internalValue: '',
             showSuggestions: false,
             highlightedIndex: -1
         };
-    },
+    }
 
     mounted() {
         this.state.internalValue = this.props.value || '';
@@ -33,7 +43,7 @@ export default defineComponent('cl-input-search', {
             }
         };
         document.addEventListener('click', this._clickOutside);
-    },
+    }
 
     unmounted() {
         if (this._clickOutside) {
@@ -42,152 +52,148 @@ export default defineComponent('cl-input-search', {
         if (this._debounceTimer) {
             clearTimeout(this._debounceTimer);
         }
-    },
+    }
 
     propsChanged(prop, newValue, oldValue) {
         if (prop === 'value' && newValue !== this.state.internalValue) {
             this.state.internalValue = newValue || '';
         }
-    },
+    }
 
-    methods: {
-        handleInput(e) {
-            if (!e.target) return;
-            const value = e.target.value;
-            this.state.internalValue = value;
-            this.state.highlightedIndex = -1;
+    handleInput(e) {
+        if (!e.target) return;
+        const value = e.target.value;
+        this.state.internalValue = value;
+        this.state.highlightedIndex = -1;
 
-            // Show suggestions if we have enough characters
-            if (value.length >= this.props.minChars && this.props.suggestions.length > 0) {
-                this.state.showSuggestions = true;
-            } else {
-                this.state.showSuggestions = false;
-            }
+        // Show suggestions if we have enough characters
+        if (value.length >= this.props.minChars && this.props.suggestions.length > 0) {
+            this.state.showSuggestions = true;
+        } else {
+            this.state.showSuggestions = false;
+        }
 
-            // Emit input event immediately
-            this.dispatchEvent(new CustomEvent('input', {
+        // Emit input event immediately
+        this.dispatchEvent(new CustomEvent('input', {
+            bubbles: true,
+            composed: true,
+            detail: { value }
+        }));
+
+        // Emit change event for x-model compatibility
+        this.emitChange(e, value);
+
+        // Debounce search event
+        if (this._debounceTimer) {
+            clearTimeout(this._debounceTimer);
+        }
+        this._debounceTimer = setTimeout(() => {
+            this.dispatchEvent(new CustomEvent('search', {
                 bubbles: true,
                 composed: true,
                 detail: { value }
             }));
+        }, this.props.debounce);
+    }
 
-            // Emit change event for x-model compatibility
-            this.emitChange(e, value);
+    handleKeyDown(e) {
+        const suggestions = this.filteredSuggestions;
 
-            // Debounce search event
-            if (this._debounceTimer) {
-                clearTimeout(this._debounceTimer);
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            if (!this.state.showSuggestions && suggestions.length > 0) {
+                this.state.showSuggestions = true;
             }
-            this._debounceTimer = setTimeout(() => {
-                this.dispatchEvent(new CustomEvent('search', {
+            this.state.highlightedIndex = Math.min(
+                this.state.highlightedIndex + 1,
+                suggestions.length - 1
+            );
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            this.state.highlightedIndex = Math.max(
+                this.state.highlightedIndex - 1,
+                0
+            );
+        } else if (e.key === 'Enter') {
+            if (this.state.highlightedIndex >= 0 && this.state.highlightedIndex < suggestions.length) {
+                e.preventDefault();
+                this.selectSuggestion(suggestions[this.state.highlightedIndex]);
+            } else {
+                // Submit search
+                this.dispatchEvent(new CustomEvent('submit', {
                     bubbles: true,
                     composed: true,
-                    detail: { value }
+                    detail: { value: this.state.internalValue }
                 }));
-            }, this.props.debounce);
-        },
-
-        handleKeyDown(e) {
-            const suggestions = this.filteredSuggestions;
-
-            if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                if (!this.state.showSuggestions && suggestions.length > 0) {
-                    this.state.showSuggestions = true;
-                }
-                this.state.highlightedIndex = Math.min(
-                    this.state.highlightedIndex + 1,
-                    suggestions.length - 1
-                );
-            } else if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                this.state.highlightedIndex = Math.max(
-                    this.state.highlightedIndex - 1,
-                    0
-                );
-            } else if (e.key === 'Enter') {
-                if (this.state.highlightedIndex >= 0 && this.state.highlightedIndex < suggestions.length) {
-                    e.preventDefault();
-                    this.selectSuggestion(suggestions[this.state.highlightedIndex]);
-                } else {
-                    // Submit search
-                    this.dispatchEvent(new CustomEvent('submit', {
-                        bubbles: true,
-                        composed: true,
-                        detail: { value: this.state.internalValue }
-                    }));
-                }
-            } else if (e.key === 'Escape') {
-                this.state.showSuggestions = false;
-                this.state.highlightedIndex = -1;
             }
-        },
-
-        handleFocus() {
-            if (this.state.internalValue.length >= this.props.minChars &&
-                this.filteredSuggestions.length > 0) {
-                this.state.showSuggestions = true;
-            }
-        },
-
-        clearSearch() {
-            this.state.internalValue = '';
+        } else if (e.key === 'Escape') {
             this.state.showSuggestions = false;
             this.state.highlightedIndex = -1;
-
-            this.dispatchEvent(new CustomEvent('input', {
-                bubbles: true,
-                composed: true,
-                detail: { value: '' }
-            }));
-
-            this.dispatchEvent(new CustomEvent('clear', {
-                bubbles: true,
-                composed: true
-            }));
-
-            // Focus the input after clearing
-            const input = this.querySelector('input');
-            if (input) input.focus();
-        },
-
-        selectSuggestion(suggestion) {
-            const value = typeof suggestion === 'object' ? suggestion.label || suggestion.value : suggestion;
-            this.state.internalValue = value;
-            this.state.showSuggestions = false;
-            this.state.highlightedIndex = -1;
-
-            this.dispatchEvent(new CustomEvent('input', {
-                bubbles: true,
-                composed: true,
-                detail: { value }
-            }));
-
-            this.dispatchEvent(new CustomEvent('select', {
-                bubbles: true,
-                composed: true,
-                detail: { value, suggestion }
-            }));
-        },
-
-        getSuggestionText(suggestion) {
-            return typeof suggestion === 'object' ? suggestion.label || suggestion.value : suggestion;
         }
-    },
+    }
 
-    computed: {
-        filteredSuggestions() {
-            if (!this.props.suggestions || !this.state.internalValue) {
-                return this.props.suggestions || [];
-            }
-
-            const query = this.state.internalValue.toLowerCase();
-            return this.props.suggestions.filter(s => {
-                const text = typeof s === 'object' ? (s.label || s.value || '') : s;
-                return text.toLowerCase().includes(query);
-            });
+    handleFocus() {
+        if (this.state.internalValue.length >= this.props.minChars &&
+            this.filteredSuggestions.length > 0) {
+            this.state.showSuggestions = true;
         }
-    },
+    }
+
+    clearSearch() {
+        this.state.internalValue = '';
+        this.state.showSuggestions = false;
+        this.state.highlightedIndex = -1;
+
+        this.dispatchEvent(new CustomEvent('input', {
+            bubbles: true,
+            composed: true,
+            detail: { value: '' }
+        }));
+
+        this.dispatchEvent(new CustomEvent('clear', {
+            bubbles: true,
+            composed: true
+        }));
+
+        // Focus the input after clearing
+        const input = this.querySelector('input');
+        if (input) input.focus();
+    }
+
+    selectSuggestion(suggestion) {
+        const value = typeof suggestion === 'object' ? suggestion.label || suggestion.value : suggestion;
+        this.state.internalValue = value;
+        this.state.showSuggestions = false;
+        this.state.highlightedIndex = -1;
+
+        this.dispatchEvent(new CustomEvent('input', {
+            bubbles: true,
+            composed: true,
+            detail: { value }
+        }));
+
+        this.dispatchEvent(new CustomEvent('select', {
+            bubbles: true,
+            composed: true,
+            detail: { value, suggestion }
+        }));
+    }
+
+    getSuggestionText(suggestion) {
+        return typeof suggestion === 'object' ? suggestion.label || suggestion.value : suggestion;
+    }
+
+    get filteredSuggestions() {
+        if (!this.props.suggestions || !this.state.internalValue) {
+            return this.props.suggestions || [];
+        }
+
+        const query = this.state.internalValue.toLowerCase();
+        return this.props.suggestions.filter(s => {
+            const text = typeof s === 'object' ? (s.label || s.value || '') : s;
+            return text.toLowerCase().includes(query);
+        });
+    }
 
     template() {
         const suggestions = this.filteredSuggestions;
@@ -243,9 +249,9 @@ export default defineComponent('cl-input-search', {
                 `)}
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -368,4 +374,6 @@ export default defineComponent('cl-input-search', {
             border-radius: 0 0 8px 8px;
         }
     `
-});
+}
+
+export default defineComponent('cl-input-search', ClInputSearch);

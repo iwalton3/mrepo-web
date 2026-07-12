@@ -1,41 +1,39 @@
 /**
  * Checkbox - Checkbox input with label
  */
-import { defineComponent, html, when } from '../../lib/framework.js';
+import { defineComponent, html, when, Component } from '../../lib/framework.js';
 
-export default defineComponent('cl-checkbox', {
-    props: {
+/**
+ * @fires change - detail: { value } - the checked state
+ */
+export class ClCheckbox extends Component {
+    static props = {
         checked: false,
         value: null,  // Used for x-model compatibility - null means "not set by x-model"
         disabled: false,
         label: '',
         binary: true,
         checkboxValue: ''  // Renamed from 'value' for non-binary mode
-    },
+    }
 
-    methods: {
-        handleChange(e) {
-            const checked = e.target.checked;
-            if (this.props.binary) {
-                this.emitChange(e, checked);
-            } else {
-                this.emitChange(e, checked ? this.props.checkboxValue : null);
-            }
-        },
-
-    },
-
-    computed: {
-        // Get the actual checked state (supports both 'checked' and 'value' props for x-model)
-        checkedState() {
-            // x-model sets 'value' prop, manual usage sets 'checked' prop
-            // If value is a boolean, use it; otherwise use checked
-            if (typeof this.props.value === 'boolean') {
-                return this.props.value;
-            }
-            return this.props.checked;
+    handleChange(e) {
+        const checked = e.target.checked;
+        if (this.props.binary) {
+            this.emitChange(e, checked);
+        } else {
+            this.emitChange(e, checked ? this.props.checkboxValue : null);
         }
-    },
+    }
+
+    // Get the actual checked state (supports both 'checked' and 'value' props for x-model)
+    get checkedState() {
+        // x-model sets 'value' prop, manual usage sets 'checked' prop
+        // If value is a boolean, use it; otherwise use checked
+        if (typeof this.props.value === 'boolean') {
+            return this.props.value;
+        }
+        return this.props.checked;
+    }
 
     template() {
         const isChecked = this.checkedState;
@@ -55,9 +53,9 @@ export default defineComponent('cl-checkbox', {
                 </label>
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: inline-block;
         }
@@ -133,4 +131,6 @@ export default defineComponent('cl-checkbox', {
             color: var(--text-color, #333);
         }
     `
-});
+}
+
+export default defineComponent('cl-checkbox', ClCheckbox);

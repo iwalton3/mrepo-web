@@ -7,12 +7,17 @@
  * - Parent scrolling - tracks a parent scrollable container
  * - Window scrolling - tracks the window/document scroll
  */
-import { defineComponent, html, memoEach, when } from '../../lib/framework.js';
+import { defineComponent, html, memoEach, when, Component } from '../../lib/framework.js';
 import { createWindowing } from '../../lib/windowing.js';
 import { createRowGestures, gapToRemoveInsertIndex } from '../../lib/gestures.js';
 
-export default defineComponent('cl-virtual-list', {
-    props: {
+/**
+ * @fires reorder - detail: { fromIndices, gap, from, to }
+ * @fires select - detail: { item, index, key }
+ * @fires item-click - detail: { item, index, key }
+ */
+export class ClVirtualList extends Component {
+    static props = {
         items: [],
         itemHeight: 50,         // Height of each item in pixels
         bufferSize: 10,         // Number of extra items to render above/below viewport
@@ -26,9 +31,11 @@ export default defineComponent('cl-virtual-list', {
         selectedKey: null,      // Key of selected item (using keyFn) - preferred for virtual scroll
         scrollContainer: 'self', // 'self' | 'parent' | 'window' | CSS selector
         reorderable: false      // Enable drag-to-reorder (desktop DnD + touch drag handle)
-    },
+    }
 
-    data() {
+    constructor(props) {
+        super(props);
+
         // Windowing controller owns the visible-range state and scroll/resize
         // plumbing. Created in data() so its state exists for the first render;
         // the scroll mode is applied in mounted() once props are parsed.
@@ -71,10 +78,10 @@ export default defineComponent('cl-virtual-list', {
             }
         });
 
-        return {
+        this.state = {
             internalSelectedKey: null  // Track selection by key for memoization compatibility
         };
-    },
+    }
 
     mounted() {
         // Initialize selection - prefer selectedKey, fall back to selectedIndex
@@ -86,7 +93,7 @@ export default defineComponent('cl-virtual-list', {
         // (Re-)attach listeners/observers and apply the scroll mode from props
         this._win.attach();
         this._win.setScrollContainer(this.props.scrollContainer);
-    },
+    }
 
     unmounted() {
         // Keep the controllers (and their state) for potential reconnection;
@@ -96,7 +103,7 @@ export default defineComponent('cl-virtual-list', {
         // reconnection (both controllers are created once in data()).
         this._win.detach();
         this._gestures.cancel();
-    },
+    }
 
     propsChanged(prop, newValue, oldValue) {
         if (prop === 'items' || prop === 'itemHeight' || prop === 'bufferSize') {
@@ -117,142 +124,141 @@ export default defineComponent('cl-virtual-list', {
             this._updateScrollContainerAttribute();
             this._win.setScrollContainer(newValue);
         }
-    },
+    }
 
-    methods: {
-        _initializeSelection() {
-            const keyFn = this.props.keyFn || this._defaultKeyFn;
-            const items = this.props.items || [];
+    _initializeSelection() {
+        const keyFn = this.props.keyFn || this._defaultKeyFn;
+        const items = this.props.items || [];
 
-            // Prefer selectedKey if provided
-            if (this.props.selectedKey !== null) {
-                this.state.internalSelectedKey = this.props.selectedKey;
-            } else if (this.props.selectedIndex >= 0 && this.props.selectedIndex < items.length) {
-                // Legacy: convert selectedIndex to key
-                this.state.internalSelectedKey = keyFn(items[this.props.selectedIndex], this.props.selectedIndex);
-            }
-        },
+        // Prefer selectedKey if provided
+        if (this.props.selectedKey !== null) {
+            this.state.internalSelectedKey = this.props.selectedKey;
+        } else if (this.props.selectedIndex >= 0 && this.props.selectedIndex < items.length) {
+            // Legacy: convert selectedIndex to key
+            this.state.internalSelectedKey = keyFn(items[this.props.selectedIndex], this.props.selectedIndex);
+        }
+    }
 
-        _findIndexByKey(key) {
-            if (key === null) return -1;
-            const keyFn = this.props.keyFn || this._defaultKeyFn;
-            const items = this.props.items || [];
-            for (let i = 0; i < items.length; i++) {
-                if (keyFn(items[i], i) === key) return i;
-            }
-            return -1;
-        },
+    _findIndexByKey(key) {
+        if (key === null) return -1;
+        const keyFn = this.props.keyFn || this._defaultKeyFn;
+        const items = this.props.items || [];
+        for (let i = 0; i < items.length; i++) {
+            if (keyFn(items[i], i) === key) return i;
+        }
+        return -1;
+    }
 
-        _updateScrollContainerAttribute() {
-            // Reflect prop to attribute for CSS styling
-            const container = this.props.scrollContainer;
-            this.setAttribute('scroll-container', container);
+    _updateScrollContainerAttribute() {
+        // Reflect prop to attribute for CSS styling
+        const container = this.props.scrollContainer;
+        this.setAttribute('scroll-container', container);
 
-            // Set height CSS variable for self-scroll mode
-            if (container === 'self') {
-                this.style.setProperty('--virtual-list-height', this.props.height);
-            }
-        },
+        // Set height CSS variable for self-scroll mode
+        if (container === 'self') {
+            this.style.setProperty('--virtual-list-height', this.props.height);
+        }
+    }
 
-        scrollToIndex(index) {
-            this._win.scrollToIndex(index);
-        },
+    scrollToIndex(index) {
+        this._win.scrollToIndex(index);
+    }
 
-        scrollToTop() {
-            this._win.scrollToTop();
-        },
+    scrollToTop() {
+        this._win.scrollToTop();
+    }
 
-        scrollToBottom() {
-            this._win.scrollToBottom();
-        },
+    scrollToBottom() {
+        this._win.scrollToBottom();
+    }
 
-        handleItemClick(item, key) {
-            // Find the index in the full items array
-            const index = this._findIndexByKey(key);
+    handleItemClick(item, key) {
+        // Find the index in the full items array
+        const index = this._findIndexByKey(key);
 
-            if (this.props.selectable) {
-                this.state.internalSelectedKey = key;
-                this.dispatchEvent(new CustomEvent('select', {
-                    bubbles: true,
-                    composed: true,
-                    detail: { item, index, key }
-                }));
-            }
-
-            this.dispatchEvent(new CustomEvent('item-click', {
+        if (this.props.selectable) {
+            this.state.internalSelectedKey = key;
+            this.dispatchEvent(new CustomEvent('select', {
                 bubbles: true,
                 composed: true,
                 detail: { item, index, key }
             }));
-        },
+        }
 
-        handleKeyDown(e) {
-            if (!this.props.selectable) return;
+        this.dispatchEvent(new CustomEvent('item-click', {
+            bubbles: true,
+            composed: true,
+            detail: { item, index, key }
+        }));
+    }
 
-            const items = this.props.items;
-            if (!items || items.length === 0) return;
+    handleKeyDown(e) {
+        if (!this.props.selectable) return;
 
-            const keyFn = this.props.keyFn || this._defaultKeyFn;
-            const currentIndex = this._findIndexByKey(this.state.internalSelectedKey);
+        const items = this.props.items;
+        if (!items || items.length === 0) return;
 
-            if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                const newIndex = Math.min(currentIndex + 1, items.length - 1);
-                const newKey = keyFn(items[newIndex], newIndex);
-                this.state.internalSelectedKey = newKey;
-                this.scrollToIndex(newIndex);
-                this.dispatchEvent(new CustomEvent('select', {
+        const keyFn = this.props.keyFn || this._defaultKeyFn;
+        const currentIndex = this._findIndexByKey(this.state.internalSelectedKey);
+
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            const newIndex = Math.min(currentIndex + 1, items.length - 1);
+            const newKey = keyFn(items[newIndex], newIndex);
+            this.state.internalSelectedKey = newKey;
+            this.scrollToIndex(newIndex);
+            this.dispatchEvent(new CustomEvent('select', {
+                bubbles: true,
+                composed: true,
+                detail: { item: items[newIndex], index: newIndex, key: newKey }
+            }));
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            const newIndex = Math.max(currentIndex - 1, 0);
+            const newKey = keyFn(items[newIndex], newIndex);
+            this.state.internalSelectedKey = newKey;
+            this.scrollToIndex(newIndex);
+            this.dispatchEvent(new CustomEvent('select', {
+                bubbles: true,
+                composed: true,
+                detail: { item: items[newIndex], index: newIndex, key: newKey }
+            }));
+        } else if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            if (currentIndex >= 0 && currentIndex < items.length) {
+                const key = this.state.internalSelectedKey;
+                this.dispatchEvent(new CustomEvent('item-click', {
                     bubbles: true,
                     composed: true,
-                    detail: { item: items[newIndex], index: newIndex, key: newKey }
+                    detail: { item: items[currentIndex], index: currentIndex, key }
                 }));
-            } else if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                const newIndex = Math.max(currentIndex - 1, 0);
-                const newKey = keyFn(items[newIndex], newIndex);
-                this.state.internalSelectedKey = newKey;
-                this.scrollToIndex(newIndex);
-                this.dispatchEvent(new CustomEvent('select', {
-                    bubbles: true,
-                    composed: true,
-                    detail: { item: items[newIndex], index: newIndex, key: newKey }
-                }));
-            } else if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                if (currentIndex >= 0 && currentIndex < items.length) {
-                    const key = this.state.internalSelectedKey;
-                    this.dispatchEvent(new CustomEvent('item-click', {
-                        bubbles: true,
-                        composed: true,
-                        detail: { item: items[currentIndex], index: currentIndex, key }
-                    }));
-                }
             }
-        },
+        }
+    }
 
-        // Default key function for memoization
-        _defaultKeyFn(item, index) {
-            return item.id ?? item.uuid ?? item.key ?? index;
-        },
+    // Default key function for memoization
+    _defaultKeyFn(item, index) {
+        return item.id ?? item.uuid ?? item.key ?? index;
+    }
 
-        // Render a single row. When `reorderable`, the row carries the full
-        // gesture suite: whole-row HTML5 DnD on non-touch (draggable + drag
-        // handlers) plus a rendered drag handle whose touch handlers drive the
-        // touch-drag path. `absIndex` is the item's absolute index in the full
-        // items array (visibleStart + local index) - the gesture controller does
-        // all gap math in absolute-index space and looks rows up by data-index.
-        _renderRow(item, itemKey, isSelected, absIndex) {
-            const itemHeight = Number(this.props.itemHeight) || 50;
-            const g = this._gestures;
+    // Render a single row. When `reorderable`, the row carries the full
+    // gesture suite: whole-row HTML5 DnD on non-touch (draggable + drag
+    // handlers) plus a rendered drag handle whose touch handlers drive the
+    // touch-drag path. `absIndex` is the item's absolute index in the full
+    // items array (visibleStart + local index) - the gesture controller does
+    // all gap math in absolute-index space and looks rows up by data-index.
+    _renderRow(item, itemKey, isSelected, absIndex) {
+        const itemHeight = Number(this.props.itemHeight) || 50;
+        const g = this._gestures;
 
-            // Inner content: custom renderItem, or the default title/subtitle.
-            let content;
-            if (this.props.renderItem && typeof this.props.renderItem === 'function') {
-                content = this.props.renderItem(item, itemKey);
-            } else {
-                const title = item.title || item.name || item.label || String(itemKey);
-                const subtitle = item.subtitle || item.description || '';
-                content = html`
+        // Inner content: custom renderItem, or the default title/subtitle.
+        let content;
+        if (this.props.renderItem && typeof this.props.renderItem === 'function') {
+            content = this.props.renderItem(item, itemKey);
+        } else {
+            const title = item.title || item.name || item.label || String(itemKey);
+            const subtitle = item.subtitle || item.description || '';
+            content = html`
                     <div class="item-content">
                         <div class="item-title">${title}</div>
                         ${when(subtitle, html`
@@ -260,15 +266,15 @@ export default defineComponent('cl-virtual-list', {
                         `)}
                     </div>
                 `;
-            }
+        }
 
-            if (this.props.reorderable) {
-                // Per the gestures passive-safety table: DnD handlers preventDefault
-                // and are bound non-passive (on-dragstart/over/leave/drop/end); the
-                // handle's touch handlers also preventDefault to suppress scrolling
-                // and are bound non-passive (plain on-touchstart/move/end). No
-                // tap/long-press handlers are wired here - reorder only.
-                return html`
+        if (this.props.reorderable) {
+            // Per the gestures passive-safety table: DnD handlers preventDefault
+            // and are bound non-passive (on-dragstart/over/leave/drop/end); the
+            // handle's touch handlers also preventDefault to suppress scrolling
+            // and are bound non-passive (plain on-touchstart/move/end). No
+            // tap/long-press handlers are wired here - reorder only.
+            return html`
                     <div
                         class="virtual-list-item ${isSelected ? 'selected' : ''}"
                         style="height: ${itemHeight}px;"
@@ -290,9 +296,9 @@ export default defineComponent('cl-virtual-list', {
                         ${content}
                     </div>
                 `;
-            }
+        }
 
-            return html`
+        return html`
                 <div
                     class="virtual-list-item ${isSelected ? 'selected' : ''}"
                     style="height: ${itemHeight}px;"
@@ -301,8 +307,7 @@ export default defineComponent('cl-virtual-list', {
                     ${content}
                 </div>
             `;
-        }
-    },
+    }
 
     template() {
         const items = this.props.items || [];
@@ -365,9 +370,9 @@ export default defineComponent('cl-virtual-list', {
                 </div>
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
             position: relative;
@@ -533,4 +538,6 @@ export default defineComponent('cl-virtual-list', {
             font-size: 14px;
         }
     `
-});
+}
+
+export default defineComponent('cl-virtual-list', ClVirtualList);

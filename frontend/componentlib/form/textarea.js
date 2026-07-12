@@ -7,13 +7,16 @@
  * - aria-invalid for error state
  * - aria-required for required fields
  */
-import { defineComponent, html, when } from '../../lib/framework.js';
+import { defineComponent, html, when, Component } from '../../lib/framework.js';
 
 // Counter for unique IDs
 let textareaIdCounter = 0;
 
-export default defineComponent('cl-textarea', {
-    props: {
+/**
+ * @fires change - detail: { value }
+ */
+export class ClTextarea extends Component {
+    static props = {
         value: '',
         placeholder: '',
         disabled: false,
@@ -24,46 +27,46 @@ export default defineComponent('cl-textarea', {
         label: '',
         error: '',
         showcount: false
-    },
+    }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             textareaId: `cl-textarea-${++textareaIdCounter}`
         };
-    },
+    }
 
-    methods: {
-        handleInput(e) {
-            const value = e.target.value;
+    handleInput(e) {
+        const value = e.target.value;
 
-            if (this.props.autoresize) {
-                this.resizeTextarea(e.target);
-            }
-
-            this.emitChange(e, value);
-        },
-
-        handleChange(e) {
-            // Stop the native change event from bubbling up
-            // This prevents x-model from receiving the native event (which lacks detail.value)
-            if (e && e.stopPropagation) {
-                e.stopPropagation();
-            }
-            // Emit a proper change event with the current value
-            this.emitChange(e, e.target.value);
-        },
-
-        resizeTextarea(textarea) {
-            textarea.style.height = 'auto';
-            textarea.style.height = textarea.scrollHeight + 'px';
-        },
-
-        afterRender() {
-            if (this.props.autoresize && this.refs.textarea) {
-                this.resizeTextarea(this.refs.textarea);
-            }
+        if (this.props.autoresize) {
+            this.resizeTextarea(e.target);
         }
-    },
+
+        this.emitChange(e, value);
+    }
+
+    handleChange(e) {
+        // Stop the native change event from bubbling up
+        // This prevents x-model from receiving the native event (which lacks detail.value)
+        if (e && e.stopPropagation) {
+            e.stopPropagation();
+        }
+        // Emit a proper change event with the current value
+        this.emitChange(e, e.target.value);
+    }
+
+    resizeTextarea(textarea) {
+        textarea.style.height = 'auto';
+        textarea.style.height = textarea.scrollHeight + 'px';
+    }
+
+    afterRender() {
+        if (this.props.autoresize && this.refs.textarea) {
+            this.resizeTextarea(this.refs.textarea);
+        }
+    }
 
     template() {
         const charCount = this.props.value.length;
@@ -103,9 +106,9 @@ export default defineComponent('cl-textarea', {
                 `)}
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -165,4 +168,6 @@ export default defineComponent('cl-textarea', {
             color: var(--error-color, #dc3545);
         }
     `
-});
+}
+
+export default defineComponent('cl-textarea', ClTextarea);

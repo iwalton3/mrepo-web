@@ -67,6 +67,8 @@ export interface ClButtonProps {
   disabled?: boolean;
   /** Loading state (shows spinner) */
   loading?: boolean;
+  /** Native button type, forwarded to the inner <button>. Defaults to 'submit'. */
+  type?: 'submit' | 'button' | 'reset';
 }
 
 /**

@@ -1,195 +1,198 @@
 /**
  * OrderableList - Drag and drop reorderable list
  */
-import { defineComponent, html, when, each } from '../../lib/framework.js';
+import { defineComponent, html, when, each, Component } from '../../lib/framework.js';
 
-export default defineComponent('cl-orderable-list', {
-    props: {
+/**
+ * @fires change - detail: { value } - the reordered items array
+ */
+export class ClOrderableList extends Component {
+    static props = {
         value: [],
         itemlabel: 'label',
         header: 'List Items'
-    },
+    }
 
-    data() {
-        return {
+    constructor(props) {
+        super(props);
+
+        this.state = {
             dragIndex: null
         };
-    },
+    }
 
-    methods: {
-        isTouchDevice() {
-            return 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-        },
+    isTouchDevice() {
+        return 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    }
 
-        // Desktop drag handlers
-        handleDragStart(index, event) {
-            this.state.dragIndex = index;
-            event.dataTransfer.effectAllowed = 'move';
-            event.target.classList.add('dragging');
-        },
+    // Desktop drag handlers
+    handleDragStart(index, event) {
+        this.state.dragIndex = index;
+        event.dataTransfer.effectAllowed = 'move';
+        event.target.classList.add('dragging');
+    }
 
-        handleDragEnd(event) {
-            event.target.classList.remove('dragging');
-            this.querySelectorAll('.drop-target, .drop-target-after').forEach(el => {
-                el.classList.remove('drop-target', 'drop-target-after');
-            });
-            this.state.dragIndex = null;
-            this._dropPosition = null;
-        },
+    handleDragEnd(event) {
+        event.target.classList.remove('dragging');
+        this.querySelectorAll('.drop-target, .drop-target-after').forEach(el => {
+            el.classList.remove('drop-target', 'drop-target-after');
+        });
+        this.state.dragIndex = null;
+        this._dropPosition = null;
+    }
 
-        handleDragOver(index, event) {
-            event.preventDefault();
-            event.dataTransfer.dropEffect = 'move';
-            if (this.state.dragIndex !== null && this.state.dragIndex !== index) {
-                const item = event.currentTarget;
+    handleDragOver(index, event) {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        if (this.state.dragIndex !== null && this.state.dragIndex !== index) {
+            const item = event.currentTarget;
 
-                // Determine if we're in the top or bottom half of the item
-                const rect = item.getBoundingClientRect();
-                const midpoint = rect.top + rect.height / 2;
-                const isBottomHalf = event.clientY > midpoint;
+            // Determine if we're in the top or bottom half of the item
+            const rect = item.getBoundingClientRect();
+            const midpoint = rect.top + rect.height / 2;
+            const isBottomHalf = event.clientY > midpoint;
 
-                // Clear previous indicators
-                this.querySelectorAll('.drop-target, .drop-target-after').forEach(el => {
-                    el.classList.remove('drop-target', 'drop-target-after');
-                });
-
-                if (isBottomHalf) {
-                    item.classList.add('drop-target-after');
-                    this._dropPosition = index + 1;
-                } else {
-                    item.classList.add('drop-target');
-                    this._dropPosition = index;
-                }
-            }
-        },
-
-        handleDragLeave(event) {
-            const relatedTarget = event.relatedTarget;
-            if (!relatedTarget || !event.currentTarget.contains(relatedTarget)) {
-                event.currentTarget.classList.remove('drop-target', 'drop-target-after');
-            }
-        },
-
-        handleDrop(index, event) {
-            event.preventDefault();
+            // Clear previous indicators
             this.querySelectorAll('.drop-target, .drop-target-after').forEach(el => {
                 el.classList.remove('drop-target', 'drop-target-after');
             });
 
-            const dragIndex = this.state.dragIndex;
-            if (dragIndex === null || this._dropPosition === null || this._dropPosition === undefined) {
-                return;
+            if (isBottomHalf) {
+                item.classList.add('drop-target-after');
+                this._dropPosition = index + 1;
+            } else {
+                item.classList.add('drop-target');
+                this._dropPosition = index;
             }
+        }
+    }
 
-            if (dragIndex !== this._dropPosition && dragIndex !== this._dropPosition - 1) {
-                this._reorderItemsToPosition(dragIndex, this._dropPosition);
-            }
-            this.state.dragIndex = null;
-            this._dropPosition = null;
-        },
+    handleDragLeave(event) {
+        const relatedTarget = event.relatedTarget;
+        if (!relatedTarget || !event.currentTarget.contains(relatedTarget)) {
+            event.currentTarget.classList.remove('drop-target', 'drop-target-after');
+        }
+    }
 
-        // Touch drag handlers for mobile
-        handleHandleTouchStart(index, e) {
-            e.stopPropagation();
-            e.preventDefault();
-            this._touchDragIndex = index;
+    handleDrop(index, event) {
+        event.preventDefault();
+        this.querySelectorAll('.drop-target, .drop-target-after').forEach(el => {
+            el.classList.remove('drop-target', 'drop-target-after');
+        });
 
-            const sourceItem = this.querySelectorAll('.list-item')[index];
-            if (sourceItem) {
-                sourceItem.classList.add('dragging');
-            }
-        },
+        const dragIndex = this.state.dragIndex;
+        if (dragIndex === null || this._dropPosition === null || this._dropPosition === undefined) {
+            return;
+        }
 
-        handleHandleTouchMove(e) {
-            if (this._touchDragIndex === null || this._touchDragIndex === undefined) return;
-            e.stopPropagation();
-            e.preventDefault();
+        if (dragIndex !== this._dropPosition && dragIndex !== this._dropPosition - 1) {
+            this._reorderItemsToPosition(dragIndex, this._dropPosition);
+        }
+        this.state.dragIndex = null;
+        this._dropPosition = null;
+    }
 
-            const touch = e.touches[0];
+    // Touch drag handlers for mobile
+    handleHandleTouchStart(index, e) {
+        e.stopPropagation();
+        e.preventDefault();
+        this._touchDragIndex = index;
 
-            // Clear previous drop-target classes
-            this.querySelectorAll('.drop-target, .drop-target-after').forEach(el => {
-                el.classList.remove('drop-target', 'drop-target-after');
-            });
+        const sourceItem = this.querySelectorAll('.list-item')[index];
+        if (sourceItem) {
+            sourceItem.classList.add('dragging');
+        }
+    }
 
-            // Reset drop index
-            this._touchDropIndex = null;
+    handleHandleTouchMove(e) {
+        if (this._touchDragIndex === null || this._touchDragIndex === undefined) return;
+        e.stopPropagation();
+        e.preventDefault();
 
-            // Find which item we're over
-            const elemUnder = document.elementFromPoint(touch.clientX, touch.clientY);
-            if (elemUnder) {
-                const listItem = elemUnder.closest('.list-item');
-                if (listItem && !listItem.classList.contains('dragging')) {
-                    const items = Array.from(this.querySelectorAll('.list-item'));
-                    const itemIndex = items.indexOf(listItem);
-                    if (itemIndex !== -1 && itemIndex !== this._touchDragIndex) {
-                        // Determine if we're in the top or bottom half of the item
-                        const rect = listItem.getBoundingClientRect();
-                        const midpoint = rect.top + rect.height / 2;
-                        const isBottomHalf = touch.clientY > midpoint;
+        const touch = e.touches[0];
 
-                        if (isBottomHalf) {
-                            // Drop after this item
-                            listItem.classList.add('drop-target-after');
-                            this._touchDropIndex = itemIndex + 1;
-                        } else {
-                            // Drop before this item
-                            listItem.classList.add('drop-target');
-                            this._touchDropIndex = itemIndex;
-                        }
+        // Clear previous drop-target classes
+        this.querySelectorAll('.drop-target, .drop-target-after').forEach(el => {
+            el.classList.remove('drop-target', 'drop-target-after');
+        });
+
+        // Reset drop index
+        this._touchDropIndex = null;
+
+        // Find which item we're over
+        const elemUnder = document.elementFromPoint(touch.clientX, touch.clientY);
+        if (elemUnder) {
+            const listItem = elemUnder.closest('.list-item');
+            if (listItem && !listItem.classList.contains('dragging')) {
+                const items = Array.from(this.querySelectorAll('.list-item'));
+                const itemIndex = items.indexOf(listItem);
+                if (itemIndex !== -1 && itemIndex !== this._touchDragIndex) {
+                    // Determine if we're in the top or bottom half of the item
+                    const rect = listItem.getBoundingClientRect();
+                    const midpoint = rect.top + rect.height / 2;
+                    const isBottomHalf = touch.clientY > midpoint;
+
+                    if (isBottomHalf) {
+                        // Drop after this item
+                        listItem.classList.add('drop-target-after');
+                        this._touchDropIndex = itemIndex + 1;
+                    } else {
+                        // Drop before this item
+                        listItem.classList.add('drop-target');
+                        this._touchDropIndex = itemIndex;
                     }
                 }
             }
-        },
-
-        handleHandleTouchEnd(e) {
-            e.stopPropagation();
-            e.preventDefault();
-
-            // Clear all drag classes
-            this.querySelectorAll('.dragging').forEach(el => el.classList.remove('dragging'));
-            this.querySelectorAll('.drop-target, .drop-target-after').forEach(el => {
-                el.classList.remove('drop-target', 'drop-target-after');
-            });
-
-            // Perform the reorder if we have valid indices
-            if (this._touchDragIndex !== null && this._touchDragIndex !== undefined &&
-                this._touchDropIndex !== null && this._touchDropIndex !== undefined &&
-                this._touchDragIndex !== this._touchDropIndex) {
-                this._reorderItemsToPosition(this._touchDragIndex, this._touchDropIndex);
-            }
-
-            this._touchDragIndex = null;
-            this._touchDropIndex = null;
-        },
-
-        _reorderItems(fromIndex, toIndex) {
-            const items = [...(this.props.value || [])];
-            const [moved] = items.splice(fromIndex, 1);
-
-            // When moving down, adjust for the index shift after removal
-            const insertIndex = fromIndex < toIndex ? toIndex - 1 : toIndex;
-            items.splice(insertIndex, 0, moved);
-
-            this.emitChange(null, items);
-        },
-
-        // For touch drag - toPosition is the target position in the list, not an item index
-        _reorderItemsToPosition(fromIndex, toPosition) {
-            const items = [...(this.props.value || [])];
-            const [moved] = items.splice(fromIndex, 1);
-
-            // Adjust position if we removed an item before the target
-            const insertIndex = fromIndex < toPosition ? toPosition - 1 : toPosition;
-            items.splice(insertIndex, 0, moved);
-
-            this.emitChange(null, items);
-        },
-
-        getItemLabel(item) {
-            return typeof item === 'object' ? item[this.props.itemlabel] : item;
         }
-    },
+    }
+
+    handleHandleTouchEnd(e) {
+        e.stopPropagation();
+        e.preventDefault();
+
+        // Clear all drag classes
+        this.querySelectorAll('.dragging').forEach(el => el.classList.remove('dragging'));
+        this.querySelectorAll('.drop-target, .drop-target-after').forEach(el => {
+            el.classList.remove('drop-target', 'drop-target-after');
+        });
+
+        // Perform the reorder if we have valid indices
+        if (this._touchDragIndex !== null && this._touchDragIndex !== undefined &&
+            this._touchDropIndex !== null && this._touchDropIndex !== undefined &&
+            this._touchDragIndex !== this._touchDropIndex) {
+            this._reorderItemsToPosition(this._touchDragIndex, this._touchDropIndex);
+        }
+
+        this._touchDragIndex = null;
+        this._touchDropIndex = null;
+    }
+
+    _reorderItems(fromIndex, toIndex) {
+        const items = [...(this.props.value || [])];
+        const [moved] = items.splice(fromIndex, 1);
+
+        // When moving down, adjust for the index shift after removal
+        const insertIndex = fromIndex < toIndex ? toIndex - 1 : toIndex;
+        items.splice(insertIndex, 0, moved);
+
+        this.emitChange(null, items);
+    }
+
+    // For touch drag - toPosition is the target position in the list, not an item index
+    _reorderItemsToPosition(fromIndex, toPosition) {
+        const items = [...(this.props.value || [])];
+        const [moved] = items.splice(fromIndex, 1);
+
+        // Adjust position if we removed an item before the target
+        const insertIndex = fromIndex < toPosition ? toPosition - 1 : toPosition;
+        items.splice(insertIndex, 0, moved);
+
+        this.emitChange(null, items);
+    }
+
+    getItemLabel(item) {
+        return typeof item === 'object' ? item[this.props.itemlabel] : item;
+    }
 
     template() {
         const items = this.props.value || [];
@@ -223,9 +226,9 @@ export default defineComponent('cl-orderable-list', {
                 </div>
             </div>
         `;
-    },
+    }
 
-    styles: /*css*/`
+    static styles = /*css*/`
         :host {
             display: block;
         }
@@ -316,4 +319,6 @@ export default defineComponent('cl-orderable-list', {
             }
         }
     `
-});
+}
+
+export default defineComponent('cl-orderable-list', ClOrderableList);
