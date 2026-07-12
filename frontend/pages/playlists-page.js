@@ -462,22 +462,28 @@ export class PlaylistsPage extends Component {
         return 'No songs in playlist';
     }
 
-    async loadPlaylists(forceRefresh = false) {
-        // Request-ID guard: concurrent loads (mount, playlists-changed, propsChanged)
-        // must not let a slower response overwrite a newer one.
-        const requestId = this._listRequestId = (this._listRequestId || 0) + 1;
+    // Latest-wins load: run() aborts the prior load so a slower earlier
+    // response (mount / playlists-changed / propsChanged) can't overwrite a
+    // newer one. Replaces the hand-rolled _listRequestId guard. This is a
+    // single-fetch flow (no background pagination), so it's a clean createTask.
+    _loadPlaylistsTask = this.createTask(async (signal, forceRefresh) => {
         this.state.isLoading = true;
         try {
             if (this.state.isAuthenticated) {
                 const result = await playlistsApi.list(forceRefresh);
-                if (this._listRequestId !== requestId) return;  // Stale
+                signal.throwIfAborted();
                 this.state.myPlaylists = result.items || [];
             }
         } catch (e) {
+            if (signal.aborted) throw e;  // superseded: let the task swallow the abort
             console.error('Failed to load playlists:', e);
         } finally {
-            if (this._listRequestId === requestId) this.state.isLoading = false;
+            if (!signal.aborted) this.state.isLoading = false;
         }
+    });
+
+    loadPlaylists(forceRefresh = false) {
+        return this._loadPlaylistsTask.run(forceRefresh);
     }
 
     async loadPublicPlaylists() {

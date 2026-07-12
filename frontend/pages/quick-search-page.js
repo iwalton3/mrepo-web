@@ -120,8 +120,8 @@ export class QuickSearchPage extends Component {
                 this.state.results = null;
                 this.state.searchPerformed = false;
                 // Invalidate any in-flight similar search so a late CLAP response
-                // can't repopulate the list we just cleared (request-ID guard).
-                this._similarSearchId = (this._similarSearchId || 0) + 1;
+                // can't repopulate the list we just cleared.
+                this._similarSearchTask.cancel();
 
                 const urlQuery = newValue?.q || '';
                 this.state.searchQuery = urlQuery;
@@ -438,13 +438,13 @@ export class QuickSearchPage extends Component {
         }
     }
 
-    async performSimilarSearch(uuid) {
-        // Similar search mode - uses CLAP similarity API
-        // Track a request ID so rapid ?similar= navigations don't let an
-        // older (slower) lookup overwrite the newer one's results.
-        this._similarSearchId = (this._similarSearchId || 0) + 1;
-        const thisSearchId = this._similarSearchId;
-
+    // Similar search mode - uses CLAP similarity API. createTask gives the
+    // latest-wins semantics the old _similarSearchId guard hand-rolled: run()
+    // aborts the prior in-flight lookup so a slower earlier ?similar=
+    // navigation can't overwrite newer results. propsChanged cancels it when
+    // leaving similar mode. (No background pagination here, so it's a clean
+    // latest-wins fit.)
+    _similarSearchTask = this.createTask(async (signal, uuid) => {
         this.state.similarMode = true;
         this.state.similarSongUuid = uuid;
         this.state.advancedMode = true;
@@ -454,12 +454,12 @@ export class QuickSearchPage extends Component {
         try {
             // Fetch the source song info for the header
             const sourceSong = await songs.get(uuid);
-            if (this._similarSearchId !== thisSearchId) return;
+            signal.throwIfAborted();
             this.state.similarSong = sourceSong;
 
             // Search for similar songs via the AI adapter (normalized -> { items })
             const result = await ai.findSimilar(uuid, 200);
-            if (this._similarSearchId !== thisSearchId) return;
+            signal.throwIfAborted();
 
             if (result.error) {
                 console.error('Similar search failed:', result.error);
@@ -475,16 +475,17 @@ export class QuickSearchPage extends Component {
             // Recompute the window once the new results have rendered
             requestAnimationFrame(() => this._win.refresh());
         } catch (e) {
-            if (this._similarSearchId === thisSearchId) {
-                console.error('Similar search failed:', e);
-                this.state.advancedResults = [];
-                this.state.advancedTotalCount = 0;
-            }
+            if (signal.aborted) throw e;  // superseded: let the task swallow the abort
+            console.error('Similar search failed:', e);
+            this.state.advancedResults = [];
+            this.state.advancedTotalCount = 0;
         } finally {
-            if (this._similarSearchId === thisSearchId) {
-                this.state.isLoading = false;
-            }
+            if (!signal.aborted) this.state.isLoading = false;
         }
+    });
+
+    performSimilarSearch(uuid) {
+        return this._similarSearchTask.run(uuid);
     }
 
     backToQuickSearch() {
