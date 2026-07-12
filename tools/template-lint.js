@@ -944,7 +944,7 @@ export function buildRegistry(fileEntries) {
 const IDENT_RE = /^[A-Za-z_$][\w$]*$/;
 export const ALL_CHECKS = new Set([
     't1-handler', 't2-xmodel', 't3-refs', 't4-modifiers', 't5-props',
-    't6-events', 't6-prop-docs',
+    't6-events', 't6-prop-docs', 't7-binding',
 ]);
 
 // Native DOM events bubble through components without documentation - only
@@ -1201,6 +1201,32 @@ export function lintTemplates(source, filePath, registry, options = {}) {
             }
         };
 
+        // ---- T7: Lit-style binding syntax (?attr / .prop / @event) ----
+        // VDX has no such sugar. The parser keeps the prefix in the attribute
+        // name, so `?disabled="${x}"` reaches setAttribute('?disabled', …) and
+        // the DOM throws InvalidCharacterError at render; `.foo`/`@evt` silently
+        // become dead attributes. Applies to any element (native or component).
+        const checkBindingSyntax = (node) => {
+            for (const attrName of Object.keys(node.attrs || {})) {
+                if (attrName === '__ref__') continue;
+                const prefix = attrName[0];
+                if (prefix !== '?' && prefix !== '.' && prefix !== '@') continue;
+                const bare = attrName.slice(1);
+                if (!/^[A-Za-z][\w-]*$/.test(bare)) continue; // not a plain binding name
+                let hint;
+                if (prefix === '?') {
+                    hint = `use \`${bare}="\${cond}"\` - VDX sets/removes boolean attributes from the value`;
+                } else if (prefix === '@') {
+                    hint = `use \`on-${bare}="handler"\``;
+                } else {
+                    hint = `bind it as an attribute: \`${bare}="\${value}"\``;
+                }
+                const line = locate('t7:' + attrName, escapeRegex(attrName) + '\\s*=');
+                report(line, 't7-binding', 'error',
+                    `${attrName}="…" is Lit-style binding syntax, which VDX does not support - ${hint}`);
+            }
+        };
+
         const walk = (node) => {
             if (!node) return;
             if (node.type === 'element') {
@@ -1229,6 +1255,7 @@ export function lintTemplates(source, filePath, registry, options = {}) {
                 }
                 if (on('t5-props')) checkProps(node);
                 if (on('t6-events')) checkEvents(node);
+                if (on('t7-binding')) checkBindingSyntax(node);
                 const refDef = node.attrs && node.attrs.__ref__;
                 if (refDef && comp && typeof refDef.refName === 'string' && IDENT_RE.test(refDef.refName)) {
                     if (!refsDeclared.has(comp)) refsDeclared.set(comp, new Map());
