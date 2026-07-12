@@ -1,3 +1,4 @@
+/*! VDX router v1.0.0 | MIT | https://vanilladx.dev | https://github.com/iwalton3/vdx-web */
 import{createStore,pruneTemplateCache,html,defineComponent}from'./framework.js';let _router=null;function shallowEqual(a,b){if (a===b) return true;if (!a||!b) return false;const keysA=Object.keys(a);const keysB=Object.keys(b);if (keysA.length!==keysB.length) return false;for (const key of keysA){if (a[key]!==b[key]) return false;}
 return true;}
 export function getRouter(){return _router;}

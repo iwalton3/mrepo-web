@@ -1,3 +1,4 @@
+/*! VDX windowing v1.0.0 | MIT | https://vanilladx.dev | https://github.com/iwalton3/vdx-web */
 import{reactive,flushSync,withoutTracking,createEffect}from'./framework.js';import{rafThrottle}from'./utils.js';function resolve(value,fallback){const v=typeof value==='function'?value():value;return (v===undefined||v===null||Number.isNaN(v))?fallback:v;}
 function findScrollableParent(el){let parent=el.parentElement;while (parent){const style=getComputedStyle(parent);const overflow=style.overflow+style.overflowY;if (overflow.includes('auto')||overflow.includes('scroll')){return parent;}
 parent=parent.parentElement;}

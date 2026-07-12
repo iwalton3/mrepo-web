@@ -9,6 +9,12 @@
  * - Compile-once template system
  */
 
+/**
+ * Framework version (e.g. "1.0.0"). Single source of truth lives in
+ * lib/framework.js; the bundler stamps it into dist bundle banners.
+ */
+export const VERSION: string;
+
 // =============================================================================
 // Utility Types
 // =============================================================================
