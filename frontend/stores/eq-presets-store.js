@@ -7,7 +7,7 @@
  * - Conversion between graphic and parametric EQ formats
  */
 
-import { createStore, untracked } from 'vdx/framework.js';
+import { Store, untracked } from 'vdx/framework.js';
 import { eqPresets as api } from '../offline/offline-api.js';
 import { EQ_BANDS } from './player-store.js';
 
@@ -124,66 +124,80 @@ function saveActiveState(presetUuid, bands) {
     }
 }
 
-// Load initial state
+// Load initial state (module-level, read once at import)
 const activeState = loadActiveState();
 
 /**
- * Create the EQ presets store.
+ * EQ presets store (class-based). Reactive data in this.state, methods on the
+ * instance, cross-tab localStorage sync wired in the constructor.
  */
-export const eqPresetsStore = createStore({
-    // All presets from API
-    presets: untracked([]),
+class EqPresetsStore extends Store {
+    constructor() {
+        super();
+        this.state = {
+            // All presets from API
+            presets: untracked([]),
+            // Currently active preset UUID (null for custom)
+            activePresetUuid: activeState.presetUuid,
+            // Custom bands when not using a preset
+            customBands: untracked(activeState.customBands || []),
+            // Loading state
+            isLoading: false,
+            // Error message
+            error: null
+        };
 
-    // Currently active preset UUID (null for custom)
-    activePresetUuid: activeState.presetUuid,
+        // Listen for storage changes from other tabs to prevent race conditions
+        if (typeof window !== "undefined") {
+            window.addEventListener("storage", (event) => {
+                if (event.key === LOCAL_STORAGE_KEY && event.newValue) {
+                    try {
+                        const newState = JSON.parse(event.newValue);
+                        // Reload state from the other tab's update
+                        this.state.activePresetUuid = newState.presetUuid;
+                        this.state.customBands = newState.bands || [];
+                        console.log("[EQ] Synced state from another tab");
+                    } catch (e) {
+                        console.error("[EQ] Failed to sync state from other tab:", e);
+                    }
+                }
+            });
+        }
+    }
 
-    // Custom bands when not using a preset
-    customBands: untracked(activeState.customBands || []),
-
-    // Loading state
-    isLoading: false,
-
-    // Error message
-    error: null
-});
-
-/**
- * Store controller with methods.
- */
-const controller = {
     /**
      * Load all presets from API.
      */
     async loadPresets() {
-        eqPresetsStore.state.isLoading = true;
-        eqPresetsStore.state.error = null;
+        this.state.isLoading = true;
+        this.state.error = null;
 
         try {
             const result = await api.list();
             if (result.error) {
-                eqPresetsStore.state.error = result.error;
-                eqPresetsStore.state.presets = [];
+                this.state.error = result.error;
+                this.state.presets = [];
             } else {
-                eqPresetsStore.state.presets = result.presets || [];
+                this.state.presets = result.presets || [];
 
                 // Migrate: if active preset has no cached bands, cache them now
                 this._ensureBandsCached();
             }
         } catch (e) {
-            console.error('Failed to load EQ presets:', e);
-            eqPresetsStore.state.error = 'Failed to load presets';
-            eqPresetsStore.state.presets = [];
+            console.error("Failed to load EQ presets:", e);
+            this.state.error = "Failed to load presets";
+            this.state.presets = [];
         } finally {
-            eqPresetsStore.state.isLoading = false;
+            this.state.isLoading = false;
         }
-    },
+    }
 
     /**
      * Ensure active preset bands are cached in localStorage.
      * Handles migration from old format where preset bands weren't cached.
      */
     _ensureBandsCached() {
-        const { activePresetUuid, presets, customBands } = eqPresetsStore.state;
+        const { activePresetUuid, presets, customBands } = this.state;
         if (!activePresetUuid) return;
 
         // Check if bands are already cached
@@ -200,27 +214,23 @@ const controller = {
         // Find preset and cache its bands
         const preset = presets.find(p => p.uuid === activePresetUuid);
         if (preset && preset.bands) {
-            console.log('[EQ] Migrating preset bands to localStorage cache');
+            console.log("[EQ] Migrating preset bands to localStorage cache");
             saveActiveState(activePresetUuid, preset.bands);
-            eqPresetsStore.state.customBands = preset.bands;
+            this.state.customBands = preset.bands;
         }
-    },
+    }
 
     /**
      * Save a preset (create or update).
-     * @param {Object} preset - Preset data
-     * @param {string} [preset.uuid] - UUID if updating
-     * @param {string} preset.name - Preset name
-     * @param {Object[]} preset.bands - Band configurations
      */
     async savePreset({ uuid, name, bands }) {
-        eqPresetsStore.state.isLoading = true;
-        eqPresetsStore.state.error = null;
+        this.state.isLoading = true;
+        this.state.error = null;
 
         try {
             const result = await api.save({ uuid, name, bands });
             if (result.error) {
-                eqPresetsStore.state.error = result.error;
+                this.state.error = result.error;
                 return null;
             }
 
@@ -229,31 +239,30 @@ const controller = {
 
             return result.uuid;
         } catch (e) {
-            console.error('Failed to save EQ preset:', e);
-            eqPresetsStore.state.error = 'Failed to save preset';
+            console.error("Failed to save EQ preset:", e);
+            this.state.error = "Failed to save preset";
             return null;
         } finally {
-            eqPresetsStore.state.isLoading = false;
+            this.state.isLoading = false;
         }
-    },
+    }
 
     /**
      * Delete a preset.
-     * @param {string} uuid - Preset UUID to delete
      */
     async deletePreset(uuid) {
-        eqPresetsStore.state.isLoading = true;
-        eqPresetsStore.state.error = null;
+        this.state.isLoading = true;
+        this.state.error = null;
 
         try {
             const result = await api.delete(uuid);
             if (result.error) {
-                eqPresetsStore.state.error = result.error;
+                this.state.error = result.error;
                 return false;
             }
 
             // If deleted preset was active, clear active state
-            if (eqPresetsStore.state.activePresetUuid === uuid) {
+            if (this.state.activePresetUuid === uuid) {
                 this.setActivePreset(null);
             }
 
@@ -262,57 +271,53 @@ const controller = {
 
             return true;
         } catch (e) {
-            console.error('Failed to delete EQ preset:', e);
-            eqPresetsStore.state.error = 'Failed to delete preset';
+            console.error("Failed to delete EQ preset:", e);
+            this.state.error = "Failed to delete preset";
             return false;
         } finally {
-            eqPresetsStore.state.isLoading = false;
+            this.state.isLoading = false;
         }
-    },
+    }
 
     /**
      * Set the active preset.
-     * @param {string|null} uuid - Preset UUID or null for custom
-     * @param {Object[]} [customBands] - Custom bands if uuid is null
      */
     setActivePreset(uuid, customBands = []) {
-        eqPresetsStore.state.activePresetUuid = uuid;
+        this.state.activePresetUuid = uuid;
 
         let bandsToCache;
         if (uuid) {
             // Get preset bands to cache locally
-            const preset = eqPresetsStore.state.presets.find(p => p.uuid === uuid);
+            const preset = this.state.presets.find(p => p.uuid === uuid);
             bandsToCache = preset ? preset.bands : [];
         } else if (customBands.length > 0) {
-            eqPresetsStore.state.customBands = customBands;
+            this.state.customBands = customBands;
             bandsToCache = customBands;
         } else {
             const { bands } = loadActiveState();
-            eqPresetsStore.state.customBands = bands;
+            this.state.customBands = bands;
             bandsToCache = bands;
         }
 
         // Always cache bands locally for startup
         saveActiveState(uuid, bandsToCache);
-    },
+    }
 
     /**
      * Update custom bands (when not using a preset).
-     * @param {Object[]} bands - Band configurations
      */
     setCustomBands(bands) {
-        eqPresetsStore.state.customBands = bands;
-        if (!eqPresetsStore.state.activePresetUuid) {
+        this.state.customBands = bands;
+        if (!this.state.activePresetUuid) {
             saveActiveState(null, bands);
         }
-    },
+    }
 
     /**
      * Get the currently active bands.
-     * @returns {Object[]} Band configurations
      */
     getActiveBands() {
-        const { activePresetUuid, presets, customBands } = eqPresetsStore.state;
+        const { activePresetUuid, presets, customBands } = this.state;
 
         if (activePresetUuid) {
             const preset = presets.find(p => p.uuid === activePresetUuid);
@@ -320,38 +325,19 @@ const controller = {
         }
 
         return customBands;
-    },
+    }
 
     /**
      * Get preset by UUID.
-     * @param {string} uuid - Preset UUID
-     * @returns {Object|null} Preset or null
      */
     getPreset(uuid) {
-        return eqPresetsStore.state.presets.find(p => p.uuid === uuid) || null;
+        return this.state.presets.find(p => p.uuid === uuid) || null;
     }
-};
-
-// Listen for storage changes from other tabs to prevent race conditions
-if (typeof window !== 'undefined') {
-    window.addEventListener('storage', (event) => {
-        if (event.key === LOCAL_STORAGE_KEY && event.newValue) {
-            try {
-                const newState = JSON.parse(event.newValue);
-                // Reload state from the other tab's update
-                eqPresetsStore.state.activePresetUuid = newState.presetUuid;
-                eqPresetsStore.state.customBands = newState.bands || [];
-                console.log('[EQ] Synced state from another tab');
-            } catch (e) {
-                console.error('[EQ] Failed to sync state from other tab:', e);
-            }
-        }
-    });
 }
 
-// Export store with state and methods
-export default {
-    state: eqPresetsStore.state,
-    subscribe: eqPresetsStore.subscribe.bind(eqPresetsStore),
-    ...controller
-};
+// Singleton instance. Both the named and default export are this instance, so
+// existing `import eqPresetsStore from ...` (default) keeps working, and
+// `store.state.X` / `store.method()` / `store.subscribe()` all resolve.
+export const eqPresetsStore = new EqPresetsStore();
+
+export default eqPresetsStore;
