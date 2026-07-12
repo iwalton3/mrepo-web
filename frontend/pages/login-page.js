@@ -110,7 +110,8 @@ export default defineComponent('login-page', {
                         `)}
 
                         <cl-button
-                            ?disabled="${loading}"
+                            type="submit"
+                            disabled="${loading}"
                             style="width: 100%"
                         >
                             ${loading ? 'Please wait...' : (setupRequired ? 'Create Account' : 'Sign In')}
