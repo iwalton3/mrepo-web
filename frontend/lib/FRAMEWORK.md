@@ -577,6 +577,24 @@ options="${items}"                   // CORRECT
 this._bound = this.method.bind(this)  // WRONG
 renderItem="${this.method}"           // CORRECT
 
+// DON'T name methods after DOM methods - they're bound onto the element and
+// would shadow the native one, breaking rendering/teardown. defineComponent
+// THROWS for structural/attribute/event names (remove, append, closest,
+// getAttribute, addEventListener, ...). Also throws if a method's name
+// collides with a prop. (Behavioral names like focus/click may be overridden.)
+remove() { ... }        // WRONG - shadows Element.remove(); throws at definition
+dismiss() { ... }       // CORRECT
+
+// DON'T use Lit/Vue binding syntax - VDX has none of it, and the parser THROWS
+<button ?disabled="${x}">   // WRONG -> disabled="${x}" (boolean from the value)
+<button @click="${fn}">     // WRONG -> on-click="handler"
+<input .value="${v}">       // WRONG -> value="${v}"
+<a :href="${u}">            // WRONG -> href="${u}"
+
+// DON'T put a raw array / .map() of templates or an inline ternary in a slot -
+// they build no keyed placeholder and the renderer THROWS on a template array.
+${items.map(i => html`<li>${i}</li>`)}          // WRONG -> each(items, ...)
+${cond ? html`<a>` : html`<b>`}                 // WRONG -> when(cond, ..., ...)
 ```
 
 ---

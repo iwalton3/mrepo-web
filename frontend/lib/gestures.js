@@ -1,4 +1,4 @@
-/*! VDX gestures v1.0.0 | MIT | https://vanilladx.dev | https://github.com/iwalton3/vdx-web */
+/*! VDX gestures v1.1.0 | MIT | https://vanilladx.dev | https://github.com/iwalton3/vdx-web */
 import{withoutTracking}from'./framework.js';function resolveNum(value,fallback){const v=typeof value==='function'?value():value;return (v===undefined||v===null||Number.isNaN(v))?fallback:v;}
 export function gapToRemoveInsertIndex(from,gap){return gap>from?gap-1:gap;}
 export function gapToGapIndex(from,gap){return gap;}

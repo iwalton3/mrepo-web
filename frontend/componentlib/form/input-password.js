@@ -1,7 +1,7 @@
 /**
  * InputPassword - Password input with visibility toggle and strength meter
  */
-import { defineComponent, html, when, Component } from '../../lib/framework.js';
+import { defineComponent, html, when, each, Component } from '../../lib/framework.js';
 
 /**
  * @fires input - detail: { value }
@@ -219,10 +219,10 @@ export class ClInputPassword extends Component {
                             tabindex="-1"
                             on-click="toggleVisibility"
                             title="${this.state.passwordVisible ? 'Hide password' : 'Show password'}">
-                            ${this.state.passwordVisible
-                                ? html`<svg class="eye-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`
-                                : html`<svg class="eye-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`
-                            }
+                            ${when(this.state.passwordVisible,
+                                html`<svg class="eye-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`,
+                                html`<svg class="eye-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`
+                            )}
                         </button>
                     `)}
                 </div>
@@ -241,9 +241,9 @@ export class ClInputPassword extends Component {
                 `)}
                 ${when(feedback.length > 0 && !(this.props.error || this.state.internalError), html`
                     <div class="feedback-list">
-                        ${feedback.map(f => html`
+                        ${each(feedback, f => html`
                             <small class="feedback-item">${f}</small>
-                        `)}
+                        `, f => f)}
                     </div>
                 `)}
                 ${when(this.props.helptext && !(this.props.error || this.state.internalError) && feedback.length === 0, html`

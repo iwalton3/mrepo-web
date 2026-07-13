@@ -31,12 +31,12 @@ export class ClToast extends Component {
 
         if (toast.life > 0) {
             setTimeout(() => {
-                this.remove(id);
+                this.dismiss(id);
             }, toast.life);
         }
     }
 
-    remove(id) {
+    dismiss(id) {
         const msg = this.state.messages.find(m => m.id === id);
         // Guard against double-remove (auto-dismiss timer + manual close both
         // firing) so we don't restart the exit animation.
@@ -84,7 +84,7 @@ export class ClToast extends Component {
                                     <div class="toast-detail">${message.detail}</div>
                                 `)}
                             </div>
-                            <button class="toast-close" on-click="${() => this.remove(message.id)}">×</button>
+                            <button class="toast-close" on-click="${() => this.dismiss(message.id)}">×</button>
                         </div>
                     </div>
                 `, message => message.id)}
