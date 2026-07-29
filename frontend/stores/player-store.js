@@ -16,6 +16,11 @@ import { profile } from '#profile';
 import offlineStore from '../offline/offline-store.js';
 import * as offlineDb from '../offline/offline-db.js';
 import { isSyncing } from '../offline/sync-manager.js';
+import {
+    NOISE_LOOP_SECONDS, NOISE_DETECTOR_MS,
+    createNoiseSquarerCurve, createNoiseGateCurve, onePoleCoefficients,
+    noiseThresholdScale, noiseLevelToLinear, noiseLoopMixGain
+} from './noise-dsp.js';
 
 /**
  * Convert decibels to linear gain multiplier.
@@ -135,7 +140,7 @@ function clearShuffleHistory() {
 /**
  * Detect if we're on a mobile device.
  */
-function isMobileDevice() {
+export function isMobileDevice() {
     return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
            (navigator.maxTouchPoints > 0 && window.innerWidth < 768);
 }
@@ -161,6 +166,8 @@ function loadLowLatencySetting() {
 
 // Standard 10-band EQ frequencies
 export const EQ_BANDS = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+
+
 
 /**
  * Load local-only state from localStorage (things that don't go to server).
@@ -344,7 +351,12 @@ export const playerStore = createStore({
     noiseMode: audioFXSettings?.noiseMode ?? 'white',    // 'white' or 'grey'
     noiseTilt: audioFXSettings?.noiseTilt ?? 0,          // -100 (dark/bass) to +100 (bright/treble)
     noisePower: audioFXSettings?.noisePower ?? -24,      // -60 to 0 dB
-    noiseThreshold: audioFXSettings?.noiseThreshold ?? -36,  // -60 to 0 dB (0 = always on)
+    // 0 = always on. Pinned to always-on on mobile: the gating sidechain is
+    // extra work in the render graph, and background playback on a locked
+    // phone is exactly where that margin matters. Clamped rather than
+    // defaulted so a value stored by a previous build can't re-enable gating
+    // on a device whose Threshold slider is hidden.
+    noiseThreshold: isMobileDevice() ? 0 : (audioFXSettings?.noiseThreshold ?? -36),  // -60 to 0 dB
     noiseAttack: audioFXSettings?.noiseAttack ?? 25      // 25 (instant) to 2000 ms, log scale
 });
 
@@ -400,13 +412,26 @@ class AudioController {
         this._loudnessLowShelf = null;    // BiquadFilterNode (lowshelf, 100Hz)
         this._loudnessHighShelf = null;   // BiquadFilterNode (highshelf, 10kHz)
 
-        // Comfort noise state
+        // Comfort noise state. Entirely native nodes - nothing here runs JS on
+        // the audio render thread, which is what made the old AudioWorklet
+        // implementation drop buffers on locked Android devices over Bluetooth.
         this._noiseInitialized = false;
-        this._noiseWorklet = null;        // AudioWorkletNode for noise generation + RMS detection
-        this._noiseScriptProcessor = null; // Fallback ScriptProcessorNode
+        this._noiseInitPromise = null;    // Dedupes concurrent pipeline rebuilds
+        this._noiseSources = null;        // AudioBufferSourceNode[] - looping noise
+        this._noiseSourceMix = null;      // GainNode summing the loops
         this._noiseLowFilter = null;      // BiquadFilterNode lowshelf for bass control
         this._noiseHighFilter = null;     // BiquadFilterNode highshelf for treble control
+        this._noisePowerGain = null;      // GainNode carrying the Level setting
+        this._noiseGateGain = null;       // GainNode, 0..1, driven by the sidechain
+        this._noiseOutputGain = null;     // GainNode for enabled && isPlaying
         this._noiseMerger = null;         // GainNode to merge noise with music
+        this._noiseMusicTap = null;       // Chain node feeding the sidechain
+        // Sidechain (built only when gating is active, i.e. threshold < 0 dB)
+        this._noiseSquarer = null;        // WaveShaperNode, x^2 rectifier
+        this._noiseEnvFilter = null;      // IIRFilterNode, fixed-rate level detector
+        this._noiseEnvScale = null;       // GainNode normalising by the threshold
+        this._noiseGateShaper = null;     // WaveShaperNode, envelope -> gate amount
+        this._noiseAttackFilter = null;   // IIRFilterNode, user attack time
 
         // Track-advance overlap guard (see next()/previous()/play()):
         // _advanceSeq is a monotonic token - stale async continuations bail
@@ -904,8 +929,8 @@ class AudioController {
                 navigator.mediaSession.playbackState = 'playing';
             }
             this._updateMediaSessionPosition();
-            // Notify noise worklet of playback state
-            this._sendNoiseSettings({ isPlaying: true });
+            // Fade comfort noise in with playback
+            this._updateNoiseOutput();
         });
 
         audioElement.addEventListener('pause', () => {
@@ -920,8 +945,8 @@ class AudioController {
                 navigator.mediaSession.playbackState = 'paused';
             }
             this._updateMediaSessionPosition();
-            // Notify noise worklet of playback state
-            this._sendNoiseSettings({ isPlaying: false });
+            // Fade comfort noise out with playback
+            this._updateNoiseOutput();
         });
 
         audioElement.addEventListener('ended', () => {
@@ -2145,11 +2170,20 @@ class AudioController {
         this._loudnessInitialized = false;
         this._loudnessInternalConnected = false;
         this._noiseInitialized = false;
-        this._noiseWorklet = null;
-        this._noiseScriptProcessor = null;
+        this._noiseSources = null;
+        this._noiseSourceMix = null;
         this._noiseLowFilter = null;
         this._noiseHighFilter = null;
+        this._noisePowerGain = null;
+        this._noiseGateGain = null;
+        this._noiseOutputGain = null;
         this._noiseMerger = null;
+        this._noiseMusicTap = null;
+        this._noiseSquarer = null;
+        this._noiseEnvFilter = null;
+        this._noiseEnvScale = null;
+        this._noiseGateShaper = null;
+        this._noiseAttackFilter = null;
         this._dualPipelineActive = false;
 
         // Create fresh audio elements for both slots
@@ -2194,7 +2228,7 @@ class AudioController {
 
         // Initialize noise if enabled (must happen before EQ chain build)
         if (this.store.state.noiseEnabled) {
-            await this._initNoise();
+            this._initNoise();
         }
 
         // Restore EQ state - either parametric or graphic
@@ -3294,143 +3328,228 @@ class AudioController {
     // ==================== COMFORT NOISE METHODS ====================
 
     /**
-     * Initialize the comfort noise audio nodes.
-     * Creates: noise generator (AudioWorklet or ScriptProcessor) with RMS detection, color filters.
-     * The worklet/processor analyzes music input and generates noise when audio is quiet.
+     * Build the looping noise buffers, the tilt/level chain, and the mix bus.
+     *
+     * Everything here is a native node. Comfort noise used to run an
+     * AudioWorklet that generated noise and measured the music's RMS per
+     * 128-frame render quantum; that was the only JS on the audio render
+     * thread anywhere in the app, and on a locked Android phone (little cores,
+     * minimum clock, Bluetooth encoder competing for CPU) it intermittently
+     * missed its deadline, which glitches the whole mix rather than just the
+     * noise branch. Native nodes degrade gracefully where JS does not.
+     *
+     * Synchronous by design: the old implementation awaited addModule(), and
+     * during that await `noiseEnabled && !_noiseInitialized` held, so every
+     * slider input event kicked off another full pipeline teardown.
      */
-    async _initNoise() {
+    _initNoise() {
         if (!this._audioContext || this._noiseInitialized) return;
+        const ctx = this._audioContext;
 
-        // Try AudioWorklet first (runs on audio thread, works when page is backgrounded)
-        try {
-            await this._audioContext.audioWorklet.addModule('./noise-processor.js');
-            // numberOfInputs: 1 for receiving music to analyze
-            // numberOfOutputs: 1 for noise output
-            this._noiseWorklet = new AudioWorkletNode(this._audioContext, 'noise-processor', {
-                numberOfInputs: 1,
-                numberOfOutputs: 1,
-                outputChannelCount: [2]
-            });
-        } catch (e) {
-            console.warn('AudioWorklet not supported for noise, using ScriptProcessor fallback:', e);
-            // Fallback to ScriptProcessorNode (deprecated but widely supported)
-            // 2 input channels (stereo music), 2 output channels (stereo noise)
-            this._noiseScriptProcessor = this._audioContext.createScriptProcessor(4096, 2, 2);
+        this._noiseSources = NOISE_LOOP_SECONDS.map(seconds => {
+            const source = ctx.createBufferSource();
+            source.buffer = this._createNoiseBuffer(seconds);
+            source.loop = true;
+            return source;
+        });
 
-            // ScriptProcessor state
-            let currentNoiseLevel = 0;
-            let thresholdLinear = Math.pow(10, this.store.state.noiseThreshold / 20);
-            let powerLinear = Math.pow(10, this.store.state.noisePower / 20);
-            let attackMs = this.store.state.noiseAttack;
-            let enabled = this.store.state.noiseEnabled;
-            let isPlaying = this.store.state.isPlaying;
-
-            // Store reference for settings updates
-            this._noiseScriptProcessor._updateSettings = (settings) => {
-                if (settings.threshold !== undefined) {
-                    thresholdLinear = Math.pow(10, settings.threshold / 20);
-                }
-                if (settings.power !== undefined) {
-                    powerLinear = Math.pow(10, settings.power / 20);
-                }
-                if (settings.attack !== undefined) {
-                    attackMs = settings.attack;
-                }
-                if (settings.enabled !== undefined) {
-                    enabled = settings.enabled;
-                }
-                if (settings.isPlaying !== undefined) {
-                    isPlaying = settings.isPlaying;
-                }
-            };
-
-            this._noiseScriptProcessor.onaudioprocess = (e) => {
-                const inputL = e.inputBuffer.getChannelData(0);
-                const inputR = e.inputBuffer.numberOfChannels > 1 ? e.inputBuffer.getChannelData(1) : inputL;
-                const outputL = e.outputBuffer.getChannelData(0);
-                const outputR = e.outputBuffer.numberOfChannels > 1 ? e.outputBuffer.getChannelData(1) : outputL;
-
-                // If disabled or not playing, fade out
-                if (!enabled || !isPlaying) {
-                    for (let i = 0; i < outputL.length; i++) {
-                        currentNoiseLevel *= 0.999;
-                        outputL[i] = (Math.random() * 2 - 1) * currentNoiseLevel;
-                        outputR[i] = (Math.random() * 2 - 1) * currentNoiseLevel;
-                    }
-                    return;
-                }
-
-                // Calculate RMS from input
-                let sum = 0;
-                for (let i = 0; i < inputL.length; i++) {
-                    sum += inputL[i] * inputL[i] + inputR[i] * inputR[i];
-                }
-                const rms = Math.sqrt(sum / (inputL.length * 2));
-
-                // Determine target noise level
-                let targetNoiseLevel = 0;
-                if (thresholdLinear >= 1.0) {
-                    targetNoiseLevel = powerLinear;
-                } else if (rms < thresholdLinear) {
-                    const fadeRange = thresholdLinear * 0.5;
-                    const fadeAmount = Math.min(1, (thresholdLinear - rms) / fadeRange);
-                    targetNoiseLevel = fadeAmount * powerLinear;
-                }
-
-                // Smooth transition based on attack time
-                // Block time = 4096 / 48000 ≈ 0.0853 seconds
-                const blockTime = 4096 / 48000;
-                const smoothing = 1 - Math.exp(-blockTime / (attackMs / 1000));
-                currentNoiseLevel += (targetNoiseLevel - currentNoiseLevel) * smoothing;
-
-                // Generate noise
-                for (let i = 0; i < outputL.length; i++) {
-                    outputL[i] = (Math.random() * 2 - 1) * currentNoiseLevel;
-                    outputR[i] = (Math.random() * 2 - 1) * currentNoiseLevel;
-                }
-            };
-        }
+        // Summing two uncorrelated noise sources raises amplitude by sqrt(2),
+        // so scale back to keep the Level setting meaning what it says.
+        this._noiseSourceMix = ctx.createGain();
+        this._noiseSourceMix.gain.value = noiseLoopMixGain();
 
         // Low frequency filter - controls bass/brown noise character
-        this._noiseLowFilter = this._audioContext.createBiquadFilter();
+        this._noiseLowFilter = ctx.createBiquadFilter();
         this._noiseLowFilter.type = 'lowshelf';
         this._noiseLowFilter.frequency.value = 100;
         this._noiseLowFilter.gain.value = 0;
 
         // High frequency filter - controls treble/blue noise character
-        this._noiseHighFilter = this._audioContext.createBiquadFilter();
+        this._noiseHighFilter = ctx.createBiquadFilter();
         this._noiseHighFilter.type = 'highshelf';
         this._noiseHighFilter.frequency.value = 3000;
         this._noiseHighFilter.gain.value = 0;
 
+        // Level setting (dB -> linear)
+        this._noisePowerGain = ctx.createGain();
+        this._noisePowerGain.gain.value = 0;
+
+        // Gate amount, 0..1. Held at 1 when always-on; driven by the sidechain
+        // control signal when gating is active.
+        this._noiseGateGain = ctx.createGain();
+        this._noiseGateGain.gain.value = 1;
+
+        // enabled && isPlaying. A paused media element still feeds silence into
+        // the sidechain, which would otherwise open the gate and play noise
+        // over a stopped track.
+        this._noiseOutputGain = ctx.createGain();
+        this._noiseOutputGain.gain.value = 0;
+
         // Merger node to combine music + filtered noise
-        this._noiseMerger = this._audioContext.createGain();
+        this._noiseMerger = ctx.createGain();
         this._noiseMerger.gain.value = 1.0;
 
-        // Connect noise chain: generator -> lowFilter -> highFilter -> merger
-        const noiseSource = this._noiseWorklet || this._noiseScriptProcessor;
-        if (noiseSource) {
-            noiseSource.connect(this._noiseLowFilter);
-            this._noiseLowFilter.connect(this._noiseHighFilter);
-            this._noiseHighFilter.connect(this._noiseMerger);
+        for (const source of this._noiseSources) {
+            source.connect(this._noiseSourceMix);
+        }
+        this._noiseSourceMix
+            .connect(this._noiseLowFilter)
+            .connect(this._noiseHighFilter)
+            .connect(this._noisePowerGain)
+            .connect(this._noiseGateGain)
+            .connect(this._noiseOutputGain)
+            .connect(this._noiseMerger);
+
+        for (const source of this._noiseSources) {
+            source.start();
         }
 
         this._noiseInitialized = true;
         this._updateNoiseFilters();
+        this._updateNoisePower(false);
+        this._updateNoiseGating();
+        this._updateNoiseOutput(false);
+    }
 
-        // Send initial settings to worklet
-        this._sendNoiseSettings({
-            threshold: this.store.state.noiseThreshold,
-            power: this.store.state.noisePower,
-            attack: this.store.state.noiseAttack,
-            enabled: this.store.state.noiseEnabled,
-            isPlaying: this.store.state.isPlaying
-        });
+    /**
+     * Generate a mono buffer of white noise.
+     * Mono matches the old worklet, which wrote identical samples to L and R.
+     * @param {number} seconds - Buffer length
+     * @returns {AudioBuffer}
+     */
+    _createNoiseBuffer(seconds) {
+        const ctx = this._audioContext;
+        const length = Math.floor(seconds * ctx.sampleRate);
+        const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < length; i++) {
+            data[i] = Math.random() * 2 - 1;
+        }
+        return buffer;
+    }
+
+    /**
+     * One-pole lowpass node. Coefficients are fixed at construction, so
+     * changing the time constant means building a new node.
+     * @param {number} ms - Time constant in milliseconds
+     * @returns {IIRFilterNode}
+     */
+    _createNoiseOnePole(ms) {
+        const { feedforward, feedback } = onePoleCoefficients(ms, this._audioContext.sampleRate);
+        return this._audioContext.createIIRFilter(feedforward, feedback);
+    }
+
+    /**
+     * Build or tear down the gating sidechain to match the current threshold.
+     *
+     * Threshold 0 dB means always-on, which needs no sidechain at all - the
+     * graph collapses to two looping buffers and three filters. This is the
+     * only mode used on mobile.
+     */
+    _updateNoiseGating() {
+        if (!this._noiseInitialized) return;
+        const ctx = this._audioContext;
+        const now = ctx.currentTime;
+        const threshold = this.store.state.noiseThreshold;
+        const wantGating = threshold < 0;
+
+        // Always tear down first - an attack change needs a fresh IIRFilterNode.
+        if (this._noiseSquarer) {
+            if (this._noiseMusicTap) {
+                try { this._noiseMusicTap.disconnect(this._noiseSquarer); } catch (e) {}
+            }
+            for (const node of [this._noiseSquarer, this._noiseEnvFilter,
+                                this._noiseEnvScale, this._noiseGateShaper,
+                                this._noiseAttackFilter]) {
+                try { node.disconnect(); } catch (e) {}
+            }
+            this._noiseSquarer = null;
+            this._noiseEnvFilter = null;
+            this._noiseEnvScale = null;
+            this._noiseGateShaper = null;
+            this._noiseAttackFilter = null;
+        }
+
+        if (!wantGating) {
+            this._noiseGateGain.gain.cancelScheduledValues(now);
+            this._noiseGateGain.gain.value = 1;
+            return;
+        }
+
+        this._noiseSquarer = ctx.createWaveShaper();
+        this._noiseSquarer.curve = createNoiseSquarerCurve();
+        this._noiseSquarer.oversample = 'none';
+
+        this._noiseEnvFilter = this._createNoiseOnePole(NOISE_DETECTOR_MS);
+
+        this._noiseEnvScale = ctx.createGain();
+        this._noiseEnvScale.gain.value = noiseThresholdScale(threshold);
+
+        this._noiseGateShaper = ctx.createWaveShaper();
+        this._noiseGateShaper.curve = createNoiseGateCurve();
+        this._noiseGateShaper.oversample = 'none';
+
+        // Attack applies to the gate amount, matching the old worklet, which
+        // smoothed its target gain rather than its level measurement.
+        this._noiseAttackFilter = this._createNoiseOnePole(this.store.state.noiseAttack);
+
+        this._noiseSquarer
+            .connect(this._noiseEnvFilter)
+            .connect(this._noiseEnvScale)
+            .connect(this._noiseGateShaper)
+            .connect(this._noiseAttackFilter)
+            .connect(this._noiseGateGain.gain);
+
+        // A signal connected to an AudioParam sums with the param's intrinsic
+        // value, so that has to be 0 or the gate can never close.
+        this._noiseGateGain.gain.cancelScheduledValues(now);
+        this._noiseGateGain.gain.value = 0;
+
+        if (this._noiseMusicTap) {
+            this._noiseMusicTap.connect(this._noiseSquarer);
+        }
+    }
+
+    /**
+     * Apply the Level setting. Ramped so dragging the slider doesn't zipper.
+     * @param {boolean} [ramp=true]
+     */
+    _updateNoisePower(ramp = true) {
+        if (!this._noisePowerGain) return;
+        const linear = noiseLevelToLinear(this.store.state.noisePower);
+        this._setNoiseParam(this._noisePowerGain.gain, linear, ramp, 0.02);
+    }
+
+    /**
+     * Noise is audible only while enabled and actually playing.
+     * @param {boolean} [ramp=true]
+     */
+    _updateNoiseOutput(ramp = true) {
+        if (!this._noiseOutputGain) return;
+        const audible = this.store.state.noiseEnabled && this.store.state.isPlaying;
+        this._setNoiseParam(this._noiseOutputGain.gain, audible ? 1 : 0, ramp, 0.05);
+    }
+
+    /**
+     * @param {AudioParam} param
+     * @param {number} value
+     * @param {boolean} ramp
+     * @param {number} timeConstant
+     */
+    _setNoiseParam(param, value, ramp, timeConstant) {
+        const now = this._audioContext.currentTime;
+        param.cancelScheduledValues(now);
+        if (ramp) {
+            param.setTargetAtTime(value, now, timeConstant);
+        } else {
+            param.value = value;
+        }
     }
 
     /**
      * Connect noise to the audio output chain.
-     * Sends music to worklet/processor for RMS analysis, merges noise with music.
+     * Merges noise with music, and taps the music into the gating sidechain
+     * when one is active.
      * @param {AudioNode} musicEndNode - The final node of the music chain
      * @returns {AudioNode} The merger node (new chain end), or musicEndNode if noise disabled
      */
@@ -3439,12 +3558,13 @@ class AudioController {
             return musicEndNode;
         }
 
-        const noiseSource = this._noiseWorklet || this._noiseScriptProcessor;
+        // Remembered so the sidechain can be rewired on a threshold or attack
+        // change without rebuilding the whole pipeline.
+        this._noiseMusicTap = musicEndNode;
 
-        // Connect music to merger (passthrough) and to noise processor (for RMS analysis)
         musicEndNode.connect(this._noiseMerger);
-        if (noiseSource) {
-            musicEndNode.connect(noiseSource);
+        if (this._noiseSquarer) {
+            musicEndNode.connect(this._noiseSquarer);
         }
 
         return this._noiseMerger;
@@ -3508,54 +3628,42 @@ class AudioController {
     }
 
     /**
-     * Send settings to the noise worklet/processor.
-     * Used to update threshold, power, enabled, and isPlaying state.
-     * @param {Object} settings - Settings to send
-     */
-    _sendNoiseSettings(settings) {
-        if (this._noiseWorklet) {
-            this._noiseWorklet.port.postMessage(settings);
-        } else if (this._noiseScriptProcessor && this._noiseScriptProcessor._updateSettings) {
-            this._noiseScriptProcessor._updateSettings(settings);
-        }
-    }
-
-    /**
      * Set noise enabled state.
-     * Triggers audio chain rebuild to add/remove noise nodes.
      */
     async setNoiseEnabled(enabled) {
         this.store.state.noiseEnabled = enabled;
-
         if (enabled) {
-            if (!this._audioContext) {
-                // No context yet - use unified pipeline builder (handles noise init)
-                await this._ensureAudioPipeline();
-            } else if (!this._noiseInitialized) {
-                // Rebuild pipeline - switchLatencyMode will init noise with correct context
-                await this.switchLatencyMode(currentLatencyMode, true);
-            }
+            await this._ensureNoiseInitialized();
         }
-
-        // Notify worklet of enabled state change
-        this._sendNoiseSettings({ enabled });
-
+        this._updateNoiseOutput();
         this._saveAudioFXSettings();
     }
 
     /**
      * Ensure noise is initialized if it's supposed to be enabled.
      * This handles cases where the audio context was recreated but noise state is still true.
+     *
+     * Deduplicated via _noiseInitPromise: the rebuild is async and the EQ page
+     * sliders fire on every input event, so without this a drag during an
+     * in-flight rebuild would start a second one on top of it - each closing
+     * the AudioContext the other was building on.
      */
-    async _ensureNoiseInitialized() {
-        if (this.store.state.noiseEnabled && !this._noiseInitialized) {
-            if (!this._audioContext) {
-                await this._ensureAudioPipeline();
-            } else {
-                // Rebuild pipeline to properly connect noise nodes
-                await this.switchLatencyMode(currentLatencyMode, true);
-            }
+    _ensureNoiseInitialized() {
+        if (!this.store.state.noiseEnabled || this._noiseInitialized) {
+            return Promise.resolve();
         }
+        if (this._noiseInitPromise) return this._noiseInitPromise;
+
+        // The chain was built without noise nodes, so the merger has to be
+        // spliced in. _initNoise itself is synchronous; only this path is async.
+        const rebuild = this._audioContext
+            ? this.switchLatencyMode(currentLatencyMode, true)
+            : this._ensureAudioPipeline();
+
+        this._noiseInitPromise = Promise.resolve(rebuild).finally(() => {
+            this._noiseInitPromise = null;
+        });
+        return this._noiseInitPromise;
     }
 
     /**
@@ -3576,20 +3684,37 @@ class AudioController {
         const clampedPower = Math.max(-60, Math.min(0, power));
         this.store.state.noisePower = clampedPower;
         await this._ensureNoiseInitialized();
-        this._sendNoiseSettings({ power: clampedPower });
+        this._updateNoisePower();
         this._saveAudioFXSettings();
     }
 
     /**
      * Set noise threshold (-60 to 0 dB).
-     * When music RMS drops below this level, noise fades in.
-     * 0 = always on (constant noise mixing).
+     * When music level drops below this, noise fades in.
+     * 0 = always on, which bypasses the gating sidechain entirely.
      */
     async setNoiseThreshold(threshold) {
         const clampedThreshold = Math.max(-60, Math.min(0, threshold));
+        const wasGating = this._noiseSquarer !== null;
         this.store.state.noiseThreshold = clampedThreshold;
         await this._ensureNoiseInitialized();
-        this._sendNoiseSettings({ threshold: clampedThreshold });
+
+        if (this._noiseInitialized) {
+            if ((clampedThreshold < 0) !== wasGating) {
+                // Crossed the always-on boundary - build or drop the sidechain.
+                this._updateNoiseGating();
+            } else if (this._noiseEnvScale) {
+                // Still gating, just a different threshold. Retune the
+                // normalising gain instead of rewiring nodes, so dragging the
+                // slider doesn't tear the control signal down 60 times a second.
+                this._setNoiseParam(
+                    this._noiseEnvScale.gain,
+                    noiseThresholdScale(clampedThreshold),
+                    true,
+                    0.02
+                );
+            }
+        }
         this._saveAudioFXSettings();
     }
 
@@ -3597,12 +3722,15 @@ class AudioController {
      * Set noise attack time (25 to 2000 ms, log scale).
      * Controls how quickly noise fades in/out.
      * 25ms = instant (original behavior), 2000ms = 2 second fade.
+     *
+     * Rebuilds the sidechain (IIRFilterNode coefficients are fixed at
+     * construction), so the EQ page binds this on-change rather than on-input.
      */
     async setNoiseAttack(attack) {
         const clampedAttack = Math.max(25, Math.min(2000, attack));
         this.store.state.noiseAttack = clampedAttack;
         await this._ensureNoiseInitialized();
-        this._sendNoiseSettings({ attack: clampedAttack });
+        this._updateNoiseGating();
         this._saveAudioFXSettings();
     }
 

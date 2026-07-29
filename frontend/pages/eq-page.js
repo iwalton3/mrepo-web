@@ -8,8 +8,12 @@
  */
 
 import { defineComponent, html, when, each, Component } from 'vdx/framework.js';
-import player, { EQ_BANDS } from '../stores/player-store.js';
+import player, { EQ_BANDS, isMobileDevice } from '../stores/player-store.js';
 import eqPresetsStore from '../stores/eq-presets-store.js';
+
+// Comfort noise gating is pinned off on mobile (see noiseThreshold in
+// player-store.js), so its two controls are hidden there.
+const IS_MOBILE = isMobileDevice();
 import '../components/parametric-eq-editor.js';
 import 'vdxui/button/button.js';
 
@@ -644,26 +648,35 @@ export class EqPage extends Component {
                                    on-input="handleNoisePowerChange">
                             <span class="noise-value">${noisePower} dB</span>
                         </div>
-                        <div class="noise-slider-row">
-                            <span class="range-label-inline">Threshold</span>
-                            <input type="range" min="-60" max="0" step="1"
-                                   class="noise-slider"
-                                   value="${noiseThreshold}"
-                                   on-input="handleNoiseThresholdChange">
-                            <span class="noise-value">${noiseThreshold === 0 ? 'Always' : noiseThreshold + ' dB'}</span>
-                        </div>
-                        <div class="noise-labels">
-                            <span>Quiet</span>
-                            <span>Always On</span>
-                        </div>
-                        <div class="noise-slider-row">
-                            <span class="range-label-inline">Attack</span>
-                            <input type="range" min="0" max="100" step="1"
-                                   class="noise-slider"
-                                   value="${this.attackMsToSlider(noiseAttack)}"
-                                   on-input="handleNoiseAttackChange">
-                            <span class="noise-value">${noiseAttack <= 25 ? 'Instant' : noiseAttack >= 1000 ? (noiseAttack / 1000).toFixed(1) + 's' : noiseAttack + 'ms'}</span>
-                        </div>
+                        ${when(!IS_MOBILE, html`
+                            <div class="noise-slider-row">
+                                <span class="range-label-inline">Threshold</span>
+                                <input type="range" min="-60" max="0" step="1"
+                                       class="noise-slider"
+                                       value="${noiseThreshold}"
+                                       on-input="handleNoiseThresholdChange">
+                                <span class="noise-value">${noiseThreshold === 0 ? 'Always' : noiseThreshold + ' dB'}</span>
+                            </div>
+                            <div class="noise-labels">
+                                <span>Quiet</span>
+                                <span>Always On</span>
+                            </div>
+                            <div class="noise-slider-row">
+                                <span class="range-label-inline">Attack</span>
+                                <input type="range" min="0" max="100" step="1"
+                                       class="noise-slider"
+                                       value="${this.attackMsToSlider(noiseAttack)}"
+                                       on-change="handleNoiseAttackChange">
+                                <span class="noise-value">${noiseAttack <= 25 ? 'Instant' : noiseAttack >= 1000 ? (noiseAttack / 1000).toFixed(1) + 's' : noiseAttack + 'ms'}</span>
+                            </div>
+                        `)}
+                        ${when(IS_MOBILE, html`
+                            <p class="noise-mode-hint">
+                                Always on. Level gating is disabled on mobile - the
+                                detection chain is extra work in the audio graph, and
+                                background playback is where that margin matters.
+                            </p>
+                        `)}
                     `)}
                 </div>
             </div>

@@ -35,7 +35,7 @@ const FRONTEND_DIR = path.join(REPO_ROOT, 'frontend');
 const E2E_DIR = path.join(TESTS_DIR, 'e2e');
 
 // Lane 1 = backend-free injection suites. Everything else *.test.js = lane 2 legacy.
-const LANE1_SUITES = ['queue-reorder.test.js', 'windowing.test.js'];
+const LANE1_SUITES = ['queue-reorder.test.js', 'windowing.test.js', 'noise-dsp.test.js'];
 
 // ---- args -----------------------------------------------------------------
 const argv = process.argv.slice(2);
