@@ -291,6 +291,19 @@ The AI service analyzes audio files to create embeddings. Requirements vary by d
 
 The `docker-compose.yml` in the repository root includes AI service profiles.
 
+> **The AI service has no authentication.** Anyone who can reach port 5002 can
+> query your library, read its embeddings, and wipe the entire index with a
+> single unauthenticated `POST /clear`. It also holds read access to your music
+> files and the database. Treat it as an internal service: reachable only by
+> mrepo, never by your LAN and never by the internet.
+>
+> The bundled compose files do not publish port 5002 for this reason - mrepo
+> talks to the AI container over the compose network, which needs no host port.
+> Note that adding a `ports:` mapping is not something a host firewall will
+> reliably contain: Docker inserts its own iptables rules ahead of `ufw` and
+> `firewalld`, so a published port is often reachable even when the firewall
+> says the port is closed.
+
 #### Option 1: CPU Mode (Recommended for Small Libraries)
 
 ```bash
@@ -307,18 +320,29 @@ docker compose --profile ai-gpu up -d
 
 #### Option 3: Remote AI Service
 
-Run the AI service on a separate machine (e.g., a GPU server):
+Run the AI service on a separate machine (e.g., a GPU server). This is the one
+case where the port has to be published, so bind it to a specific private
+address rather than to every interface:
 
 ```bash
-# On the AI server - use pre-built image
-docker run -d -p 5002:5002 \
+# On the AI server - bind to the private/VPN address the main server uses,
+# NOT to 0.0.0.0. `-p 5002:5002` would listen on every interface, including
+# any public one.
+docker run -d -p 10.0.0.5:5002:5002 \
   -v /path/to/music:/media:ro \
   -v ai-models:/root/.cache \
   ghcr.io/iwalton3/mrepo-web-ai:main
 
-# On the main server - point to your AI server hostname
-AI_SERVICE_URL=http://ai-server:5002 docker compose up -d
+# On the main server - point to your AI server's private address
+AI_SERVICE_URL=http://10.0.0.5:5002 docker compose up -d
 ```
+
+Replace `10.0.0.5` with the AI server's address on the private network the two
+machines share. If they are not on a shared private network, put them on one
+(WireGuard, Tailscale, a cloud VPC) rather than exposing 5002 across the open
+internet - the service has no authentication, so anything that can route to it
+has full control of it. A reverse proxy in front of 5002 is only adequate if it
+adds authentication of its own; TLS alone does not help here.
 
 ### Enabling AI Without Docker
 

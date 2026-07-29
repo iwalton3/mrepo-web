@@ -13,6 +13,11 @@
 #
 # With AI features (GPU):
 #   docker compose --profile ai-gpu up -d
+#
+# Port exposure: only mrepo publishes a port. The AI service is reachable
+# from mrepo over the compose network and is deliberately NOT published to
+# the host - it has no authentication of any kind (see the note on the
+# mrepo-ai service below).
 
 services:
   mrepo:
@@ -20,6 +25,9 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     ports:
+      # This is the only service meant to be reachable from outside Docker.
+      # Behind a reverse proxy, narrow it to "127.0.0.1:8080:8080" so the app
+      # itself is only reachable through the proxy.
       - "8080:8080"
     volumes:
       # Database (persistent)
@@ -41,14 +49,28 @@ services:
       retries: 3
 
   # AI Service (CPU) - Enable with: docker compose --profile ai up
+  #
+  # No published ports, by design. This service has NO authentication: anyone
+  # who can reach port 5002 can read your library's embeddings, run searches,
+  # and wipe the whole index via POST /clear. It also has read access to your
+  # music files and the database. mrepo reaches it as http://mrepo-ai:5002 over
+  # the compose network, which does not require publishing anything to the host.
+  #
+  # Do not add a "ports:" mapping here. Docker publishes to 0.0.0.0 by default,
+  # which puts the service on your LAN - and on a VPS, on the public internet.
+  # Docker also inserts its own iptables rules ahead of ufw/firewalld, so a host
+  # firewall will not reliably block a published port.
+  #
+  # For debugging, publish it to loopback only and remove it afterwards:
+  #   ports: ["127.0.0.1:5002:5002"]
   mrepo-ai:
     profiles:
       - ai
     build:
       context: ../backend/ai_service
       dockerfile: Dockerfile
-    ports:
-      - "5002:5002"
+    expose:
+      - "5002"
     volumes:
       # Music files (same as main service, read-only)
       - /path/to/Music:/media:ro
@@ -75,14 +97,15 @@ services:
 
   # AI Service (GPU/CUDA) - Enable with: docker compose --profile ai-gpu up
   # Requires NVIDIA Container Toolkit
+  # Unauthenticated - not published to the host. See the note on mrepo-ai above.
   mrepo-ai-gpu:
     profiles:
       - ai-gpu
     build:
       context: ../backend/ai_service
       dockerfile: Dockerfile.gpu
-    ports:
-      - "5002:5002"
+    expose:
+      - "5002"
     volumes:
       - /path/to/Music:/media:ro
       - ../data:/data
