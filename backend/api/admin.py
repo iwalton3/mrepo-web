@@ -452,8 +452,11 @@ def _run_ai_analysis_in_background(job_id):
 
             except requests.RequestException as e:
                 # Log error but continue
+                # NB: this table's column is error_message; the similarly
+                # shaped scan_tasks table is the one with `errors`.
                 cur.execute("""
-                    UPDATE ai_analysis_jobs SET errors = COALESCE(errors, '') || ?
+                    UPDATE ai_analysis_jobs
+                    SET error_message = COALESCE(error_message, '') || ?
                     WHERE id = ?
                 """, (f"\n{str(e)}", job_id))
 
@@ -475,7 +478,7 @@ def _run_ai_analysis_in_background(job_id):
     except Exception as e:
         cur.execute("""
             UPDATE ai_analysis_jobs
-            SET status = 'failed', completed_at = datetime('now'), errors = ?
+            SET status = 'failed', completed_at = datetime('now'), error_message = ?
             WHERE id = ?
         """, (str(e), job_id))
         conn.commit()

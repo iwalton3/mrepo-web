@@ -718,11 +718,25 @@ def browse_genres_normalized(category=None, cursor=None, limit=100, min_songs=No
     conn = get_db()
     cur = conn.cursor()
 
-    # Check if normalized genres table exists
+    # Check if normalized genres table exists. It never does in this schema --
+    # nothing in db.py or scanner.py creates `genres`/`song_genres` -- so this
+    # fallback is in practice the ONLY path this endpoint takes.
     cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='genres'")
     if not cur.fetchone():
-        # Fall back to non-normalized
-        return browse_genres(category=category, cursor=cursor, limit=limit, min_songs=min_songs)
+        # browse_genres returns the full unpaginated set and takes neither
+        # cursor nor limit; forwarding them raised TypeError -> every call to
+        # this endpoint failed. Page the result here instead.
+        result = browse_genres(category=category, min_songs=min_songs)
+        items = result['items']
+        offset = int(cursor) if cursor else 0
+        limit = min(int(limit), 200)
+        page = items[offset:offset + limit]
+        return {
+            'items': page,
+            'nextCursor': str(offset + limit) if offset + limit < len(items) else None,
+            'hasMore': offset + limit < len(items),
+            'totalCount': len(items),
+        }
 
     limit = min(int(limit), 200)
     offset = int(cursor) if cursor else 0

@@ -662,6 +662,21 @@ export const sca = {
 /**
  * Radio API (SCA)
  */
+/**
+ * Quote a literal value for the advanced-search / radio-filter query language.
+ *
+ * The language's lexer breaks unquoted values at whitespace, so `l:eq:Abbey Road`
+ * parses as `album = "Abbey"` AND a free-text search for `Road` -- which matches
+ * nothing. Album, artist and path values routinely contain spaces, so anything
+ * interpolated into a filter has to go through here.
+ *
+ * @param {string} value - raw literal (album name, artist, path, ...)
+ * @returns {string} the value wrapped in double quotes, internal `\` and `"` escaped
+ */
+export function quoteFilterValue(value) {
+    return '"' + String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+}
+
 export const radio = {
     /**
      * Start a new radio session.

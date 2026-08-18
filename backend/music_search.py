@@ -141,6 +141,7 @@ FIELD_MAP = {
     'a': 'artist',
     'artist': 'artist',
     'l': 'album',
+    'al': 'album',
     'album': 'album',
     'n': 'title',
     'title': 'title',

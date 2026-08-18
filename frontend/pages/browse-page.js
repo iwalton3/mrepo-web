@@ -13,6 +13,7 @@ import { defineComponent, html, when, each, memoEach, untracked, Component } fro
 import { getRouter } from 'vdx/router.js';
 import { createWindowing } from 'vdx/windowing.js';
 import { browse, playlists, songs as songsApi } from '../offline/offline-api.js';
+import { quoteFilterValue as q } from '../api/music-api.js';
 import { player } from '../stores/player-store.js';
 import { profile } from '#profile';
 import '../components/vfs-folder-manager.js';
@@ -956,16 +957,18 @@ export class BrowsePage extends Component {
     async handleStartRadio() {
         const { viewMode, currentPath } = this.state;
 
+        // Values MUST be quoted: the filter language splits unquoted values at
+        // whitespace, and paths/albums/artists routinely contain spaces.
         let filter = null;
         if (viewMode === 'filepath') {
-            filter = `p:mt:${currentPath}`;
+            filter = `p:mt:${q(currentPath)}`;
         } else {
             const { category, genre, artist, album } = this._apiFilters();
             const parts = [];
-            if (category) parts.push(`c:eq:${category}`);
-            if (genre)    parts.push(`g:eq:${genre}`);
-            if (artist)   parts.push(`a:eq:${artist}`);
-            if (album)    parts.push(`l:eq:${album}`);
+            if (category) parts.push(`c:eq:${q(category)}`);
+            if (genre)    parts.push(`g:eq:${q(genre)}`);
+            if (artist)   parts.push(`a:eq:${q(artist)}`);
+            if (album)    parts.push(`l:eq:${q(album)}`);
             if (parts.length > 0) filter = parts.join(' AND ');
         }
 

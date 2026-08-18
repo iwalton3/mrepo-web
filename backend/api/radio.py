@@ -13,72 +13,52 @@ from ..app import api_method
 from ..db import get_db, rows_to_list, row_to_dict
 
 
-def _parse_filter_query(filter_query):
+def _parse_filter_query(filter_query, user_id=None):
     """
-    Parse a filter query string into SQL conditions.
+    Compile a radio filter into a SQL WHERE clause, using the SAME query
+    language as the search box (music_search.parse_query + build_sql).
 
-    Supports:
-    - c:eq:Value - category equals
-    - g:eq:Value - genre equals
-    - a:eq:Value - artist equals
-    - a:mt:Value - artist matches (contains)
-    - year:gte:Value - year >= value
-    - year:lte:Value - year <= value
-    - AND/OR connectors
+    Radio filters are not written by hand -- they are produced by the search and
+    browse UIs, which speak the full language. This module used to carry its own
+    regex parser that understood a 7-field subset and silently `continue`d past
+    anything else, which meant:
 
-    Returns (where_clause, params)
+      * `in:`/`tag:` and any plain-text filter were DROPPED, and a dropped
+        filter yields "1=1" -- radio then played the entire library while
+        claiming to be filtered (and, worse, `_populate_queue` skips its
+        seed-similarity fallback whenever filter_query is truthy, so the queue
+        became uniformly random rather than merely unfiltered);
+      * `t:eq:x` meant *title* here but *tag* in the search language;
+      * `l:` (album) and `p:` (path), which browse-page.js actually sends,
+        mapped to nonexistent columns `l`/`p` -> "no such column" -> radio from
+        an album or a filepath folder failed outright.
+
+    Delegating removes the whole divergence class: one parser, one field map,
+    and per-user fields resolve because user_id is threaded through.
+
+    Args:
+        filter_query: filter string, or falsy for "no filter"
+        user_id: caller identity; REQUIRED for `in:`/`playlist:`/`tag:` to
+                 resolve (without it build_sql silently matches only public
+                 playlists and compiles tag conditions to `1=0`)
+
+    Returns (where_clause, params); ("1=1", []) only when there is no filter.
     """
     if not filter_query:
         return "1=1", []
 
-    conditions = []
-    params = []
+    from ..music_search import parse_query, build_sql
 
-    # Split by AND/OR (simple parsing)
-    parts = re.split(r'\s+AND\s+', filter_query, flags=re.IGNORECASE)
-
-    for part in parts:
-        part = part.strip()
-        if not part:
-            continue
-
-        # Parse field:op:value format
-        match = re.match(r'^(\w+):(\w+):(.+)$', part)
-        if not match:
-            continue
-
-        field, op, value = match.groups()
-
-        # Map field abbreviations to column names
-        field_map = {
-            'c': 'category',
-            'g': 'genre',
-            'a': 'artist',
-            'aa': 'album_artist',
-            'al': 'album',
-            't': 'title',
-            'year': 'year',
-        }
-
-        column = field_map.get(field.lower(), field.lower())
-
-        if op == 'eq':
-            conditions.append(f"{column} = ?")
-            params.append(value)
-        elif op == 'mt':
-            conditions.append(f"{column} LIKE ?")
-            params.append(f"%{value}%")
-        elif op == 'gte':
-            conditions.append(f"{column} >= ?")
-            params.append(value)
-        elif op == 'lte':
-            conditions.append(f"{column} <= ?")
-            params.append(value)
-
-    if not conditions:
-        return "1=1", []
-
-    return " AND ".join(conditions), params
+    try:
+        return build_sql(parse_query(filter_query), user_id)
+    except Exception:
+        # Mirror songs_search's fallback so a filter the parser chokes on still
+        # FILTERS (via FTS) instead of degrading to the whole library.
+        safe_query = re.sub(r'[^\w\s]', ' ', filter_query).strip()
+        if not safe_query:
+            return "1=1", []
+        return ("uuid IN (SELECT uuid FROM songs_fts WHERE songs_fts MATCH ?)",
+                [safe_query + '*'])
 
 
 def _get_song_by_uuid(cur, uuid):
@@ -92,9 +72,9 @@ def _get_song_by_uuid(cur, uuid):
     return cur.fetchone()
 
 
-def _get_random_song(cur, filter_query=None):
+def _get_random_song(cur, filter_query=None, user_id=None):
     """Get a random song, optionally filtered."""
-    where_clause, params = _parse_filter_query(filter_query)
+    where_clause, params = _parse_filter_query(filter_query, user_id)
     cur.execute(f"""
         SELECT uuid, type, category, genre, artist, album, title, file,
                album_artist, track_number, disc_number, year, duration_seconds,
@@ -105,14 +85,15 @@ def _get_random_song(cur, filter_query=None):
     return cur.fetchone()
 
 
-def _populate_queue(cur, session_id, seed_song, count=10, filter_query=None):
+def _populate_queue(cur, session_id, seed_song, count=10, filter_query=None,
+                    user_id=None):
     """
     Populate the radio queue with songs similar to the seed.
 
     Simple algorithm: find songs in the same category/genre as seed,
     excluding already-queued songs.
     """
-    where_clause, params = _parse_filter_query(filter_query)
+    where_clause, params = _parse_filter_query(filter_query, user_id)
 
     # Get existing queue UUIDs to exclude
     cur.execute("""
@@ -205,7 +186,7 @@ def radio_start(seed_uuid=None, filter_query=None, details=None):
     if seed_uuid:
         seed = _get_song_by_uuid(cur, seed_uuid)
     else:
-        seed = _get_random_song(cur, filter_query)
+        seed = _get_random_song(cur, filter_query, user_id)
 
     if not seed:
         return {'error': 'No songs found matching filter'}
@@ -217,7 +198,8 @@ def radio_start(seed_uuid=None, filter_query=None, details=None):
     """, (session_id, user_id, filter_query, seed['uuid']))
 
     # Populate initial queue
-    queue = _populate_queue(cur, session_id, seed, count=10, filter_query=filter_query)
+    queue = _populate_queue(cur, session_id, seed, count=10, filter_query=filter_query,
+                            user_id=user_id)
 
     # Sync radio queue to user_queue table so it persists across refreshes
     # Clear existing queue
@@ -235,7 +217,7 @@ def radio_start(seed_uuid=None, filter_query=None, details=None):
     # This allows sca_populate_queue to add more songs during playback
     cur.execute("DELETE FROM sca_song_pool WHERE user_id = ?", (user_id,))
 
-    where_clause, params = _parse_filter_query(filter_query)
+    where_clause, params = _parse_filter_query(filter_query, user_id)
     cur.execute(f"""
         INSERT INTO sca_song_pool (user_id, song_uuid)
         SELECT ?, uuid FROM songs WHERE {where_clause}
@@ -293,7 +275,8 @@ def radio_next(session_id, details=None):
     if not next_item:
         # Queue empty, try to populate more
         seed = _get_song_by_uuid(cur, session['seed_uuid'])
-        _populate_queue(cur, session_id, seed, count=10, filter_query=session['filter_query'])
+        _populate_queue(cur, session_id, seed, count=10,
+                        filter_query=session['filter_query'], user_id=user_id)
 
         # Try again
         cur.execute("""
@@ -331,7 +314,7 @@ def radio_next(session_id, details=None):
 
     if remaining < 5:
         _populate_queue(cur, session_id, next_item, count=10 - remaining,
-                       filter_query=session['filter_query'])
+                        filter_query=session['filter_query'], user_id=user_id)
 
     result = row_to_dict(next_item)
     del result['position']

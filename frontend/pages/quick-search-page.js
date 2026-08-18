@@ -15,6 +15,7 @@ import { defineComponent, html, when, each, memoEach, untracked, Component } fro
 import { getRouter } from 'vdx/router.js';
 import { createWindowing } from 'vdx/windowing.js';
 import { songs, ai } from '../offline/offline-api.js';
+import { quoteFilterValue as q } from '../api/music-api.js';
 import { player } from '../stores/player-store.js';
 import offlineStore from '../offline/offline-store.js';
 import { searchOfflineSongs } from '../offline/offline-db.js';
@@ -660,7 +661,7 @@ export class QuickSearchPage extends Component {
     async handleRadioArtist(artist, e) {
         e.stopPropagation();
         try {
-            await player.startRadio(null, `a:eq:${artist.name}`);
+            await player.startRadio(null, `a:eq:${q(artist.name)}`);
         } catch (err) {
             console.error('Failed to start artist radio:', err);
         }
@@ -679,7 +680,7 @@ export class QuickSearchPage extends Component {
     async handleRadioAlbum(album, e) {
         e.stopPropagation();
         try {
-            await player.startRadio(null, `a:eq:${album.artist} AND al:eq:${album.name}`);
+            await player.startRadio(null, `a:eq:${q(album.artist)} AND al:eq:${q(album.name)}`);
         } catch (err) {
             console.error('Failed to start album radio:', err);
         }

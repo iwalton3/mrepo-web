@@ -126,7 +126,12 @@ async function runLane0Contract(results) {
         results.push({ label: 'lane0:pytest-contract', code: 0, passed: 0, failed: 0, skipped: true });
         return true;
     }
-    const r = spawnSync(env.VENV_PYTHON, ['-m', 'pytest', 'backend/test_sync_contract.py', '-q'], {
+    const CONTRACT_SUITES = [
+        'backend/test_sync_contract.py',
+        'backend/test_search_scoping.py',
+        'backend/test_sql_schema.py',
+    ];
+    const r = spawnSync(env.VENV_PYTHON, ['-m', 'pytest', ...CONTRACT_SUITES, '-q'], {
         cwd: REPO_ROOT,
         stdio: flags.onlyErrors ? 'pipe' : 'inherit',
         encoding: 'utf8',

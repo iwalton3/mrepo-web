@@ -164,7 +164,8 @@ def songs_search(query, cursor=None, offset=None, limit=50, details=None):
         if ai_info.has_ai and get_config('ai', 'service_url'):
             return _handle_ai_search(ast, ai_info, cursor, offset, limit, details, original_query=query)
 
-        where_clause, params = build_sql(ast)
+        # user_id scopes in:/playlist: and tag: conditions to the caller
+        where_clause, params = build_sql(ast, details.get('user_id') if details else None)
     except Exception:
         # Fall back to FTS for simple queries
         where_clause = "uuid IN (SELECT uuid FROM songs_fts WHERE songs_fts MATCH ?)"
@@ -235,13 +236,16 @@ def _handle_ai_search(ast, ai_info, cursor, offset, limit, details, original_que
     ai_service_url = get_config('ai', 'service_url')
     ai_timeout = get_config('ai', 'search_timeout') or 5.0
 
+    # user_id scopes in:/playlist: and tag: conditions to the caller, and
+    # selects the user's AI preferences below
+    user_id = details.get('user_id') if details else None
+
     if not ai_service_url:
         # AI not configured, fall back to non-AI search
-        where_clause, params = build_sql(ast)
+        where_clause, params = build_sql(ast, user_id)
         return _execute_standard_search(where_clause, params, cursor, offset, limit, False)
 
     # Get user's AI preferences
-    user_id = details.get('user_id') if details else None
     ai_search_max = 2000
     ai_search_diversity = 0.3
 
@@ -258,7 +262,7 @@ def _handle_ai_search(ast, ai_info, cursor, offset, limit, details, original_que
     # Build context query from non-AI portion
     context_uuids = None
     if ai_info.context_ast:
-        context_where, context_params = build_sql(ai_info.context_ast)
+        context_where, context_params = build_sql(ai_info.context_ast, user_id)
         cur.execute(f"SELECT uuid FROM songs WHERE {context_where}", context_params)
         context_uuids = [row['uuid'] for row in cur.fetchall()]
 
@@ -336,7 +340,7 @@ def _handle_ai_search(ast, ai_info, cursor, offset, limit, details, original_que
     # Handle AI subquery search (ai(subquery))
     if ai_info.subqueries:
         subquery_ast = ai_info.subqueries[0]
-        subquery_where, subquery_params = build_sql(subquery_ast)
+        subquery_where, subquery_params = build_sql(subquery_ast, user_id)
 
         # Get songs matching the subquery (up to 1000 for sampling)
         cur.execute(f"SELECT uuid FROM songs WHERE {subquery_where} LIMIT 1000", subquery_params)
@@ -371,7 +375,7 @@ def _handle_ai_search(ast, ai_info, cursor, offset, limit, details, original_que
                 pass  # Fall through to standard search
 
     # Fallback: execute standard search ignoring AI nodes
-    where_clause, params = build_sql(ast)
+    where_clause, params = build_sql(ast, user_id)
     return _execute_standard_search(where_clause, params, cursor, offset, limit, False)
 
 
@@ -664,8 +668,9 @@ def songs_quick_search(query, limit=10, details=None):
 
 
 @api_method('songs_random', require='user')
-def songs_random(filter_query=None, count=1):
+def songs_random(filter_query=None, count=1, details=None):
     """Get random song(s), optionally filtered. Returns single song dict if count=1."""
+    user_id = details.get('user_id') if details else None
     conn = get_db()
     cur = conn.cursor()
 
@@ -675,7 +680,8 @@ def songs_random(filter_query=None, count=1):
         from ..music_search import parse_query, build_sql
         try:
             ast = parse_query(filter_query)
-            where_clause, params = build_sql(ast)
+            # user_id scopes in:/playlist: and tag: conditions to the caller
+            where_clause, params = build_sql(ast, user_id)
         except Exception:
             where_clause = "1=1"
             params = []
