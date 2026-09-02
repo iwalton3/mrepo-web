@@ -9,7 +9,8 @@
  * - Keyboard navigation: Arrow keys, Enter, Space, Escape, Home, End
  * - aria-label on chip remove buttons
  */
-import { defineComponent, html, when, each, Component } from '../../lib/framework.js';
+import { defineComponent, html, when, each, boolProp, Component } from '../../lib/framework.js';
+import { createAnchoredOverlay } from '../../lib/overlay.js';
 
 // Counter for unique IDs
 let multiselectIdCounter = 0;
@@ -39,33 +40,36 @@ export class ClMultiselect extends Component {
             activeIndex: -1,
             multiselectId: `cl-multiselect-${++multiselectIdCounter}`
         };
-    }
 
-    mounted() {
-        // Global keydown for escape
-        this._handleGlobalKeyDown = (e) => {
-            if (e.key === 'Escape' && this.state.showPanel) {
+        // Top-layer anchored overlay - escapes ancestor overflow/transform
+        // clipping and owns outside-click + Escape dismissal (replaces the old
+        // backdrop div + global Escape listener).
+        this._overlay = createAnchoredOverlay(this, {
+            anchor: () => this.querySelector('.multiselect-trigger'),
+            panel: () => this.querySelector('.multiselect-panel'),
+            placement: 'bottom-start',
+            offset: 4,
+            matchAnchorWidth: true,
+            onDismiss: (reason) => {
                 this.closePanel();
-                this._focusTrigger();
+                if (reason === 'escape') this._focusTrigger();
             }
-        };
-        document.addEventListener('keydown', this._handleGlobalKeyDown);
+        });
     }
 
     unmounted() {
-        if (this._handleGlobalKeyDown) {
-            document.removeEventListener('keydown', this._handleGlobalKeyDown);
-        }
+        this._overlay.destroy();
     }
 
     closePanel() {
+        this._overlay.close();  // hidePopover before the branch unmounts
         this.state.showPanel = false;
         this.state.activeIndex = -1;
         this.state.filterValue = '';
     }
 
     togglePanel() {
-        if (!this.props.disabled) {
+        if (!boolProp(this.props.disabled)) {
             if (this.state.showPanel) {
                 this.closePanel();
             } else {
@@ -74,18 +78,21 @@ export class ClMultiselect extends Component {
         }
     }
 
-    openPanel() {
+    async openPanel() {
         this.state.showPanel = true;
         this.state.filterValue = '';
         this.state.activeIndex = 0;
 
-        // Focus filter input if present
-        requestAnimationFrame(() => {
-            if (this.props.filter) {
-                const filterInput = this.querySelector('.filter-input');
-                if (filterInput) filterInput.focus();
-            }
-        });
+        // Wait for the conditionally-rendered panel to mount, then promote and
+        // position it before focusing the filter.
+        await this.nextRender();
+        if (!this.state.showPanel) return;
+        this._overlay.open();
+
+        if (boolProp(this.props.filter)) {
+            const filterInput = this.querySelector('.filter-input');
+            if (filterInput) filterInput.focus();
+        }
     }
 
     _focusTrigger() {
@@ -211,7 +218,7 @@ export class ClMultiselect extends Component {
     }
 
     get filteredOptions() {
-        if (!this.props.filter || !this.state.filterValue) {
+        if (!boolProp(this.props.filter) || !this.state.filterValue) {
             return this.props.options || [];
         }
 
@@ -245,19 +252,16 @@ export class ClMultiselect extends Component {
                 ${when(this.props.label, html`
                     <label class="cl-label" id="${labelId}">${this.props.label}</label>
                 `)}
-                ${when(this.state.showPanel, html`
-                    <div class="multiselect-backdrop" on-click="closePanel"></div>
-                `)}
                 <div class="multiselect-container">
-                    <div class="multiselect-trigger ${this.props.disabled ? 'disabled' : ''}"
+                    <div class="multiselect-trigger ${boolProp(this.props.disabled) ? 'disabled' : ''}"
                          role="combobox"
                          aria-haspopup="listbox"
                          aria-expanded="${this.state.showPanel ? 'true' : 'false'}"
                          aria-controls="${listboxId}"
                          aria-activedescendant="${activeDescendant}"
                          aria-labelledby="${this.props.label ? labelId : undefined}"
-                         aria-disabled="${this.props.disabled ? 'true' : undefined}"
-                         tabindex="${this.props.disabled ? -1 : 0}"
+                         aria-disabled="${boolProp(this.props.disabled) ? 'true' : undefined}"
+                         tabindex="${boolProp(this.props.disabled) ? -1 : 0}"
                          on-click="togglePanel"
                          on-keydown="handleKeyDown">
                         <div class="selected-items">
@@ -280,8 +284,8 @@ export class ClMultiselect extends Component {
                         <span class="dropdown-icon" aria-hidden="true">${this.state.showPanel ? '▲' : '▼'}</span>
                     </div>
                     ${when(this.state.showPanel, html`
-                        <div class="multiselect-panel">
-                            ${when(this.props.filter, html`
+                        <div class="multiselect-panel" popover="manual">
+                            ${when(boolProp(this.props.filter), html`
                                 <div class="filter-container">
                                     <input
                                         type="text"
@@ -422,27 +426,19 @@ export class ClMultiselect extends Component {
             margin-left: 8px;
         }
 
-        .multiselect-backdrop {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            z-index: 999;
-        }
-
         .multiselect-panel {
-            position: absolute;
-            top: 100%;
-            left: 0;
-            right: 0;
-            margin-top: 4px;
+            /* Positioned by createAnchoredOverlay (top layer). inset/margin reset
+               the UA popover defaults; placement is written inline. */
+            inset: auto;
+            margin: 0;
+            color: inherit;   /* UA [popover] forces color:CanvasText; keep theme (dark mode) */
+            box-sizing: border-box;
             background: var(--card-bg, white);
             border: 1px solid var(--input-border, #ced4da);
             border-radius: 4px;
             box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            z-index: 1000;
             max-height: 300px;
+            overflow: hidden;
             display: flex;
             flex-direction: column;
         }
@@ -469,6 +465,8 @@ export class ClMultiselect extends Component {
         }
 
         .options-list {
+            flex: 1 1 auto;
+            min-height: 0;
             overflow-y: auto;
             max-height: 250px;
         }

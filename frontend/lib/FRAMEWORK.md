@@ -172,11 +172,90 @@ Objects, arrays, and functions pass automatically:
 </child-component>
 ```
 
+They keep their type even if the child's class has not been imported yet - a lazy
+`import()` that registers a component after its call site has rendered produces
+the same props as one registered up front. A non-string never reaches the DOM,
+so the attribute shows nothing for `items` above; read the node (`$0.items`) to
+inspect it, not the DOM.
+
+`undefined` means "not provided" and resolves to the prop's declared default, on
+an update as well as on the first render. `null` is an explicit null.
+
+The full rules - native attribute kinds, which name goes to a prop and which to
+the host, and what the mirror shows - are in
+[docs/templates.md](docs/templates.md#the-attribute-contract). They are
+machine-checked by `tests/attr-matrix/`; if the docs and that run disagree, the
+run is right.
+
 In static HTML (outside templates), camelCase props are set via kebab-case attributes:
 ```html
 <unit-converter from-unit="liters" initial-value="10"></unit-converter>
 <!-- from-unit="..." sets this.props.fromUnit (always a string) -->
 ```
+
+### Boolean props: use `${}`, and read with `boolProp()`
+
+One rule decides what a prop's value is: **literal template text is a string,
+`${}` passes the JS value**. It holds for native elements too, where literal
+text follows HTML - `<button disabled="false">` is *disabled*, because in HTML
+the attribute's presence is what counts.
+
+```javascript
+<cl-button disabled="${this.state.busy}">Save</cl-button>   // ✅ boolean
+<cl-button disabled="false">Save</cl-button>                // ❌ the STRING "false"
+```
+
+Nothing re-coerces that string, so both naive checks are wrong - in opposite
+directions. `props.x === true` is false for *every* literal form, and a bare
+`if (props.x)` treats `"false"` as true. Read flags through `boolProp()`:
+
+```javascript
+import { defineComponent, html, when, Component, boolProp } from './lib/framework.js';
+
+class ClToggle extends Component {
+    static props = { checked: false, disabled: false };
+
+    toggle() {
+        if (boolProp(this.props.disabled)) return;   // ✅ "false", "", false, null all handled
+        // ...
+    }
+
+    template() {
+        // Forwarding to a native element is an interpolation, so it takes JS
+        // truthiness - pass the coerced value, not the raw prop.
+        return html`<input type="checkbox" disabled="${boolProp(this.props.disabled)}">`;
+    }
+}
+```
+
+**Reserved host attributes.** Some names are handled by the host element before
+they ever reach your props, so `${}` does *not* preserve their JS type:
+`class` and `style` are element state, `aria-*` requires the literal strings
+`"true"`/`"false"` to mean anything to a screen reader, and `data-*` is a string
+map by definition. `aria-expanded="${true}"` arrives as `"true"`, not `true`.
+
+The *global* boolean attributes — `hidden`, `itemscope`, `autofocus` — keep HTML
+semantics on components too, because the user agent acts on them whatever the
+tag. `hidden` is the one to watch: **`<my-thing hidden="false">` hides the
+element**, because in HTML the attribute's presence is what counts. That is the
+literal-text rule working as specified, but it looks like your component
+vanished, so `t13-bool-false` flags it.
+
+One wrinkle in the other direction: `flag="${''}"` reaches `boolProp()` as an
+empty string, which is `true` — the same "a bare attribute means on" rule that
+makes `flag=""` true. Pass `${false}` if you mean false.
+
+Everything else follows the rule above.
+
+`boolProp` is true for anything except the string `"false"` and JS-falsy values,
+so bare `disabled`, `disabled=""` and `disabled="true"` all come out true, as
+HTML says they should. It is exported from both `lib/framework.js` and
+`lib/utils.js`.
+
+Declaring the prop's default as `true`/`false` is what marks it a flag, and the
+`t13-bool-false` lint check reads that declaration: it flags `flag="false"` on
+your component while leaving a string prop that happens to hold `"false"` alone.
+Run `node tools/template-lint.js` to catch these before they ship.
 
 ## Children & Slots
 
@@ -501,6 +580,69 @@ constructor(props) {
 
 Rows bind thin delegations (`on-dragover="${(e) => this._g.dragOver(index, e)}"` etc.). Passive-safety is a module invariant: `touchStart`/`touchMove` never preventDefault (bind `-passive`); `touchEnd` and the drag-handle `handleTouch*` suite may (bind non-passive). Translate the gap with the pure helpers: `gapToRemoveInsertIndex(from, gap)` for splice APIs, `gapToGapIndex` for gap-semantic APIs, `groupReorderTargets` for batches. `<cl-virtual-list reorderable>` is the packaged version (emits `reorder` with `{ fromIndices, gap, from, to }`; the consumer applies the change).
 
+## Anchored Overlays (createAnchoredOverlay)
+
+Positions a floating panel next to a trigger and promotes it to the browser **top layer** via
+the native Popover API, so it escapes ancestor `overflow` clipping, ancestor `transform`/`contain`
+containing blocks, and z-index stacking **all at once** - with no DOM move. The node stays where
+you rendered it, so diffing, refs, reactivity, and any enclosing focus trap (e.g. `cl-dialog`'s)
+keep working. Used by every popover-style cl-* component - `cl-dropdown`, `cl-multiselect`,
+`cl-autocomplete`, `cl-calendar`, `cl-popover`, `cl-tooltip`, `cl-action-menu`, and `cl-context-menu`
+(the last anchored to a pointer point `{ x, y }` rather than an element).
+
+```javascript
+import { createAnchoredOverlay } from 'vdx/lib/overlay.js';
+
+constructor(props) {
+    super(props);
+    this._overlay = createAnchoredOverlay(this, {
+        anchor: () => this.querySelector('.dropdown-trigger'), // re-resolved each open
+        panel:  () => this.querySelector('.dropdown-panel'),   // the node to promote+position
+        placement: 'bottom-start',   // `${side}-${align}`; side top|bottom|left|right, auto-flips
+        offset: 4,                   // gap between anchor and panel (px)
+        viewportPadding: 8,          // min gap from viewport edges
+        matchAnchorWidth: true,      // panel width := anchor width
+        closeOnScroll: false,        // false = reposition on scroll; true = dismiss
+        onDismiss: (reason) => {     // 'outside' | 'escape' | 'scroll'
+            this.closePanel();
+            if (reason === 'escape') this._focusTrigger();
+        }
+    });
+}
+
+async openPanel() {
+    this.state.showPanel = true;
+    await this.nextRender();     // the conditionally-rendered panel must exist first
+    this._overlay.open();        // showPopover + position + attach dismiss listeners
+}
+closePanel() {
+    this._overlay.close();       // hidePopover BEFORE the branch unmounts (idempotent)
+    this.state.showPanel = false;
+}
+unmounted() { this._overlay.destroy(); }
+```
+
+| Method | Responsibility |
+|---|---|
+| `open()` | Promote the panel to the top layer (`showPopover`), position it, attach scroll/resize/outside-pointerdown/Escape listeners. No-op if already open. |
+| `close()` | `hidePopover`, detach all listeners. Idempotent. |
+| `reposition()` | Recompute from the anchor's `getBoundingClientRect()` and write `position:fixed; top/left/width/max-height` onto the panel. Runs on scroll/resize; also exposed. |
+| `destroy()` | `close()` + mark dead. Call from `unmounted()`. |
+
+Give the panel `popover="manual"` in the template (starts it as a hidden popover, avoiding a
+one-frame flash in normal flow) and drop `position:absolute; top:100%` from its CSS - the helper
+writes placement inline and resets the UA popover defaults (`inset:auto; margin:0`). The panel
+owns dismissal, so a component adopting this can delete its own backdrop div and global Escape
+listener. Feature-degrades to plain `position:fixed` (no top layer) on engines without the Popover
+API. Mirrors the `create*(host, opts)` shape of `createWindowing` / `createRowGestures`.
+
+**Options beyond the basics:** `anchor` may be a DOM element, anything with `getBoundingClientRect()`,
+or a point literal `{ x, y }` (how `cl-context-menu` anchors to the pointer). `placement` accepts all
+four sides - for `left`/`right`, `align` controls the vertical edge instead of the horizontal. Pass
+`onReposition({ side, align })` to react to the resolved (post-flip) placement - `cl-tooltip` uses it
+to point its arrow the right way. Read the resolved placement any time via the `placement` getter.
+`closeOnScroll: true` dismisses on scroll (menus) instead of repositioning (dropdowns).
+
 ## Reactive Boundaries (Critical for Performance)
 
 Templates re-evaluate as a single unit - you can't track individual `${}` slots separately. For frequently updating values mixed with expensive content, use reactive boundaries:
@@ -564,16 +706,32 @@ ${each(items, item => html`...`)}  // works - parent re-renders when items chang
 
 ## Anti-Patterns
 
+Every pattern below either THROWS or silently renders the wrong thing. The
+template lint catches all of them statically - run it in CI:
+
+```bash
+node tools/template-lint.js ./src     # or: node tools/optimize.js -i ./src --lint-only
+```
+
+The lint id is named on each entry; suppress a deliberate one with
+`<!-- vdx-lint-disable-next-line <id> -->` on the line above.
+
 ```javascript
-// DON'T use onclick - use on-click
-<button onclick="...">  // WRONG
-<button on-click="..."> // CORRECT
+// DON'T use inline DOM handlers - use on-* [t10-inline-events]
+// Both forms are REFUSED at render (console warning, handler never binds) - the
+// compiler's static path and the renderer share one refusal rule. The lint is
+// what points at the source line.
+<button onclick="doThing()">      // WRONG - refused at render
+<button onclick="${this.fn}">     // WRONG - refused at render
+<button on-click="handler">       // CORRECT
 
-// DON'T stringify objects
-options="${JSON.stringify(items)}"  // WRONG
-options="${items}"                   // CORRECT
+// DON'T stringify objects [t11-attr-stringify]
+options="${JSON.stringify(items)}"  // WRONG - receiver has to parse it back,
+options="${items}"                   // CORRECT   and identity checks stop working
 
-// DON'T manually bind methods - they're auto-bound
+// DON'T manually bind methods - they're auto-bound [t12-manual-bind]
+// The copy is a DIFFERENT function from this.method, so removeEventListener
+// and any identity check need the copy kept around.
 this._bound = this.method.bind(this)  // WRONG
 renderItem="${this.method}"           // CORRECT
 
@@ -586,6 +744,7 @@ remove() { ... }        // WRONG - shadows Element.remove(); throws at definitio
 dismiss() { ... }       // CORRECT
 
 // DON'T use Lit/Vue binding syntax - VDX has none of it, and the parser THROWS
+// [t7-binding]
 <button ?disabled="${x}">   // WRONG -> disabled="${x}" (boolean from the value)
 <button @click="${fn}">     // WRONG -> on-click="handler"
 <input .value="${v}">       // WRONG -> value="${v}"
@@ -593,8 +752,17 @@ dismiss() { ... }       // CORRECT
 
 // DON'T put a raw array / .map() of templates or an inline ternary in a slot -
 // they build no keyed placeholder and the renderer THROWS on a template array.
+// [t8-list-control]
 ${items.map(i => html`<li>${i}</li>`)}          // WRONG -> each(items, ...)
 ${cond ? html`<a>` : html`<b>`}                 // WRONG -> when(cond, ..., ...)
+
+// DON'T return contain()/memoEach(), or a non-template value, as a whole
+// each() item - contain/memoEach keep their state on the slot they occupy and
+// an item root is not a slot; a plain value has no keyed placeholder at all.
+// each() THROWS for both. [t9-list-item]
+// (when() as a whole item IS fine - each() resolves it to the branch template.)
+${each(rows, r => memoEach(r.kids, ...))}       // WRONG -> html`<div>${memoEach(...)}</div>`
+${each(rows, r => r.name)}                      // WRONG -> html`<li>${r.name}</li>`
 ```
 
 ---

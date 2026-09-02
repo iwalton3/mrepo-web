@@ -1,7 +1,8 @@
 /**
  * Calendar - Date picker component with typeable input and month/year picker
  */
-import { defineComponent, html, when, each, Component } from '../../lib/framework.js';
+import { defineComponent, html, when, each, boolProp, Component } from '../../lib/framework.js';
+import { createAnchoredOverlay } from '../../lib/overlay.js';
 
 /**
  * @fires change - detail: { value } - ISO date string, or { start, end } in range mode
@@ -36,15 +37,30 @@ export class ClCalendar extends Component {
             rangeEnd: null,
             hoverDate: null        // previews the in-progress range on hover
         };
+
+        // Top-layer anchored overlay for the pop-up picker (non-inline mode).
+        // Escapes ancestor overflow/transform clipping; owns outside-click and
+        // Escape dismissal, replacing the old backdrop div.
+        this._overlay = createAnchoredOverlay(this, {
+            anchor: () => this.querySelector('.calendar-input-wrapper'),
+            panel: () => this.querySelector('.calendar-picker'),
+            placement: 'bottom-start',
+            offset: 4,
+            onDismiss: () => this.closePicker()
+        });
     }
 
     mounted() {
         this.syncValueToState();
         this.state.yearRangeStart = Math.floor(new Date().getFullYear() / 12) * 12;
 
-        if (this.props.inline) {
+        if (boolProp(this.props.inline)) {
             this.state.showPicker = true;
         }
+    }
+
+    unmounted() {
+        this._overlay.destroy();
     }
 
     propsChanged(prop, newValue, oldValue) {
@@ -54,9 +70,15 @@ export class ClCalendar extends Component {
     }
 
     closePicker() {
-        if (!this.props.inline) {
-            this.state.showPicker = false;
-        }
+        if (boolProp(this.props.inline)) return;
+        this._overlay.close();  // hidePopover before the branch unmounts
+        this.state.showPicker = false;
+    }
+
+    // Promote + position the picker once its branch has mounted.
+    async _openPicker() {
+        await this.nextRender();
+        if (this.state.showPicker && !boolProp(this.props.inline)) this._overlay.open();
     }
 
     isRange() {
@@ -109,13 +131,17 @@ export class ClCalendar extends Component {
 
     togglePicker(e) {
         if (e) e.stopPropagation();
-        if (!this.props.disabled && !this.props.inline) {
-            this.state.showPicker = !this.state.showPicker;
-            this.state.viewMode = 'days';
-            if (this.state.showPicker && this.state.selectedDate) {
-                this.state.viewDate = this.state.selectedDate;
-            }
+        if (boolProp(this.props.disabled) || boolProp(this.props.inline)) return;
+        if (this.state.showPicker) {
+            this.closePicker();
+            return;
         }
+        this.state.showPicker = true;
+        this.state.viewMode = 'days';
+        if (this.state.selectedDate) {
+            this.state.viewDate = this.state.selectedDate;
+        }
+        this._openPicker();
     }
 
     selectDate(date) {
@@ -130,9 +156,7 @@ export class ClCalendar extends Component {
         const dateStr = this.toISODate(date);
         this.emitChange(null, dateStr);
 
-        if (!this.props.inline) {
-            this.state.showPicker = false;
-        }
+        this.closePicker();
     }
 
     selectRangeDate(date) {
@@ -156,9 +180,7 @@ export class ClCalendar extends Component {
         this.state.inputValue = this.formatRange();
         this.emitRangeChange();
 
-        if (!this.props.inline) {
-            this.state.showPicker = false;
-        }
+        this.closePicker();
     }
 
     hoverDay(date) {
@@ -465,9 +487,9 @@ export class ClCalendar extends Component {
         if (e.key === 'Enter') {
             // Trigger validation by blurring the input
             e.target.blur();
-            this.state.showPicker = false;
+            this.closePicker();
         } else if (e.key === 'Escape') {
-            this.state.showPicker = false;
+            this.closePicker();
         } else if (e.key === 'ArrowDown' && !this.state.showPicker) {
             e.preventDefault();
             this.togglePicker();
@@ -549,7 +571,7 @@ export class ClCalendar extends Component {
                 ${when(this.props.label, html`
                     <label class="cl-label">${this.props.label}</label>
                 `)}
-                ${when(!this.props.inline, html`
+                ${when(!boolProp(this.props.inline), html`
                     <div class="calendar-input-wrapper">
                         ${when(this.isRange(), html`
                             <input
@@ -558,7 +580,7 @@ export class ClCalendar extends Component {
                                 readonly
                                 value="${this.state.inputValue}"
                                 placeholder="${this.props.placeholder || 'Select date range'}"
-                                disabled="${this.props.disabled}"
+                                disabled="${boolProp(this.props.disabled)}"
                                 on-click="togglePicker">
                         `, html`
                             <cl-input-mask
@@ -566,7 +588,7 @@ export class ClCalendar extends Component {
                                 value="${this.state.inputValue}"
                                 mask="${this.dateMask}"
                                 placeholder="${this.props.placeholder || this.props.dateFormat}"
-                                disabled="${this.props.disabled}"
+                                disabled="${boolProp(this.props.disabled)}"
                                 hideError="${true}"
                                 error="${this.state.inputError}"
                                 on-input="handleMaskInput"
@@ -577,7 +599,7 @@ export class ClCalendar extends Component {
                         <button
                             class="calendar-toggle ${this.state.inputError ? 'error' : ''}"
                             type="button"
-                            disabled="${this.props.disabled}"
+                            disabled="${boolProp(this.props.disabled)}"
                             on-click="togglePicker">
                             <svg class="calendar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
@@ -591,11 +613,10 @@ export class ClCalendar extends Component {
                         <small class="error-text">${this.state.inputError}</small>
                     `)}
                 `)}
-                ${when(this.state.showPicker && !this.props.inline, html`
-                    <div class="calendar-backdrop" on-click="closePicker"></div>
-                `)}
                 ${when(this.state.showPicker, html`
-                    <div class="calendar-picker ${this.props.inline ? 'inline' : ''}" on-click="handleCalendarClick">
+                    <div class="calendar-picker ${boolProp(this.props.inline) ? 'inline' : ''}"
+                         popover="${boolProp(this.props.inline) ? undefined : 'manual'}"
+                         on-click="handleCalendarClick">
                         ${when(this.state.viewMode === 'days', html`
                             <div class="calendar-header">
                                 <button class="nav-btn" on-click="previousMonth" title="Previous month">‹</button>
@@ -766,34 +787,24 @@ export class ClCalendar extends Component {
             color: var(--error-color, #dc3545);
         }
 
-        .calendar-backdrop {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            z-index: 999;
-        }
-
         .calendar-picker {
-            position: absolute;
-            top: 100%;
-            left: 0;
-            margin-top: 4px;
+            /* Non-inline: positioned by createAnchoredOverlay (top layer).
+               inset/margin reset the UA popover defaults. */
+            inset: auto;
+            margin: 0;
+            color: inherit;   /* UA [popover] forces color:CanvasText; keep theme (dark mode) */
             background: var(--input-bg, white);
             border: 1px solid var(--input-border, #ced4da);
             border-radius: 8px;
             box-shadow: 0 4px 12px rgba(0,0,0,0.15);
             padding: 12px;
-            z-index: 1000;
             min-width: 280px;
         }
 
         .calendar-picker.inline {
             position: static;
-            margin-top: 0;
+            margin: 0;
             box-shadow: none;
-            z-index: auto;
         }
 
         .calendar-header {

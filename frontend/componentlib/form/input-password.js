@@ -1,7 +1,7 @@
 /**
  * InputPassword - Password input with visibility toggle and strength meter
  */
-import { defineComponent, html, when, each, Component } from '../../lib/framework.js';
+import { defineComponent, html, when, each, boolProp, Component } from '../../lib/framework.js';
 
 /**
  * @fires input - detail: { value }
@@ -37,7 +37,7 @@ export class ClInputPassword extends Component {
 
     mounted() {
         this.state.internalValue = this.props.value || '';
-        if (this.props.showStrength) {
+        if (boolProp(this.props.showStrength)) {
             this.calculateStrength(this.state.internalValue);
         }
     }
@@ -45,7 +45,7 @@ export class ClInputPassword extends Component {
     propsChanged(prop, newValue, oldValue) {
         if (prop === 'value' && newValue !== this.state.internalValue) {
             this.state.internalValue = newValue || '';
-            if (this.props.showStrength) {
+            if (boolProp(this.props.showStrength)) {
                 this.calculateStrength(this.state.internalValue);
             }
         }
@@ -57,7 +57,7 @@ export class ClInputPassword extends Component {
         this.state.internalValue = value;
         this.validateInput(value);
 
-        if (this.props.showStrength) {
+        if (boolProp(this.props.showStrength)) {
             this.calculateStrength(value);
         }
 
@@ -96,7 +96,7 @@ export class ClInputPassword extends Component {
     }
 
     validateInput(value) {
-        if (this.props.required && !value) {
+        if (boolProp(this.props.required) && !value) {
             this.state.internalError = 'This field is required';
             return false;
         }
@@ -159,7 +159,7 @@ export class ClInputPassword extends Component {
     }
 
     getFeedback() {
-        if (!this.state.internalValue || !this.props.showStrength || !this.props.feedback) {
+        if (!this.state.internalValue || !boolProp(this.props.showStrength) || !boolProp(this.props.feedback)) {
             return [];
         }
 
@@ -199,7 +199,7 @@ export class ClInputPassword extends Component {
                 ${when(this.props.label, html`
                     <label class="cl-label">
                         ${this.props.label}
-                        ${when(this.props.required, html`<span class="required">*</span>`)}
+                        ${when(boolProp(this.props.required), html`<span class="required">*</span>`)}
                     </label>
                 `)}
                 <div class="password-input-wrapper">
@@ -208,11 +208,11 @@ export class ClInputPassword extends Component {
                         class="${(this.props.error || this.state.internalError) ? 'error' : ''}"
                         value="${this.state.internalValue}"
                         placeholder="${this.props.placeholder}"
-                        disabled="${this.props.disabled}"
+                        disabled="${boolProp(this.props.disabled)}"
                         on-input="handleInput"
                         on-change="handleChange"
                         on-blur="handleBlur">
-                    ${when(this.props.showToggle !== false && this.props.showToggle !== 'false', html`
+                    ${when(boolProp(this.props.showToggle), html`
                         <button
                             type="button"
                             class="toggle-btn"
@@ -226,7 +226,7 @@ export class ClInputPassword extends Component {
                         </button>
                     `)}
                 </div>
-                ${when(this.props.showStrength && this.state.internalValue, html`
+                ${when(boolProp(this.props.showStrength) && this.state.internalValue, html`
                     <div class="strength-meter">
                         <div class="strength-bar">
                             <div

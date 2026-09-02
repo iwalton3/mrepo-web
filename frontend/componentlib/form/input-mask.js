@@ -7,7 +7,7 @@
  *   a = letter (a-z, A-Z)
  *   * = alphanumeric
  */
-import { defineComponent, html, when, Component } from '../../lib/framework.js';
+import { defineComponent, html, when, boolProp, Component } from '../../lib/framework.js';
 
 /**
  * @fires input - detail: { value }
@@ -310,12 +310,12 @@ export class ClInputMask extends Component {
         this.state.focused = false;
 
         // Skip internal validation if hideError is true (parent handles validation)
-        if (!this.props.hideError) {
+        if (!boolProp(this.props.hideError)) {
             this.validateInput();
         }
 
         // Clear incomplete value if autoClear is enabled
-        if (this.props.autoClear) {
+        if (boolProp(this.props.autoClear)) {
             const filledCount = this.state.buffer.filter(c => c).length;
             if (filledCount > 0 && filledCount < this.state.buffer.length) {
                 this.initBuffer();
@@ -330,7 +330,7 @@ export class ClInputMask extends Component {
         const filledCount = this.state.buffer.filter(c => c).length;
         const totalCount = this.state.buffer.length;
 
-        if (this.props.required && filledCount === 0) {
+        if (boolProp(this.props.required) && filledCount === 0) {
             this.state.internalError = 'This field is required';
             return false;
         }
@@ -348,7 +348,7 @@ export class ClInputMask extends Component {
      * Emit input event - fires on every keystroke for live updates
      */
     emitInput() {
-        const value = this.props.unmask ? this.getRawValue() : this.getMaskedValue();
+        const value = boolProp(this.props.unmask) ? this.getRawValue() : this.getMaskedValue();
 
         this.dispatchEvent(new CustomEvent('input', {
             bubbles: true,
@@ -366,7 +366,7 @@ export class ClInputMask extends Component {
 
         // Only emit change for complete values (all filled or all empty)
         if (filledCount === totalCount || filledCount === 0) {
-            const value = this.props.unmask ? this.getRawValue() : this.getMaskedValue();
+            const value = boolProp(this.props.unmask) ? this.getRawValue() : this.getMaskedValue();
 
             this.dispatchEvent(new CustomEvent('change', {
                 bubbles: true,
@@ -418,7 +418,7 @@ export class ClInputMask extends Component {
 
     template() {
         // When hideError is true, only use parent-provided error (not internal)
-        const error = this.props.hideError ? this.props.error : (this.props.error || this.state.internalError);
+        const error = boolProp(this.props.hideError) ? this.props.error : (this.props.error || this.state.internalError);
         const hasError = !!error;
         const displayValue = this.displayValue;
 
@@ -427,7 +427,7 @@ export class ClInputMask extends Component {
                 ${when(this.props.label, html`
                     <label class="cl-label">
                         ${this.props.label}
-                        ${when(this.props.required, html`<span class="required">*</span>`)}
+                        ${when(boolProp(this.props.required), html`<span class="required">*</span>`)}
                     </label>
                 `)}
                 <input
@@ -436,7 +436,7 @@ export class ClInputMask extends Component {
                     class="${hasError ? 'error' : ''}"
                     value="${displayValue}"
                     placeholder="${this.getPlaceholder()}"
-                    disabled="${this.props.disabled}"
+                    disabled="${boolProp(this.props.disabled)}"
                     on-input="handleInput"
                     on-keydown="handleKeyDown"
                     on-focus="handleFocus"
@@ -444,7 +444,7 @@ export class ClInputMask extends Component {
                 ${when(this.props.helptext && !hasError, html`
                     <small class="help-text">${this.props.helptext}</small>
                 `)}
-                ${when(hasError && !this.props.hideError, html`
+                ${when(hasError && !boolProp(this.props.hideError), html`
                     <small class="error-text">${error}</small>
                 `)}
             </div>

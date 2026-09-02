@@ -1,5 +1,5 @@
 /*! VDX utils v1.1.0 | MIT | https://vanilladx.dev | https://github.com/iwalton3/vdx-web */
-import{createStore,withoutTracking}from'./framework.js';export function memoize(fn){let cache=null;let deps=[];let hasCache=false;return function(...currentDeps){if (hasCache&&depsEqual(deps,currentDeps)){return cache;}deps=currentDeps;cache=fn.apply(this,currentDeps);hasCache=true;return cache;};}
+import{createStore,withoutTracking,boolProp}from'./framework.js';export{boolProp};export function memoize(fn){let cache=null;let deps=[];let hasCache=false;return function(...currentDeps){if (hasCache&&depsEqual(deps,currentDeps)){return cache;}deps=currentDeps;cache=fn.apply(this,currentDeps);hasCache=true;return cache;};}
 function depsEqual(a,b){if (a.length!==b.length) return false;for (let i=0;i<a.length;i++){if (!shallowEqual(a[i],b[i])) return false;}
 return true;}
 function shallowEqual(a,b){if (a===b) return true;if (a==null||b==null) return false;if (typeof a!=='object'||typeof b!=='object') return false;if (Array.isArray(a)&&Array.isArray(b)){if (a.length!==b.length) return false;for (let i=0;i<a.length;i++){if (a[i]!==b[i]) return false;}

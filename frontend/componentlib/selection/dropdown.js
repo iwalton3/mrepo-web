@@ -9,7 +9,8 @@
  * - Keyboard navigation: Arrow keys, Enter, Escape, Home, End
  * - Type-ahead search when focused
  */
-import { defineComponent, html, when, each, Component } from '../../lib/framework.js';
+import { defineComponent, html, when, each, boolProp, Component } from '../../lib/framework.js';
+import { createAnchoredOverlay } from '../../lib/overlay.js';
 
 // Counter for unique IDs
 let dropdownIdCounter = 0;
@@ -40,36 +41,41 @@ export class ClDropdown extends Component {
             typeaheadBuffer: '',
             typeaheadTimeout: null
         };
-    }
 
-    mounted() {
-        // Global keydown for escape
-        this._handleGlobalKeyDown = (e) => {
-            if (e.key === 'Escape' && this.state.showPanel) {
+        // Anchored overlay: promotes the options panel to the top layer so it
+        // escapes ancestor overflow/transform clipping (e.g. inside cl-dialog).
+        // Owns outside-click + Escape dismissal, replacing the old backdrop div
+        // and global Escape listener.
+        this._overlay = createAnchoredOverlay(this, {
+            anchor: () => this.querySelector('.dropdown-trigger'),
+            panel: () => this.querySelector('.dropdown-panel'),
+            placement: 'bottom-start',
+            offset: 4,
+            matchAnchorWidth: true,
+            onDismiss: (reason) => {
                 this.closePanel();
-                this._focusTrigger();
+                if (reason === 'escape') this._focusTrigger();
             }
-        };
-        document.addEventListener('keydown', this._handleGlobalKeyDown);
+        });
     }
 
     unmounted() {
-        if (this._handleGlobalKeyDown) {
-            document.removeEventListener('keydown', this._handleGlobalKeyDown);
-        }
+        this._overlay.destroy();
         if (this.state.typeaheadTimeout) {
             clearTimeout(this.state.typeaheadTimeout);
         }
     }
 
     closePanel() {
+        // hidePopover on the still-present node BEFORE the branch unmounts.
+        this._overlay.close();
         this.state.showPanel = false;
         this.state.activeIndex = -1;
         this.state.filterValue = '';
     }
 
     togglePanel() {
-        if (!this.props.disabled) {
+        if (!boolProp(this.props.disabled)) {
             if (this.state.showPanel) {
                 this.closePanel();
             } else {
@@ -78,7 +84,7 @@ export class ClDropdown extends Component {
         }
     }
 
-    openPanel() {
+    async openPanel() {
         this.state.showPanel = true;
         this.state.filterValue = '';
         // Set active index to currently selected option
@@ -86,13 +92,17 @@ export class ClDropdown extends Component {
         const selectedIndex = options.findIndex(opt => this.isSelected(opt));
         this.state.activeIndex = selectedIndex >= 0 ? selectedIndex : 0;
 
-        // Focus filter input if present, otherwise focus listbox
-        requestAnimationFrame(() => {
-            if (this.props.filter) {
-                const filterInput = this.querySelector('.filter-input');
-                if (filterInput) filterInput.focus();
-            }
-        });
+        // The panel is conditionally rendered - wait for its branch to mount
+        // before promoting it to the top layer and positioning it.
+        await this.nextRender();
+        if (!this.state.showPanel) return;  // re-closed before the render committed
+        this._overlay.open();
+
+        // Focus filter input if present
+        if (boolProp(this.props.filter)) {
+            const filterInput = this.querySelector('.filter-input');
+            if (filterInput) filterInput.focus();
+        }
     }
 
     selectOption(option) {
@@ -190,7 +200,7 @@ export class ClDropdown extends Component {
 
             default:
                 // Type-ahead search (when not using filter input)
-                if (!this.props.filter && e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+                if (!boolProp(this.props.filter) && e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
                     this._handleTypeahead(e.key);
                 }
         }
@@ -243,7 +253,7 @@ export class ClDropdown extends Component {
     }
 
     get filteredOptions() {
-        if (!this.props.filter || !this.state.filterValue) {
+        if (!boolProp(this.props.filter) || !this.state.filterValue) {
             return this.props.options || [];
         }
 
@@ -281,27 +291,24 @@ export class ClDropdown extends Component {
                 ${when(this.props.label, html`
                     <label class="cl-label" id="${labelId}">${this.props.label}</label>
                 `)}
-                ${when(this.state.showPanel, html`
-                    <div class="dropdown-backdrop" on-click="closePanel"></div>
-                `)}
                 <div class="dropdown-container">
-                    <div class="dropdown-trigger ${this.props.disabled ? 'disabled' : ''}"
+                    <div class="dropdown-trigger ${boolProp(this.props.disabled) ? 'disabled' : ''}"
                          role="combobox"
                          aria-haspopup="listbox"
                          aria-expanded="${this.state.showPanel ? 'true' : 'false'}"
                          aria-controls="${listboxId}"
                          aria-activedescendant="${activeDescendant}"
                          aria-labelledby="${this.props.label ? labelId : undefined}"
-                         aria-disabled="${this.props.disabled ? 'true' : undefined}"
-                         tabindex="${this.props.disabled ? -1 : 0}"
+                         aria-disabled="${boolProp(this.props.disabled) ? 'true' : undefined}"
+                         tabindex="${boolProp(this.props.disabled) ? -1 : 0}"
                          on-click="togglePanel"
                          on-keydown="handleKeyDown">
                         <span class="dropdown-value ${hasValue ? '' : 'placeholder'}">${selectedLabel}</span>
                         <span class="dropdown-icon" aria-hidden="true">${this.state.showPanel ? '▲' : '▼'}</span>
                     </div>
                     ${when(this.state.showPanel, html`
-                        <div class="dropdown-panel">
-                            ${when(this.props.filter, html`
+                        <div class="dropdown-panel" popover="manual">
+                            ${when(boolProp(this.props.filter), html`
                                 <div class="filter-container">
                                     <input
                                         type="text"
@@ -410,27 +417,23 @@ export class ClDropdown extends Component {
             color: var(--text-muted, #6c757d);
         }
 
-        .dropdown-backdrop {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            z-index: 999;
-        }
-
         .dropdown-panel {
-            position: absolute;
-            top: 100%;
-            left: 0;
-            right: 0;
-            margin-top: 4px;
+            /* Positioned by createAnchoredOverlay: position/top/left/width/
+               max-height are written inline. inset/margin here reset the UA
+               popover defaults (inset:0; margin:auto) so the panel doesn't
+               center itself before/without the top layer. */
+            inset: auto;
+            margin: 0;
+            /* Re-establish inherited color: the UA [popover] rule forces
+               color:CanvasText, which breaks dark mode (black text). */
+            color: inherit;
+            box-sizing: border-box;
             background: var(--card-bg, white);
             border: 1px solid var(--input-border, #ced4da);
             border-radius: 4px;
             box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            z-index: 1000;
             max-height: 300px;
+            overflow: hidden;
             display: flex;
             flex-direction: column;
         }
@@ -459,6 +462,11 @@ export class ClDropdown extends Component {
         }
 
         .options-list {
+            /* flex:1 + min-height:0 lets the list shrink and scroll internally
+               when the overlay caps the panel height (e.g. flipped near a
+               viewport edge); max-height still bounds it on a roomy page. */
+            flex: 1 1 auto;
+            min-height: 0;
             overflow-y: auto;
             max-height: 250px;
         }

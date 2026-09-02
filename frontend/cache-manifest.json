@@ -1,8 +1,8 @@
 {
-  "version": "8ce9426c",
-  "timestamp": 1785262462220,
-  "generatedAt": "2026-07-28T18:14:22.220Z",
-  "fileCount": 51,
+  "version": "484c5009",
+  "timestamp": 1788386185886,
+  "generatedAt": "2026-09-02T21:56:25.886Z",
+  "fileCount": 52,
   "files": [
     "/api/music-api.js",
     "/componentlib/button/button.js",
@@ -25,6 +25,7 @@
     "/index.html",
     "/lib/framework.js",
     "/lib/gestures.js",
+    "/lib/overlay.js",
     "/lib/router.js",
     "/lib/utils.js",
     "/lib/windowing.js",

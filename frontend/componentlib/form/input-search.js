@@ -1,7 +1,7 @@
 /**
  * InputSearch - Search input with clear button and optional suggestions
  */
-import { defineComponent, html, when, each, Component } from '../../lib/framework.js';
+import { defineComponent, html, when, each, boolProp, Component } from '../../lib/framework.js';
 
 /**
  * @fires input - detail: { value } - on each keystroke
@@ -211,16 +211,16 @@ export class ClInputSearch extends Component {
                         class="search-input"
                         value="${this.state.internalValue}"
                         placeholder="${this.props.placeholder}"
-                        disabled="${this.props.disabled}"
+                        disabled="${boolProp(this.props.disabled)}"
                         on-input="handleInput"
                         on-keydown="handleKeyDown"
                         on-focus="handleFocus">
-                    ${when(this.props.loading, html`
+                    ${when(boolProp(this.props.loading), html`
                         <span class="loading-icon">
                             <cl-spinner size="small"></cl-spinner>
                         </span>
                     `)}
-                    ${when(hasValue && this.props.showClear && !this.props.loading, html`
+                    ${when(hasValue && boolProp(this.props.showClear) && !boolProp(this.props.loading), html`
                         <button
                             type="button"
                             class="clear-btn"

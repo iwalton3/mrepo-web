@@ -1,7 +1,7 @@
 /**
  * Button - Styled button component
  */
-import { defineComponent, html, when, Component } from '../../lib/framework.js';
+import { defineComponent, html, when, boolProp, Component } from '../../lib/framework.js';
 
 /**
  * @fires click - re-dispatched as a bubbling CustomEvent; detail is the original mouse event
@@ -26,7 +26,7 @@ export class ClButton extends Component {
         // Stop the native event from bubbling to prevent double firing
         e.stopPropagation();
 
-        if (!this.props.disabled && !this.props.loading) {
+        if (!boolProp(this.props.disabled) && !boolProp(this.props.loading)) {
             this.emitEvent('click', e);
         }
     }
@@ -39,21 +39,21 @@ export class ClButton extends Component {
         const classes = [
             'cl-button',
             this.props.severity,
-            this.props.outlined ? 'outlined' : '',
-            this.props.text ? 'text' : '',
-            this.props.loading ? 'loading' : ''
+            boolProp(this.props.outlined) ? 'outlined' : '',
+            boolProp(this.props.text) ? 'text' : '',
+            boolProp(this.props.loading) ? 'loading' : ''
         ].filter(Boolean).join(' ');
 
         return html`
             <button
                 type="${this.props.type}"
                 class="${classes}"
-                disabled="${this.props.disabled || this.props.loading}"
+                disabled="${boolProp(this.props.disabled) || boolProp(this.props.loading)}"
                 on-click="handleClick">
-                ${when(this.props.loading, html`
+                ${when(boolProp(this.props.loading), html`
                     <span class="spinner"></span>
                 `)}
-                ${when(this.props.icon && this.props.iconpos === 'left' && !this.props.loading, html`
+                ${when(this.props.icon && this.props.iconpos === 'left' && !boolProp(this.props.loading), html`
                     <span class="button-icon">${this.props.icon}</span>
                 `)}
                 ${when(this.props.label, html`
@@ -62,7 +62,7 @@ export class ClButton extends Component {
                 ${when(!this.props.label && this.props.children.length > 0, html`
                     ${this.props.children}
                 `)}
-                ${when(this.props.icon && this.props.iconpos === 'right' && !this.props.loading, html`
+                ${when(this.props.icon && this.props.iconpos === 'right' && !boolProp(this.props.loading), html`
                     <span class="button-icon">${this.props.icon}</span>
                 `)}
             </button>

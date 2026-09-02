@@ -5,7 +5,7 @@
  * - Use `checked` for manual boolean binding
  * - Use `value` with x-model for automatic two-way binding
  */
-import { defineComponent, html, when, Component } from '../../lib/framework.js';
+import { defineComponent, html, when, boolProp, Component } from '../../lib/framework.js';
 
 /**
  * @fires change - detail: { value } - the toggled state
@@ -51,11 +51,11 @@ export class ClToggle extends Component {
         if (typeof this.props.value === 'boolean') {
             return this.props.value;
         }
-        return this.props.checked === true || this.props.checked === 'true';
+        return boolProp(this.props.checked);
     }
 
     toggle() {
-        if (this.props.disabled) return;
+        if (boolProp(this.props.disabled)) return;
 
         this.state.internalChecked = !this.state.internalChecked;
 
@@ -91,13 +91,13 @@ export class ClToggle extends Component {
                 class="cl-toggle-wrapper ${positionClass} ${this.state.animated ? 'animated' : ''}"
                 on-click="toggle"
                 on-keydown="handleKeyDown"
-                tabindex="${this.props.disabled ? '-1' : '0'}"
+                tabindex="${boolProp(this.props.disabled) ? '-1' : '0'}"
                 role="switch"
                 aria-checked="${this.state.internalChecked}">
                 ${when(this.props.label && this.props.labelPosition === 'left', html`
                     <span class="toggle-label">${this.props.label}</span>
                 `)}
-                <div class="toggle-track ${sizeClass} ${this.state.internalChecked ? 'checked' : ''} ${this.props.disabled ? 'disabled' : ''}">
+                <div class="toggle-track ${sizeClass} ${this.state.internalChecked ? 'checked' : ''} ${boolProp(this.props.disabled) ? 'disabled' : ''}">
                     <div class="toggle-thumb"></div>
                     ${when(this.props.checkedLabel || this.props.uncheckedLabel, html`
                         <span class="toggle-status">${statusLabel}</span>

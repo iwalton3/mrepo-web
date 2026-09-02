@@ -1,7 +1,7 @@
 /**
  * RadioButton - Radio button input
  */
-import { defineComponent, html, when, Component } from '../../lib/framework.js';
+import { defineComponent, html, when, boolProp, Component } from '../../lib/framework.js';
 
 /**
  * @fires change - detail: { value } - the selected value
@@ -26,13 +26,13 @@ export class ClRadioButton extends Component {
 
         return html`
             <div class="cl-radio-wrapper">
-                <label class="${this.props.disabled ? 'disabled' : ''}">
+                <label class="${boolProp(this.props.disabled) ? 'disabled' : ''}">
                     <input
                         type="radio"
                         name="${this.props.name}"
                         value="${this.props.value}"
                         checked="${isChecked}"
-                        disabled="${this.props.disabled}"
+                        disabled="${boolProp(this.props.disabled)}"
                         on-change="handleChange">
                     <span class="radiomark"></span>
                     ${when(this.props.label, html`

@@ -9,7 +9,7 @@ function stringifyQuery(params){const pairs=[];for (const[key,value]of Object.en
 return pairs.join('&');}
 function isValidCustomElementName(name){if (!name||typeof name!=='string'){return false;}if (!name.includes('-')){return false;}if (!/^[a-z]/.test(name)){return false;}if (!/^[a-z][a-z0-9-]*$/.test(name)){return false;}const reserved=['annotation-xml','color-profile','font-face','font-face-src','font-face-uri','font-face-format','font-face-name','missing-glyph'];if (reserved.includes(name)){return false;}
 return true;}
-function compileRoutePattern(pattern){const paramNames=[];let regexStr=pattern.replace(/[.*+?^${}()|[\]\\]/g,'\\$&').replace(/:([a-zA-Z_][a-zA-Z0-9_]*)\\\*/g,(_,paramName)=>{paramNames.push(paramName);return'(.+?)';}).replace(/:([a-zA-Z_][a-zA-Z0-9_]*)/g,(_,paramName)=>{paramNames.push(paramName);return'([^/]+)';});if (regexStr.endsWith('/')){regexStr=regexStr.slice(0,-1)+'/?';}else{regexStr=regexStr+'/?';}
+function compileRoutePattern(pattern){const paramNames=[];let regexStr=pattern.replace(/[.*+?^${}()|[\]\\]/g,'\\$&').replace(/:([a-zA-Z_][a-zA-Z0-9_]*)(\\\*)?/g,(_,paramName,star)=>{paramNames.push(paramName);return star?'(.+?)':'([^/]+)';});if (regexStr.endsWith('/')){regexStr=regexStr.slice(0,-1)+'/?';}else{regexStr=regexStr+'/?';}
 return{regex:new RegExp(`^${regexStr}$`),paramNames};}
 function decodePath(path){return path.replace(/(?:%[0-9a-fA-F]{2})+/g,run=>run.split(/(%2[fF]|%25)/).map(part=>(/^(?:%2[fF]|%25)$/.test(part)?part:safeDecodeURIComponent(part))).join(''));}
 function joinPaths(prefix,path){if (path==='/'||path==='') return prefix;const a=prefix.endsWith('/')?prefix.slice(0,-1):prefix;const b=path.startsWith('/')?path:'/'+path;return a+b;}

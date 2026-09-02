@@ -7,7 +7,7 @@
  * - aria-invalid for error state
  * - aria-required for required fields
  */
-import { defineComponent, html, when, Component } from '../../lib/framework.js';
+import { defineComponent, html, when, boolProp, Component } from '../../lib/framework.js';
 
 // Counter for unique IDs
 let inputTextIdCounter = 0;
@@ -98,7 +98,7 @@ export class ClInputText extends Component {
     }
 
     validateInput(value) {
-        if (this.props.required && !value) {
+        if (boolProp(this.props.required) && !value) {
             this.state.internalError = 'This field is required';
             return false;
         }
@@ -135,7 +135,7 @@ export class ClInputText extends Component {
                 ${when(this.props.label, html`
                     <label class="cl-label" for="${inputId}">
                         ${this.props.label}
-                        ${when(this.props.required, html`<span class="required" aria-hidden="true">*</span>`)}
+                        ${when(boolProp(this.props.required), html`<span class="required" aria-hidden="true">*</span>`)}
                     </label>
                 `)}
                 <input
@@ -144,8 +144,8 @@ export class ClInputText extends Component {
                     class="${(this.props.error || this.state.internalError) ? 'error' : ''}"
                     value="${this.state.internalValue}"
                     placeholder="${this.props.placeholder}"
-                    disabled="${this.props.disabled}"
-                    aria-required="${this.props.required ? 'true' : undefined}"
+                    disabled="${boolProp(this.props.disabled)}"
+                    aria-required="${boolProp(this.props.required) ? 'true' : undefined}"
                     aria-invalid="${(this.props.error || this.state.internalError) ? 'true' : undefined}"
                     aria-describedby="${[
                         this.props.helptext && !(this.props.error || this.state.internalError) ? helpTextId : null,

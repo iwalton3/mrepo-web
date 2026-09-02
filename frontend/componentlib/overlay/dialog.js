@@ -11,7 +11,7 @@
  * - Auto-focus first focusable element on open
  * - Returns focus to trigger element on close
  */
-import { defineComponent, html, when, Component } from '../../lib/framework.js';
+import { defineComponent, html, when, Component, boolProp } from '../../lib/framework.js';
 
 // Counter for generating unique IDs for dialog titles
 let dialogIdCounter = 0;
@@ -44,7 +44,7 @@ export class ClDialog extends Component {
     mounted() {
         // Add global escape key listener
         this._handleKeyDown = (e) => {
-            if (e.key === 'Escape' && this.props.visible && this.props.closable) {
+            if (e.key === 'Escape' && boolProp(this.props.visible) && boolProp(this.props.closable)) {
                 this.close();
             }
         };
@@ -67,7 +67,7 @@ export class ClDialog extends Component {
                 this._previousFocus = document.activeElement;
 
                 // Prevent body scroll when modal
-                if (this.props.modal) {
+                if (boolProp(this.props.modal)) {
                     document.body.style.overflow = 'hidden';
                 }
 
@@ -90,7 +90,7 @@ export class ClDialog extends Component {
     }
 
     handleMaskClick() {
-        if (this.props.dismissablemask) {
+        if (boolProp(this.props.dismissablemask)) {
             this.close();
         }
     }
@@ -128,7 +128,7 @@ export class ClDialog extends Component {
      * Handle Tab key for focus trapping
      */
     handleFocusTrap(e) {
-        if (e.key !== 'Tab' || !this.props.modal) return;
+        if (e.key !== 'Tab' || !boolProp(this.props.modal)) return;
 
         const dialog = this.querySelector('.cl-dialog');
         if (!dialog) return;
@@ -166,22 +166,22 @@ export class ClDialog extends Component {
         const ariaLabelledby = this.props.header ? titleId : undefined;
 
         return html`
-            ${when(this.props.visible, html`
-                <div class="cl-dialog-mask ${this.props.modal ? 'modal' : ''}"
+            ${when(boolProp(this.props.visible), html`
+                <div class="cl-dialog-mask ${boolProp(this.props.modal) ? 'modal' : ''}"
                      on-click="handleMaskClick"
                      aria-hidden="true">
                     <div class="cl-dialog"
                          style="${this.props.style}"
                          role="dialog"
-                         aria-modal="${this.props.modal ? 'true' : undefined}"
+                         aria-modal="${boolProp(this.props.modal) ? 'true' : undefined}"
                          aria-labelledby="${ariaLabelledby}"
                          on-click="handleDialogClick"
                          on-change="handleDialogChange"
                          on-keydown="handleFocusTrap">
-                        ${when(this.props.header || this.props.closable, html`
+                        ${when(this.props.header || boolProp(this.props.closable), html`
                             <div class="dialog-header">
                                 <span class="dialog-title" id="${titleId}">${this.props.header}</span>
-                                ${when(this.props.closable, html`
+                                ${when(boolProp(this.props.closable), html`
                                     <button class="close-btn"
                                             on-click="close"
                                             aria-label="Close dialog"

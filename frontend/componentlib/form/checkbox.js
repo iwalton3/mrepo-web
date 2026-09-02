@@ -1,7 +1,7 @@
 /**
  * Checkbox - Checkbox input with label
  */
-import { defineComponent, html, when, Component } from '../../lib/framework.js';
+import { defineComponent, html, when, boolProp, Component } from '../../lib/framework.js';
 
 /**
  * @fires change - detail: { value } - the checked state
@@ -18,7 +18,7 @@ export class ClCheckbox extends Component {
 
     handleChange(e) {
         const checked = e.target.checked;
-        if (this.props.binary) {
+        if (boolProp(this.props.binary)) {
             this.emitChange(e, checked);
         } else {
             this.emitChange(e, checked ? this.props.checkboxValue : null);
@@ -32,7 +32,7 @@ export class ClCheckbox extends Component {
         if (typeof this.props.value === 'boolean') {
             return this.props.value;
         }
-        return this.props.checked;
+        return boolProp(this.props.checked);
     }
 
     template() {
@@ -40,11 +40,11 @@ export class ClCheckbox extends Component {
 
         return html`
             <div class="cl-checkbox-wrapper">
-                <label class="${this.props.disabled ? 'disabled' : ''}">
+                <label class="${boolProp(this.props.disabled) ? 'disabled' : ''}">
                     <input
                         type="checkbox"
                         checked="${isChecked}"
-                        disabled="${this.props.disabled}"
+                        disabled="${boolProp(this.props.disabled)}"
                         on-change="handleChange">
                     <span class="checkmark"></span>
                     ${when(this.props.label, html`

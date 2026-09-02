@@ -7,7 +7,7 @@
  * - Parent scrolling - tracks a parent scrollable container
  * - Window scrolling - tracks the window/document scroll
  */
-import { defineComponent, html, memoEach, when, Component } from '../../lib/framework.js';
+import { defineComponent, html, memoEach, when, Component, boolProp } from '../../lib/framework.js';
 import { createWindowing } from '../../lib/windowing.js';
 import { createRowGestures, gapToRemoveInsertIndex } from '../../lib/gestures.js';
 
@@ -176,7 +176,7 @@ export class ClVirtualList extends Component {
         // Find the index in the full items array
         const index = this._findIndexByKey(key);
 
-        if (this.props.selectable) {
+        if (boolProp(this.props.selectable)) {
             this.state.internalSelectedKey = key;
             this.dispatchEvent(new CustomEvent('select', {
                 bubbles: true,
@@ -193,7 +193,7 @@ export class ClVirtualList extends Component {
     }
 
     handleKeyDown(e) {
-        if (!this.props.selectable) return;
+        if (!boolProp(this.props.selectable)) return;
 
         const items = this.props.items;
         if (!items || items.length === 0) return;
@@ -268,7 +268,7 @@ export class ClVirtualList extends Component {
                 `;
         }
 
-        if (this.props.reorderable) {
+        if (boolProp(this.props.reorderable)) {
             // Per the gestures passive-safety table: DnD handlers preventDefault
             // and are bound non-passive (on-dragstart/over/leave/drop/end); the
             // handle's touch handlers also preventDefault to suppress scrolling
@@ -319,7 +319,7 @@ export class ClVirtualList extends Component {
         // Use provided keyFn or default
         const keyFn = this.props.keyFn || this._defaultKeyFn;
 
-        if (this.props.loading) {
+        if (boolProp(this.props.loading)) {
             return html`
                 <div class="virtual-list-loading">
                     <cl-spinner label="Loading..."></cl-spinner>
@@ -337,12 +337,12 @@ export class ClVirtualList extends Component {
         }
 
         // Read selection state for dependency tracking and key generation
-        const selectedKey = this.props.selectable ? this.state.internalSelectedKey : null;
+        const selectedKey = boolProp(this.props.selectable) ? this.state.internalSelectedKey : null;
 
         return html`
             <div
                 class="virtual-list-container ${isSelfScroll ? '' : 'parent-scroll'}"
-                tabindex="${this.props.selectable ? '0' : '-1'}"
+                tabindex="${boolProp(this.props.selectable) ? '0' : '-1'}"
                 on-keydown="handleKeyDown">
                 <div class="virtual-list-spacer" style="height: ${totalHeight}px;"></div>
 
@@ -351,13 +351,13 @@ export class ClVirtualList extends Component {
                         // Position is handled by parent's translateY.
                         // Selection is included in key so only affected items re-render.
                         const itemKey = keyFn(item);
-                        const isSelected = this.props.selectable && itemKey === selectedKey;
+                        const isSelected = boolProp(this.props.selectable) && itemKey === selectedKey;
                         const absIndex = this._win.visibleStart + i;
                         return this._renderRow(item, itemKey, isSelected, absIndex);
                     }, (item, i) => {
                         // Include selection state in key so selected/deselected items re-render.
                         const itemKey = keyFn(item);
-                        const isSelected = this.props.selectable && itemKey === selectedKey;
+                        const isSelected = boolProp(this.props.selectable) && itemKey === selectedKey;
                         const base = isSelected ? `${itemKey}-selected` : itemKey;
                         // When reorderable, fold the absolute index into the key.
                         // It is invariant under pure scrolling (visibleStart shifts
@@ -365,7 +365,7 @@ export class ClVirtualList extends Component {
                         // unaffected; but after a consumer applies a reorder the
                         // moved rows get new indices, busting their cache so their
                         // data-index / bound handler indices refresh correctly.
-                        return this.props.reorderable ? `${base}-i${this._win.visibleStart + i}` : base;
+                        return boolProp(this.props.reorderable) ? `${base}-i${this._win.visibleStart + i}` : base;
                     }, { trustKey: true })}
                 </div>
             </div>

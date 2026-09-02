@@ -9,7 +9,8 @@
  * - Keyboard navigation: Arrow keys, Enter, Escape
  * - Proper label association
  */
-import { defineComponent, html, when, each, Component } from '../../lib/framework.js';
+import { defineComponent, html, when, each, boolProp, Component } from '../../lib/framework.js';
+import { createAnchoredOverlay } from '../../lib/overlay.js';
 
 // Counter for unique IDs
 let autocompleteIdCounter = 0;
@@ -39,28 +40,44 @@ export class ClAutocomplete extends Component {
             activeIndex: -1,
             autocompleteId: `cl-autocomplete-${++autocompleteIdCounter}`
         };
+
+        // Top-layer anchored overlay for the suggestions panel - escapes
+        // ancestor overflow/transform clipping and dismisses on outside click.
+        this._overlay = createAnchoredOverlay(this, {
+            anchor: () => this.querySelector('input'),
+            panel: () => this.querySelector('.suggestions-panel'),
+            placement: 'bottom-start',
+            offset: 4,
+            matchAnchorWidth: true,
+            onDismiss: () => this._hideSuggestions()
+        });
     }
 
     mounted() {
         this.state.inputValue = this.props.value;
-
-        // Global keydown for escape
-        this._handleGlobalKeyDown = (e) => {
-            if (e.key === 'Escape' && this.state.showSuggestions) {
-                this.state.showSuggestions = false;
-                this.state.activeIndex = -1;
-            }
-        };
-        document.addEventListener('keydown', this._handleGlobalKeyDown);
     }
 
     unmounted() {
-        if (this._handleGlobalKeyDown) {
-            document.removeEventListener('keydown', this._handleGlobalKeyDown);
-        }
+        this._overlay.destroy();
         if (this.state.timeout) {
             clearTimeout(this.state.timeout);
         }
+    }
+
+    // The suggestions panel is conditionally rendered and driven by typing,
+    // not a single toggle - route every show/hide through these so the overlay
+    // (top-layer promotion + positioning) stays in sync with the branch.
+    async _syncOverlay() {
+        await this.nextRender();
+        if (!this.state.showSuggestions) return;
+        if (this._overlay.isOpen) this._overlay.reposition();
+        else this._overlay.open();
+    }
+
+    _hideSuggestions() {
+        this._overlay.close();  // hidePopover before the branch unmounts
+        this.state.showSuggestions = false;
+        this.state.activeIndex = -1;
     }
 
     handleInput(e) {
@@ -81,9 +98,8 @@ export class ClAutocomplete extends Component {
 
     filterSuggestions(value) {
         if (!value || value.length < this.props.minlength) {
-            this.state.showSuggestions = false;
             this.state.filteredSuggestions = [];
-            this.state.activeIndex = -1;
+            this._hideSuggestions();
             return;
         }
 
@@ -94,8 +110,13 @@ export class ClAutocomplete extends Component {
         });
 
         this.state.filteredSuggestions = filtered;
-        this.state.showSuggestions = filtered.length > 0;
-        this.state.activeIndex = filtered.length > 0 ? 0 : -1;
+        if (filtered.length > 0) {
+            this.state.showSuggestions = true;
+            this.state.activeIndex = 0;
+            this._syncOverlay();   // open (or reposition after the list changed)
+        } else {
+            this._hideSuggestions();
+        }
     }
 
     selectSuggestion(suggestion) {
@@ -103,17 +124,14 @@ export class ClAutocomplete extends Component {
         const displayValue = typeof suggestion === 'object' ? suggestion.label : suggestion;
 
         this.state.inputValue = displayValue;
-        this.state.showSuggestions = false;
-        this.state.activeIndex = -1;
+        this._hideSuggestions();
         this.emitChange(null, value);
     }
 
     handleBlur() {
-        // Delay hiding to allow click on suggestion
-        setTimeout(() => {
-            this.state.showSuggestions = false;
-            this.state.activeIndex = -1;
-        }, 200);
+        // Delay hiding to allow click on a suggestion (which lives in the top
+        // layer but is still inside this component, so the click lands first).
+        setTimeout(() => this._hideSuggestions(), 200);
     }
 
     getSuggestionLabel(suggestion) {
@@ -155,8 +173,7 @@ export class ClAutocomplete extends Component {
             case 'Escape':
                 if (this.state.showSuggestions) {
                     e.preventDefault();
-                    this.state.showSuggestions = false;
-                    this.state.activeIndex = -1;
+                    this._hideSuggestions();
                 }
                 break;
         }
@@ -198,12 +215,13 @@ export class ClAutocomplete extends Component {
                         aria-labelledby="${this.props.label ? labelId : undefined}"
                         value="${this.state.inputValue}"
                         placeholder="${this.props.placeholder}"
-                        disabled="${this.props.disabled}"
+                        disabled="${boolProp(this.props.disabled)}"
                         on-input="handleInput"
                         on-keydown="handleKeyDown"
                         on-blur="handleBlur">
                     ${when(this.state.showSuggestions, html`
                         <div class="suggestions-panel"
+                             popover="manual"
                              role="listbox"
                              id="${listboxId}"
                              aria-labelledby="${this.props.label ? labelId : undefined}">
@@ -272,16 +290,16 @@ export class ClAutocomplete extends Component {
         }
 
         .suggestions-panel {
-            position: absolute;
-            top: 100%;
-            left: 0;
-            right: 0;
-            margin-top: 4px;
+            /* Positioned by createAnchoredOverlay (top layer). inset/margin reset
+               the UA popover defaults; placement is written inline. */
+            inset: auto;
+            margin: 0;
+            color: inherit;   /* UA [popover] forces color:CanvasText; keep theme (dark mode) */
+            box-sizing: border-box;
             background: var(--card-bg, white);
             border: 1px solid var(--input-border, #ced4da);
             border-radius: 4px;
             box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            z-index: 1000;
             max-height: 250px;
             overflow-y: auto;
         }

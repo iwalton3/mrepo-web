@@ -1,7 +1,7 @@
 /**
  * Chips - Tag input component
  */
-import { defineComponent, html, when, each, Component } from '../../lib/framework.js';
+import { defineComponent, html, when, each, boolProp, Component } from '../../lib/framework.js';
 
 /**
  * @fires change - detail: { value } - array of chip values
@@ -97,7 +97,7 @@ export class ClChips extends Component {
         const currentValue = this.state.internalValue;
 
         // Check duplicates
-        if (!this.props.allowduplicates && currentValue.includes(value)) {
+        if (!boolProp(this.props.allowduplicates) && currentValue.includes(value)) {
             return;
         }
 
@@ -135,7 +135,7 @@ export class ClChips extends Component {
                 ${when(this.props.label, html`
                     <label class="cl-label">${this.props.label}</label>
                 `)}
-                <div class="chips-container ${this.props.disabled ? 'disabled' : ''}">
+                <div class="chips-container ${boolProp(this.props.disabled) ? 'disabled' : ''}">
                     ${each(chips, (chip, index) => html`
                         <span class="chip">
                             ${chip}
@@ -147,7 +147,7 @@ export class ClChips extends Component {
                         class="chip-input"
                         value="${this.state.inputValue}"
                         placeholder="${chips.length === 0 ? this.props.placeholder : ''}"
-                        disabled="${this.props.disabled}"
+                        disabled="${boolProp(this.props.disabled)}"
                         on-input="handleInput"
                         on-keydown="handleKeyDown"
                         on-change="handleChange"

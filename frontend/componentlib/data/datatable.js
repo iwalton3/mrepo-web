@@ -11,7 +11,7 @@
  * - aria-label on checkboxes for row selection
  * - Keyboard navigation for selection (Enter/Space on rows)
  */
-import { defineComponent, html, when, each, Component } from '../../lib/framework.js';
+import { defineComponent, html, when, each, Component, boolProp } from '../../lib/framework.js';
 
 // Counter for unique IDs
 let datatableIdCounter = 0;
@@ -176,7 +176,7 @@ export class ClDatatable extends Component {
     get paginatedData() {
         const data = this.sortedData;
 
-        if (!this.props.paginator) {
+        if (!boolProp(this.props.paginator)) {
             return data;
         }
 
