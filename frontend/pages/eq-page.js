@@ -51,6 +51,7 @@ export class EqPage extends Component {
             loudnessReferenceSPL: player.state.loudnessReferenceSPL,
             loudnessStrength: player.state.loudnessStrength,
             loudnessMixPhon: player.state.loudnessMixPhon,
+            loudnessUseMixReference: player.state.loudnessUseMixReference,
 
             // Comfort noise settings
             noiseEnabled: player.state.noiseEnabled,
@@ -401,6 +402,11 @@ export class EqPage extends Component {
         player.setLoudnessStrength(value);
     }
 
+    handleLoudnessUseMixReferenceToggle(e) {
+        this.state.loudnessUseMixReference = e.target.checked;
+        player.setLoudnessUseMixReference(e.target.checked);
+    }
+
     handleLoudnessMixPhonChange(e) {
         const value = parseInt(e.target.value, 10);
         this.state.loudnessMixPhon = value;
@@ -453,7 +459,7 @@ export class EqPage extends Component {
     }
 
     template() {
-        const { eqEnabled, eqGains, showParametricEQ, undoHistory, redoHistory, crossfeedEnabled, crossfeedLevel, crossfeedDelayMs, crossfeedShadowHz, loudnessEnabled, loudnessReferenceSPL, loudnessStrength, loudnessMixPhon, noiseEnabled, noiseMode, noiseTilt, noisePower, noiseThreshold, noiseAttack } = this.state;
+        const { eqEnabled, eqGains, showParametricEQ, undoHistory, redoHistory, crossfeedEnabled, crossfeedLevel, crossfeedDelayMs, crossfeedShadowHz, loudnessEnabled, loudnessReferenceSPL, loudnessStrength, loudnessMixPhon, loudnessUseMixReference, noiseEnabled, noiseMode, noiseTilt, noisePower, noiseThreshold, noiseAttack } = this.state;
         const canUndo = undoHistory.length > 0;
         const canRedo = redoHistory.length > 0;
 
@@ -590,9 +596,11 @@ export class EqPage extends Component {
                     </div>
                     <p class="loudness-explainer">
                         Boosts bass and treble at low volumes to compensate for how human hearing
-                        perceives quieter sounds. Set Reference SPL based on how loud your device is
-                        at full volume, and Mix Reference to the level the music was made to be heard
-                        at (80 for most music, 83-85 for film).
+                        perceives quieter sounds, so lower volumes sound like full volume. Set
+                        Reference SPL based on how loud your device is at full volume. Compensating
+                        to the mix reference also adds bass and treble at full volume when your
+                        gear is quieter than the music was mixed at (80 for most music, 83-85 for
+                        film) - best suited to neutral-tuned headphones.
                     </p>
                     ${when(loudnessEnabled, html`
                         <div class="loudness-slider-row">
@@ -615,14 +623,24 @@ export class EqPage extends Component {
                                    on-input="handleLoudnessStrengthChange">
                             <span class="loudness-value">${loudnessStrength}%</span>
                         </div>
-                        <div class="loudness-slider-row">
-                            <span class="range-label-inline">Mix Reference</span>
-                            <input type="range" min="75" max="90" step="1"
-                                   class="loudness-slider"
-                                   value="${loudnessMixPhon}"
-                                   on-input="handleLoudnessMixPhonChange">
-                            <span class="loudness-value">${loudnessMixPhon} phon</span>
+                        <div class="loudness-row loudness-subrow">
+                            <label>Compensate to mix reference</label>
+                            <label class="toggle">
+                                <input type="checkbox" checked="${loudnessUseMixReference}"
+                                       on-change="handleLoudnessUseMixReferenceToggle">
+                                <span class="toggle-slider"></span>
+                            </label>
                         </div>
+                        ${when(loudnessUseMixReference, html`
+                            <div class="loudness-slider-row">
+                                <span class="range-label-inline">Mix Reference</span>
+                                <input type="range" min="75" max="90" step="1"
+                                       class="loudness-slider"
+                                       value="${loudnessMixPhon}"
+                                       on-input="handleLoudnessMixPhonChange">
+                                <span class="loudness-value">${loudnessMixPhon} phon</span>
+                            </div>
+                        `)}
                         <loudness-curve></loudness-curve>
                     `)}
                 </div>
@@ -1053,6 +1071,16 @@ export class EqPage extends Component {
         .loudness-row > label:first-child {
             font-weight: 500;
             color: var(--text-primary, #e0e0e0);
+        }
+
+        .loudness-subrow {
+            margin-top: 0.75rem;
+        }
+
+        .loudness-subrow > label:first-child {
+            font-weight: normal;
+            font-size: 0.875rem;
+            color: var(--text-secondary, #a0a0a0);
         }
 
         .loudness-explainer {

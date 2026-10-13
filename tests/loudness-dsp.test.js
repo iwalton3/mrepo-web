@@ -97,6 +97,25 @@ const HARNESS = async (base) => {
         maxAbs(zeroComp) === 0 && maxAbs(zeroGains) === 0,
         `ISO max ${maxAbs(zeroComp)}, filter gains max ${maxAbs(zeroGains)}`);
 
+    // ---- anchor: flat at full volume unless compensating to the mix reference ----
+    const settings = (ref, volume, useMix) => ({
+        volume, loudnessReferenceSPL: ref, loudnessMixPhon: 80,
+        loudnessUseMixReference: useMix, loudnessStrength: 100
+    });
+    const fullVol = [60, 70, 80, 85, 90].flatMap(ref => loudnessGainsForSettings(settings(ref, 1, false)));
+    check('by default there is no compensation at 100% volume, whatever the reference SPL',
+        maxAbs(fullVol) === 0, `max gain ${maxAbs(fullVol)}`);
+
+    const halfVol = loudnessGainsForSettings(settings(70, 0.1, false));
+    check('by default compensation is relative to the level at 100% volume',
+        maxAbs(halfVol.map((g, k) => g - loudnessGains(50, 70)[k])) < 1e-9,
+        `ref 70 at 10%: ${halfVol.map(g => g.toFixed(2)).join(', ')}`);
+
+    const optIn = loudnessGainsForSettings(settings(70, 1, true));
+    check('compensating to the mix reference boosts full volume when the gear is quieter',
+        optIn[1] > 1 && maxAbs(optIn.map((g, k) => g - loudnessGains(70, 80)[k])) < 1e-9,
+        `ref 70 at 100%, mix 80: ${optIn.map(g => g.toFixed(2)).join(', ')}`);
+
     // ---- the formulas match the browser's biquads ----
     const probe = [20, 31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 12500, 16000];
     for (const fs of [44100, 48000]) {

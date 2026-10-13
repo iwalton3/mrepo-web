@@ -233,7 +233,8 @@ const test = new TestHelper();
             const s = playerStore.state;
             const saved = {
                 enabled: s.loudnessEnabled, volume: s.volume, muted: s.muted,
-                ref: s.loudnessReferenceSPL, mix: s.loudnessMixPhon, strength: s.loudnessStrength
+                ref: s.loudnessReferenceSPL, mix: s.loudnessMixPhon, strength: s.loudnessStrength,
+                useMix: s.loudnessUseMixReference
             };
             const read = () => ({
                 filters: ac._loudnessFilters.map(f => f.gain.value),
@@ -242,6 +243,7 @@ const test = new TestHelper();
             });
 
             await player.setLoudnessEnabled(false);
+            player.setLoudnessUseMixReference(false);
             player.setLoudnessReferenceSPL(80);
             player.setLoudnessMixPhon(80);
             player.setLoudnessStrength(100);
@@ -253,6 +255,15 @@ const test = new TestHelper();
             player.toggleMute();
             const muted = read();
             player.toggleMute();
+
+            // Quieter gear at full volume: flat by default.
+            await player.setLoudnessEnabled(false);
+            player.setLoudnessReferenceSPL(70);
+            player.setVolume(1);
+            await player.setLoudnessEnabled(true);
+            const fullVol = read();
+            player.setLoudnessReferenceSPL(80);
+            player.setVolume(0.01);
 
             await player.setLoudnessEnabled(false);
             const off = read();
@@ -266,9 +277,10 @@ const test = new TestHelper();
             player.setLoudnessMixPhon(saved.mix);
             player.setLoudnessStrength(saved.strength);
             player.setVolume(saved.volume);
+            player.setLoudnessUseMixReference(saved.useMix);
             if (saved.muted !== s.muted) player.toggleMute();
             if (saved.enabled) await player.setLoudnessEnabled(true);
-            return { on, types, muted, off, s0 };
+            return { on, types, muted, fullVol, off, s0 };
         });
 
         const near = (a, b) => Math.abs(a - b) < 0.01;
@@ -284,6 +296,8 @@ const test = new TestHelper();
 
         await test.assert(r.muted.filters.every(g => g === 0) && r.muted.user === 0,
             `muted: filters ${r.muted.filters}, user ${r.muted.user}`);
+        await test.assert(r.fullVol.filters.every(g => g === 0) && r.fullVol.user === 1,
+            `ref 70 at 100% volume: filters ${r.fullVol.filters}, user ${r.fullVol.user}`);
         await test.assert(r.off.filters.every(g => g === 0) && r.off.user === 1,
             `disabled: filters ${r.off.filters}, user ${r.off.user}`);
         await test.assert(r.s0.filters.every(g => g === 0) && near(r.s0.user, 0.01),
@@ -299,10 +313,13 @@ const test = new TestHelper();
             const { loudnessResponseDb } = await import('/stores/loudness-dsp.js');
             const s = playerStore.state;
             const saved = { enabled: s.loudnessEnabled, volume: s.volume, ref: s.loudnessReferenceSPL,
-                            mix: s.loudnessMixPhon, strength: s.loudnessStrength };
+                            mix: s.loudnessMixPhon, strength: s.loudnessStrength,
+                            useMix: s.loudnessUseMixReference };
 
-            // Quiet headphones at full volume: 60 phon, so ~10 dB of boost with no volume headroom.
+            // Quiet headphones at full volume, compensating to an 80 phon mix:
+            // ~10 dB of boost with no volume headroom.
             await player.setLoudnessEnabled(false);
+            player.setLoudnessUseMixReference(true);
             player.setLoudnessReferenceSPL(60);
             player.setLoudnessMixPhon(80);
             player.setLoudnessStrength(100);
@@ -318,6 +335,7 @@ const test = new TestHelper();
             player.setLoudnessMixPhon(saved.mix);
             player.setLoudnessStrength(saved.strength);
             player.setVolume(saved.volume);
+            player.setLoudnessUseMixReference(saved.useMix);
             if (saved.enabled) await player.setLoudnessEnabled(true);
             return { peak, userDb: 20 * Math.log10(user) };
         });
@@ -345,6 +363,10 @@ const test = new TestHelper();
         await test.wait(300);
 
         const r = await test.page.evaluate(async () => {
+            const useMix = [...document.querySelectorAll('.loudness-subrow input[type="checkbox"]')][0];
+            const wasOn = !!useMix?.checked;
+            if (useMix && !wasOn) useMix.click();
+            await new Promise(r => setTimeout(r, 100));
             const slider = [...document.querySelectorAll('.loudness-slider-row')]
                 .find(row => row.textContent.includes('Mix Reference'))?.querySelector('input[type="range"]');
             if (!slider) return { found: false };
@@ -357,10 +379,11 @@ const test = new TestHelper();
             const value = playerStore.state.loudnessMixPhon;
             slider.value = 80;
             slider.dispatchEvent(new Event('input', { bubbles: true }));
+            if (!wasOn) useMix.click();
             return { found: true, value, saved: stored?.loudnessMixPhon };
         });
 
-        await test.assert(r.found, 'Mix Reference slider should exist when loudness is on');
+        await test.assert(r.found, 'Mix Reference slider should exist once compensating to the mix reference');
         await test.assertEqual(r.value, 85, 'store value after moving the slider');
         await test.assertEqual(r.saved, 85, 'saved audio FX settings');
     });

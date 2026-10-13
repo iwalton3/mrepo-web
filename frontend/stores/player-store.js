@@ -339,7 +339,8 @@ export const playerStore = createStore({
     loudnessEnabled: audioFXSettings?.loudnessEnabled || false,
     loudnessReferenceSPL: audioFXSettings?.loudnessReferenceSPL ?? 80,  // 60-90 dB, what SPL does 100% volume produce?
     loudnessStrength: audioFXSettings?.loudnessStrength ?? 100,  // 0-150%, intensity multiplier
-    loudnessMixPhon: audioFXSettings?.loudnessMixPhon ?? 80,  // 75-90 phon, level the music was mixed at; no compensation at or above it
+    loudnessMixPhon: audioFXSettings?.loudnessMixPhon ?? 80,  // 75-90 phon, level the music was mixed at
+    loudnessUseMixReference: audioFXSettings?.loudnessUseMixReference ?? false,  // false: flat at 100% volume; true: flat at the mix level
 
     // Sleep timer (Android background playback)
     sleepTimerMode: audioFXSettings?.sleepTimerMode ?? 'time',  // 'duration' or 'time'
@@ -2437,6 +2438,7 @@ class AudioController {
             loudnessReferenceSPL: this.store.state.loudnessReferenceSPL,
             loudnessStrength: this.store.state.loudnessStrength,
             loudnessMixPhon: this.store.state.loudnessMixPhon,
+            loudnessUseMixReference: this.store.state.loudnessUseMixReference,
             sleepTimerMode: this.store.state.sleepTimerMode,
             sleepTimerMinutes: this.store.state.sleepTimerMinutes,
             sleepTimerTargetTime: this.store.state.sleepTimerTargetTime,
@@ -3343,10 +3345,20 @@ class AudioController {
     /**
      * Set the mix reference level (75-90 phon): the playback level the music
      * is assumed to have been mixed at. 80 suits most music; film and studio
-     * references are 83-85. No compensation is applied at or above it.
+     * references are 83-85. Only used with loudnessUseMixReference.
      */
     setLoudnessMixPhon(phon) {
         this.store.state.loudnessMixPhon = Math.max(75, Math.min(90, phon));
+        this._updateLoudnessGains();
+        this._saveAudioFXSettings();
+    }
+
+    /**
+     * Compensate to the mix reference instead of to full volume (opt-in).
+     * See loudness-dsp.js loudnessAnchorPhon.
+     */
+    setLoudnessUseMixReference(enabled) {
+        this.store.state.loudnessUseMixReference = !!enabled;
         this._updateLoudnessGains();
         this._saveAudioFXSettings();
     }
@@ -6372,6 +6384,7 @@ export const player = {
     setLoudnessReferenceSPL: (spl) => audioController.setLoudnessReferenceSPL(spl),
     setLoudnessStrength: (strength) => audioController.setLoudnessStrength(strength),
     setLoudnessMixPhon: (phon) => audioController.setLoudnessMixPhon(phon),
+    setLoudnessUseMixReference: (enabled) => audioController.setLoudnessUseMixReference(enabled),
 
     // Audio FX - Comfort Noise
     setNoiseEnabled: (enabled) => audioController.setNoiseEnabled(enabled),

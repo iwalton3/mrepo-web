@@ -3,14 +3,14 @@
  *
  * Preview of the loudness compensation at the current volume: the ISO 226
  * target (scaled by strength) against the response of the filters that
- * approximate it. Reads the player store directly, so it follows the volume
+ * approximate it, relative to loudnessAnchorPhon. Reads the player store directly, so it follows the volume
  * slider wherever that is moved.
  */
 
 import { defineComponent, html, Component } from 'vdx/framework.js';
 import { playerStore } from '../stores/player-store.js';
 import { ISO226_FREQS, compensationDb } from '../stores/iso226.js';
-import { loudnessGainsForSettings, loudnessResponseDb, LOUDNESS_MIN_PHON } from '../stores/loudness-dsp.js';
+import { loudnessGainsForSettings, loudnessResponseDb, loudnessAnchorPhon, LOUDNESS_MIN_PHON } from '../stores/loudness-dsp.js';
 
 const W = 300;
 const H = 120;
@@ -32,7 +32,7 @@ export class LoudnessCurve extends Component {
 
     get curves() {
         const p = this.stores.player;
-        const mix = p.loudnessMixPhon;
+        const mix = loudnessAnchorPhon(p);
         const strength = p.loudnessStrength / 100;
         const listen = Math.max(LOUDNESS_MIN_PHON, this.listenPhon);
         const gains = loudnessGainsForSettings(p);
@@ -59,10 +59,13 @@ export class LoudnessCurve extends Component {
     template() {
         const { target, actual, zeroY, maxDb } = this.curves;
         const listen = this.listenPhon;
-        const mix = this.stores.player.loudnessMixPhon;
-        const caption = listen < mix
-            ? `Listening at ≈${Math.max(0, Math.round(listen))} phon, mix ${mix} phon`
-            : `No compensation at this volume (≥ ${mix} phon)`;
+        const p = this.stores.player;
+        const anchor = loudnessAnchorPhon(p);
+        const caption = listen < anchor
+            ? `Listening at ≈${Math.max(0, Math.round(listen))} phon, flat at ${anchor} phon`
+            : p.loudnessUseMixReference
+                ? `No compensation at this volume (≥ ${anchor} phon mix reference)`
+                : 'No compensation at full volume';
         return html`
             <svg class="loudness-curve-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"
                  role="img" aria-label="Loudness compensation curve">

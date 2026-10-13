@@ -49,16 +49,27 @@ export function loudnessGains(listenPhon, mixPhon, strength = 1) {
 }
 
 /**
+ * The level compensation is zero at. By default that is the level at 100%
+ * volume, so lower volumes sound like full volume and full volume is left to
+ * the gear's own tuning. Compensating to the mix reference is opt-in: it also
+ * boosts full volume whenever the reference SPL is below the mix level.
+ * @param {{loudnessReferenceSPL: number, loudnessMixPhon: number, loudnessUseMixReference: boolean}} s
+ */
+export function loudnessAnchorPhon(s) {
+    return s.loudnessUseMixReference ? s.loudnessMixPhon : s.loudnessReferenceSPL;
+}
+
+/**
  * Filter gains for the player's loudness settings at its current volume.
  * The listening level is the reference SPL (the level at 100% volume) moved by
  * the volume in dB.
- * @param {{volume: number, loudnessReferenceSPL: number, loudnessMixPhon: number, loudnessStrength: number}} s
+ * @param {{volume: number, loudnessReferenceSPL: number, loudnessMixPhon: number, loudnessUseMixReference: boolean, loudnessStrength: number}} s
  * @returns {number[]}
  */
 export function loudnessGainsForSettings(s) {
     if (!(s.volume > 0)) return LOUDNESS_FILTERS.map(() => 0);
     const listenPhon = s.loudnessReferenceSPL + 20 * Math.log10(s.volume);
-    return loudnessGains(listenPhon, s.loudnessMixPhon, s.loudnessStrength / 100);
+    return loudnessGains(listenPhon, loudnessAnchorPhon(s), s.loudnessStrength / 100);
 }
 
 /**
