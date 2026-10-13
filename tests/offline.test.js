@@ -35,17 +35,7 @@ const test = new TestHelper();
         await test.wait(500);
 
         // Enable offline mode
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"], cl-toggle');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item')?.textContent || '';
-                if (label.includes('Offline')) {
-                    const input = toggle.querySelector('input') || toggle;
-                    if (!input.checked) input.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Work Offline', true);
 
         await test.wait(500);
     });
@@ -55,17 +45,7 @@ const test = new TestHelper();
         await test.wait(500);
 
         // Disable offline mode
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"], cl-toggle');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item')?.textContent || '';
-                if (label.includes('Offline')) {
-                    const input = toggle.querySelector('input') || toggle;
-                    if (input.checked) input.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Work Offline', false);
 
         await test.wait(500);
     });
@@ -123,17 +103,7 @@ const test = new TestHelper();
         await test.goto('/settings/');
         await test.wait(500);
 
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"], cl-toggle');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item')?.textContent || '';
-                if (label.includes('Offline')) {
-                    const input = toggle.querySelector('input') || toggle;
-                    if (!input.checked) input.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Work Offline', true);
         await test.wait(500);
 
         // Navigate to browse
@@ -151,17 +121,7 @@ const test = new TestHelper();
         await test.goto('/settings/');
         await test.wait(500);
 
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"], cl-toggle');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item')?.textContent || '';
-                if (label.includes('Offline')) {
-                    const input = toggle.querySelector('input') || toggle;
-                    if (input.checked) input.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Work Offline', false);
         await test.wait(500);
     });
 
@@ -186,17 +146,7 @@ const test = new TestHelper();
         await test.goto('/settings/');
         await test.wait(500);
 
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"], cl-toggle');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item')?.textContent || '';
-                if (label.includes('Offline')) {
-                    const input = toggle.querySelector('input') || toggle;
-                    if (!input.checked) input.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Work Offline', true);
         await test.wait(500);
 
         // Check for offline indicator
@@ -206,17 +156,7 @@ const test = new TestHelper();
         });
 
         // Disable offline mode
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"], cl-toggle');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item')?.textContent || '';
-                if (label.includes('Offline')) {
-                    const input = toggle.querySelector('input') || toggle;
-                    if (input.checked) input.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Work Offline', false);
         await test.wait(500);
     });
 
@@ -298,17 +238,7 @@ const test = new TestHelper();
         await test.goto('/settings/');
         await test.wait(500);
 
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"], cl-toggle');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item')?.textContent || '';
-                if (label.includes('Offline')) {
-                    const input = toggle.querySelector('input') || toggle;
-                    if (!input.checked) input.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Work Offline', true);
         await test.wait(500);
 
         // Go to playlists page
@@ -339,17 +269,7 @@ const test = new TestHelper();
         // Disable offline mode
         await test.goto('/settings/');
         await test.wait(500);
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"], cl-toggle');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item')?.textContent || '';
-                if (label.includes('Offline')) {
-                    const input = toggle.querySelector('input') || toggle;
-                    if (input.checked) input.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Work Offline', false);
         await test.wait(300);
 
         await test.assert(hasDialog, 'Should be able to open create playlist dialog in offline mode');
@@ -360,17 +280,7 @@ const test = new TestHelper();
         await test.goto('/settings/');
         await test.wait(500);
 
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"], cl-toggle');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item')?.textContent || '';
-                if (label.includes('Offline')) {
-                    const input = toggle.querySelector('input') || toggle;
-                    if (!input.checked) input.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Work Offline', true);
         await test.wait(500);
 
         // Navigate to Now Playing to get a song to add
@@ -401,17 +311,7 @@ const test = new TestHelper();
         // Disable offline mode
         await test.goto('/settings/');
         await test.wait(500);
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"], cl-toggle');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item')?.textContent || '';
-                if (label.includes('Offline')) {
-                    const input = toggle.querySelector('input') || toggle;
-                    if (input.checked) input.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Work Offline', false);
         await test.wait(300);
     });
 
@@ -434,17 +334,7 @@ const test = new TestHelper();
         await test.goto('/settings/');
         await test.wait(500);
 
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"], cl-toggle');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item')?.textContent || '';
-                if (label.includes('Offline')) {
-                    const input = toggle.querySelector('input') || toggle;
-                    if (!input.checked) input.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Work Offline', true);
         await test.wait(500);
 
         // Go to playlists
@@ -461,17 +351,7 @@ const test = new TestHelper();
         // Disable offline mode
         await test.goto('/settings/');
         await test.wait(500);
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"], cl-toggle');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item')?.textContent || '';
-                if (label.includes('Offline')) {
-                    const input = toggle.querySelector('input') || toggle;
-                    if (input.checked) input.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Work Offline', false);
         await test.wait(300);
     });
 
@@ -481,17 +361,7 @@ const test = new TestHelper();
     const enableOfflineMode = async () => {
         await test.goto('/settings/');
         await test.wait(500);
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"], cl-toggle');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item')?.textContent || '';
-                if (label.includes('Offline')) {
-                    const input = toggle.querySelector('input') || toggle;
-                    if (!input.checked) input.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Work Offline', true);
         await test.wait(500);
     };
 
@@ -499,17 +369,7 @@ const test = new TestHelper();
     const disableOfflineMode = async () => {
         await test.goto('/settings/');
         await test.wait(500);
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"], cl-toggle');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item')?.textContent || '';
-                if (label.includes('Offline')) {
-                    const input = toggle.querySelector('input') || toggle;
-                    if (input.checked) input.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Work Offline', false);
         await test.wait(1000); // Wait for sync to complete
     };
 
@@ -1049,17 +909,7 @@ const test = new TestHelper();
 
         // Toggle offline mode on and off
         for (let i = 0; i < 2; i++) {
-            await test.page.evaluate(() => {
-                const toggles = document.querySelectorAll('input[type="checkbox"], cl-toggle');
-                for (const toggle of toggles) {
-                    const label = toggle.closest('.setting-item')?.textContent || '';
-                    if (label.includes('Offline')) {
-                        const input = toggle.querySelector('input') || toggle;
-                        input.click();
-                        return;
-                    }
-                }
-            });
+            await test.setToggle('Work Offline');
             await test.wait(300);
         }
 

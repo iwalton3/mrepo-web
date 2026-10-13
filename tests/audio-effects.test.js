@@ -76,19 +76,7 @@ const test = new TestHelper();
         await test.wait(500);
 
         // Toggle crossfeed
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('.crossfeed input, input[type="checkbox"]');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item, label')?.textContent || '';
-                if (label.includes('Crossfeed')) {
-                    toggle.click();
-                    return;
-                }
-            }
-            // Try preset buttons
-            const presetBtn = document.querySelector('.crossfeed-presets .preset-btn');
-            if (presetBtn) presetBtn.click();
-        });
+        await test.setToggle('Stereo Image Adj');
 
         await test.wait(300);
         await test.assertNoConsoleErrors(['favicon', 'ResizeObserver']);
@@ -121,30 +109,12 @@ const test = new TestHelper();
         await test.wait(500);
 
         // Toggle loudness
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"]');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.loudness-row')?.textContent || '';
-                if (label.includes('Loudness')) {
-                    toggle.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Loudness Compensation');
 
         await test.wait(300);
 
         // Toggle back
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"]');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.loudness-row')?.textContent || '';
-                if (label.includes('Loudness')) {
-                    toggle.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Loudness Compensation');
 
         await test.wait(300);
         await test.assertNoConsoleErrors(['favicon', 'ResizeObserver']);
@@ -157,30 +127,12 @@ const test = new TestHelper();
         await test.wait(500);
 
         // Enable loudness first if not enabled
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"]');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.loudness-row')?.textContent || '';
-                if (label.includes('Loudness') && !toggle.checked) {
-                    toggle.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Loudness Compensation', true);
         await test.wait(300);
 
         // Adjust Reference SPL slider
-        await test.page.evaluate(() => {
-            const sliders = document.querySelectorAll('input[type="range"]');
-            for (const slider of sliders) {
-                const label = slider.closest('.loudness-slider-row')?.textContent || '';
-                if (label.includes('Reference') || label.includes('SPL')) {
-                    slider.value = 75;
-                    slider.dispatchEvent(new Event('input', { bubbles: true }));
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Loudness Compensation', true);
+        await test.setRange('Reference SPL', 75);
         await test.wait(300);
 
         await test.assertNoConsoleErrors(['favicon', 'ResizeObserver']);
@@ -193,30 +145,12 @@ const test = new TestHelper();
         await test.wait(500);
 
         // Enable loudness first if not enabled
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"]');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.loudness-row')?.textContent || '';
-                if (label.includes('Loudness') && !toggle.checked) {
-                    toggle.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Loudness Compensation', true);
         await test.wait(300);
 
         // Adjust Strength slider
-        await test.page.evaluate(() => {
-            const sliders = document.querySelectorAll('input[type="range"]');
-            for (const slider of sliders) {
-                const label = slider.closest('.loudness-slider-row')?.textContent || '';
-                if (label.includes('Strength')) {
-                    slider.value = 100;
-                    slider.dispatchEvent(new Event('input', { bubbles: true }));
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Loudness Compensation', true);
+        await test.setRange('Strength', 100);
         await test.wait(300);
 
         await test.assertNoConsoleErrors(['favicon', 'ResizeObserver']);
@@ -350,16 +284,7 @@ const test = new TestHelper();
         await test.goto('/eq/');
         await test.wait(500);
 
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"]');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.loudness-row')?.textContent || '';
-                if (label.includes('Loudness') && !toggle.checked) {
-                    toggle.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Loudness Compensation', true);
         await test.wait(300);
 
         const r = await test.page.evaluate(async () => {
@@ -397,17 +322,8 @@ const test = new TestHelper();
         await test.wait(500);
 
         // Adjust crossfeed level/width slider
-        await test.page.evaluate(() => {
-            const sliders = document.querySelectorAll('input[type="range"]');
-            for (const slider of sliders) {
-                const label = slider.closest('.setting-item, .slider-row, .stereo-section')?.textContent || '';
-                if (label.includes('Mono') || label.includes('Wide') || label.includes('Crossfeed') || label.includes('Level')) {
-                    slider.value = -30;
-                    slider.dispatchEvent(new Event('input', { bubbles: true }));
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Stereo Image Adj', true);
+        await test.setRange('Mono', -30);
         await test.wait(300);
 
         await test.assertNoConsoleErrors(['favicon', 'ResizeObserver']);
@@ -420,17 +336,8 @@ const test = new TestHelper();
         await test.wait(500);
 
         // Adjust crossfeed delay slider
-        await test.page.evaluate(() => {
-            const sliders = document.querySelectorAll('input[type="range"]');
-            for (const slider of sliders) {
-                const label = slider.closest('.setting-item, .slider-row, .stereo-section')?.textContent || '';
-                if (label.includes('Delay')) {
-                    slider.value = 50;
-                    slider.dispatchEvent(new Event('input', { bubbles: true }));
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Stereo Image Adj', true);
+        await test.setRange('Delay', 50);
         await test.wait(300);
 
         await test.assertNoConsoleErrors(['favicon', 'ResizeObserver']);
@@ -443,17 +350,8 @@ const test = new TestHelper();
         await test.wait(500);
 
         // Adjust crossfeed shadow slider
-        await test.page.evaluate(() => {
-            const sliders = document.querySelectorAll('input[type="range"]');
-            for (const slider of sliders) {
-                const label = slider.closest('.setting-item, .slider-row, .stereo-section')?.textContent || '';
-                if (label.includes('Shadow')) {
-                    slider.value = 50;
-                    slider.dispatchEvent(new Event('input', { bubbles: true }));
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Stereo Image Adj', true);
+        await test.setRange('Shadow', 50);
         await test.wait(300);
 
         await test.assertNoConsoleErrors(['favicon', 'ResizeObserver']);
@@ -468,30 +366,12 @@ const test = new TestHelper();
         await test.wait(500);
 
         // Toggle noise
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"]');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item, label, .toggle-row')?.textContent || '';
-                if (label.includes('Noise') || label.includes('Comfort')) {
-                    toggle.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Comfort Noise');
 
         await test.wait(300);
 
         // Toggle back
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"]');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item, label, .toggle-row')?.textContent || '';
-                if (label.includes('Noise') || label.includes('Comfort')) {
-                    toggle.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Comfort Noise');
 
         await test.wait(300);
         await test.assertNoConsoleErrors(['favicon', 'ResizeObserver']);
@@ -522,30 +402,12 @@ const test = new TestHelper();
         await test.wait(500);
 
         // Enable noise first if not enabled
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"]');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item, label, .toggle-row')?.textContent || '';
-                if ((label.includes('Noise') || label.includes('Comfort')) && !toggle.checked) {
-                    toggle.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Comfort Noise', true);
         await test.wait(300);
 
         // Adjust Tilt slider
-        await test.page.evaluate(() => {
-            const sliders = document.querySelectorAll('input[type="range"]');
-            for (const slider of sliders) {
-                const label = slider.closest('.setting-item, .slider-row, .noise-section')?.textContent || '';
-                if (label.includes('Tilt')) {
-                    slider.value = -50;
-                    slider.dispatchEvent(new Event('input', { bubbles: true }));
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Comfort Noise', true);
+        await test.setRange('Dark', -50);
         await test.wait(300);
 
         await test.assertNoConsoleErrors(['favicon', 'ResizeObserver']);
@@ -558,17 +420,8 @@ const test = new TestHelper();
         await test.wait(500);
 
         // Adjust level/power slider
-        await test.page.evaluate(() => {
-            const sliders = document.querySelectorAll('input[type="range"]');
-            for (const slider of sliders) {
-                const label = slider.closest('.setting-item, .slider-row, .noise-section')?.textContent || '';
-                if (label.includes('Level') || label.includes('Power')) {
-                    slider.value = -30;
-                    slider.dispatchEvent(new Event('input', { bubbles: true }));
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Comfort Noise', true);
+        await test.setRange('Level', -30);
         await test.wait(300);
 
         await test.assertNoConsoleErrors(['favicon', 'ResizeObserver']);
@@ -581,17 +434,8 @@ const test = new TestHelper();
         await test.wait(500);
 
         // Adjust threshold slider
-        await test.page.evaluate(() => {
-            const sliders = document.querySelectorAll('input[type="range"]');
-            for (const slider of sliders) {
-                const label = slider.closest('.setting-item, .slider-row, .noise-section')?.textContent || '';
-                if (label.includes('Threshold')) {
-                    slider.value = -40;
-                    slider.dispatchEvent(new Event('input', { bubbles: true }));
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Comfort Noise', true);
+        await test.setRange('Threshold', -40);
         await test.wait(300);
 
         await test.assertNoConsoleErrors(['favicon', 'ResizeObserver']);
@@ -604,17 +448,8 @@ const test = new TestHelper();
         await test.wait(500);
 
         // Adjust attack slider
-        await test.page.evaluate(() => {
-            const sliders = document.querySelectorAll('input[type="range"]');
-            for (const slider of sliders) {
-                const label = slider.closest('.setting-item, .slider-row, .noise-section')?.textContent || '';
-                if (label.includes('Attack')) {
-                    slider.value = 500;
-                    slider.dispatchEvent(new Event('input', { bubbles: true }));
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Comfort Noise', true);
+        await test.setRange('Attack', 500);
         await test.wait(300);
 
         await test.assertNoConsoleErrors(['favicon', 'ResizeObserver']);
@@ -629,19 +464,7 @@ const test = new TestHelper();
         await test.wait(500);
 
         // Find and change replay gain dropdown
-        await test.page.evaluate(() => {
-            const selects = document.querySelectorAll('select');
-            for (const select of selects) {
-                const label = select.closest('.setting-item')?.textContent || '';
-                if (label.includes('Replay') || label.includes('Gain')) {
-                    if (select.options.length > 1) {
-                        select.selectedIndex = 1;
-                        select.dispatchEvent(new Event('change', { bubbles: true }));
-                    }
-                    return;
-                }
-            }
-        });
+        await test.setSelect('Mode', 1);
 
         await test.wait(300);
         await test.assertNoConsoleErrors(['favicon', 'ResizeObserver']);
@@ -656,17 +479,7 @@ const test = new TestHelper();
         await test.wait(500);
 
         // Toggle gapless
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"], cl-toggle');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item')?.textContent || '';
-                if (label.includes('Gapless')) {
-                    const input = toggle.querySelector('input') || toggle;
-                    input.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Gapless Playback');
 
         await test.wait(300);
         await test.assertNoConsoleErrors(['favicon', 'ResizeObserver']);
@@ -681,17 +494,7 @@ const test = new TestHelper();
         await test.wait(500);
 
         // Toggle crossfade
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"], cl-toggle');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item')?.textContent || '';
-                if (label.includes('Crossfade')) {
-                    const input = toggle.querySelector('input') || toggle;
-                    input.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Crossfade');
 
         await test.wait(300);
         await test.assertNoConsoleErrors(['favicon', 'ResizeObserver']);
@@ -741,31 +544,12 @@ const test = new TestHelper();
         await test.wait(500);
 
         // Enable crossfade first
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"], cl-toggle');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item')?.textContent || '';
-                if (label.includes('Crossfade')) {
-                    const input = toggle.querySelector('input') || toggle;
-                    if (!input.checked) input.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Crossfade', true);
         await test.wait(300);
 
         // Adjust crossfade duration slider
-        await test.page.evaluate(() => {
-            const sliders = document.querySelectorAll('input[type="range"]');
-            for (const slider of sliders) {
-                const label = slider.closest('.setting-item')?.textContent || '';
-                if (label.includes('Crossfade') || label.includes('duration')) {
-                    slider.value = 5;
-                    slider.dispatchEvent(new Event('input', { bubbles: true }));
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Crossfade', true);
+        await test.setRange('Crossfade Duration', 5);
         await test.wait(300);
 
         await test.assertNoConsoleErrors(['favicon', 'ResizeObserver']);
@@ -839,29 +623,11 @@ const test = new TestHelper();
         await test.wait(200);
 
         // Enable loudness
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"]');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.loudness-row')?.textContent || '';
-                if (label.includes('Loudness') && !toggle.checked) {
-                    toggle.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Loudness Compensation', true);
         await test.wait(200);
 
         // Enable comfort noise
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('input[type="checkbox"]');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item, label, .toggle-row')?.textContent || '';
-                if ((label.includes('Noise') || label.includes('Comfort')) && !toggle.checked) {
-                    toggle.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Comfort Noise', true);
         await test.wait(500);
 
         // All effects should be running without errors

@@ -37,27 +37,6 @@ const test = new TestHelper();
         await test.assert(exists, 'Volume control should exist');
     });
 
-    await test.test('Can adjust volume slider', async () => {
-        await test.goto('/settings/');
-        await test.wait(500);
-
-        // Find and adjust volume slider
-        await test.page.evaluate(() => {
-            const sliders = document.querySelectorAll('cl-slider, input[type="range"]');
-            for (const slider of sliders) {
-                const label = slider.closest('.setting-item')?.textContent || '';
-                if (label.includes('Volume')) {
-                    const input = slider.querySelector('input') || slider;
-                    input.value = 75;
-                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                    return;
-                }
-            }
-        });
-
-        await test.wait(300);
-    });
-
     await test.test('Shuffle default toggle exists', async () => {
         await test.goto('/settings/');
         await test.wait(500);
@@ -97,17 +76,11 @@ const test = new TestHelper();
         await test.wait(500);
 
         const options = await test.page.evaluate(() => {
-            const selects = document.querySelectorAll('select, cl-dropdown');
-            for (const select of selects) {
-                const label = select.closest('.setting-item')?.textContent || '';
-                if (label.includes('Replay') || label.includes('Gain')) {
-                    if (select.tagName === 'SELECT') {
-                        return Array.from(select.options).map(o => o.text);
-                    }
-                }
-            }
-            return [];
+            const row = [...document.querySelectorAll('.setting-row')]
+                .find(r => r.querySelector(':scope > label')?.textContent.trim() === 'Mode');
+            return [...(row?.querySelector('select')?.options || [])].map(o => o.text);
         });
+        await test.assert(options.length > 1, `replay gain Mode options: ${JSON.stringify(options)}`);
     });
 
     await test.test('Gapless playback toggle exists', async () => {
@@ -124,17 +97,7 @@ const test = new TestHelper();
         await test.wait(500);
 
         // Toggle gapless
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('cl-toggle, input[type="checkbox"]');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item')?.textContent || '';
-                if (label.includes('Gapless')) {
-                    const input = toggle.querySelector('input') || toggle;
-                    input.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Gapless Playback');
 
         await test.wait(300);
     });
@@ -165,32 +128,12 @@ const test = new TestHelper();
         await test.wait(500);
 
         // Toggle offline mode
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('cl-toggle, input[type="checkbox"]');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item')?.textContent || '';
-                if (label.includes('Offline') || label.includes('Work Offline')) {
-                    const input = toggle.querySelector('input') || toggle;
-                    input.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Work Offline');
 
         await test.wait(300);
 
         // Toggle back
-        await test.page.evaluate(() => {
-            const toggles = document.querySelectorAll('cl-toggle, input[type="checkbox"]');
-            for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item')?.textContent || '';
-                if (label.includes('Offline')) {
-                    const input = toggle.querySelector('input') || toggle;
-                    input.click();
-                    return;
-                }
-            }
-        });
+        await test.setToggle('Work Offline');
 
         await test.wait(300);
     });

@@ -345,6 +345,63 @@ class TestHelper {
         });
     }
 
+    // ==================== Labelled Settings Controls ====================
+    //
+    // Settings and effects controls sit in a row whose class ends in "-row"
+    // (setting-row, noise-slider-row, ...) and whose own label is its first
+    // <label> or .range-label-inline. These find a control by that label,
+    // exactly, and THROW when it is missing. The finders they replace searched
+    // ancestors that do not exist (.setting-item) and silently did nothing.
+
+    async _settingControl(name, selector, action, arg) {
+        const r = await this.page.evaluate((name, selector, action, arg) => {
+            const rows = [...document.querySelectorAll('[class*="-row"]')]
+                .filter(el => [...el.classList].some(c => c.endsWith('-row')));
+            const ownLabel = row => row.querySelector(':scope > label:not(.toggle), :scope > .range-label-inline')
+                ?.textContent.trim();
+            const row = rows.find(r => ownLabel(r) === name);
+            const control = row?.querySelector(selector);
+            if (!control) {
+                return { error: `no ${selector} in a row labelled "${name}"; rows here: ` +
+                    JSON.stringify(rows.map(ownLabel).filter(Boolean)) };
+            }
+            if (action === 'toggle') {
+                const want = arg === undefined ? !control.checked : arg;
+                if (control.checked !== want) control.click();
+                return { value: control.checked };
+            }
+            if (action === 'select') {
+                const opt = typeof arg === 'number' ? control.options[arg] : [...control.options].find(o => o.value === arg);
+                if (!opt) return { error: `"${name}" has no option ${arg}` };
+                control.value = opt.value;
+                control.dispatchEvent(new Event('change', { bubbles: true }));
+                return { value: control.value };
+            }
+            control.value = arg;
+            control.dispatchEvent(new Event('input', { bubbles: true }));
+            return { value: control.value };
+        }, name, selector, action, arg);
+        if (r.error) throw new Error(r.error);
+        return r.value;
+    }
+
+    /** Set the checkbox in the row labelled `name`; omit `on` to flip it. Returns the new state. */
+    async setToggle(name, on) {
+        const checked = await this._settingControl(name, 'input[type="checkbox"]', 'toggle', on);
+        if (on !== undefined && checked !== on) throw new Error(`"${name}" stayed ${checked ? 'on' : 'off'}`);
+        return checked;
+    }
+
+    /** Set the range input in the row labelled `name` and fire `input`. */
+    async setRange(name, value) {
+        return this._settingControl(name, 'input[type="range"]', 'range', String(value));
+    }
+
+    /** Choose an option (by value, or by index if a number) in the row labelled `name`. */
+    async setSelect(name, option) {
+        return this._settingControl(name, 'select', 'select', option);
+    }
+
     // ==================== Element Interaction ====================
 
     async click(selector) {
