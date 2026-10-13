@@ -164,7 +164,7 @@ const test = new TestHelper();
         await test.page.evaluate(() => {
             const toggles = document.querySelectorAll('.loudness-toggle input, input[type="checkbox"]');
             for (const toggle of toggles) {
-                const label = toggle.closest('label')?.textContent || '';
+                const label = toggle.closest('.loudness-row')?.textContent || '';
                 if (label.includes('Loudness')) {
                     toggle.click();
                     return;
@@ -173,6 +173,42 @@ const test = new TestHelper();
         });
 
         await test.wait(300);
+    });
+
+    await test.test('Loudness shows a Mix Reference control and a compensation preview', async () => {
+        await test.goto('/eq/');
+        await test.wait(500);
+
+        const r = await test.page.evaluate(async () => {
+            const { player, playerStore } = await import('/stores/player-store.js');
+            const saved = { enabled: playerStore.state.loudnessEnabled, volume: playerStore.state.volume };
+            player.setVolume(0.1);
+            const toggle = document.querySelector('.loudness-row input[type="checkbox"]');
+            if (toggle && !toggle.checked) toggle.click();
+            await new Promise(r => setTimeout(r, 300));
+
+            const mix = [...document.querySelectorAll('.loudness-slider-row')]
+                .some(row => row.textContent.includes('Mix Reference'));
+            const curve = document.querySelector('loudness-curve');
+            const d = sel => curve?.querySelector(sel)?.getAttribute('d') || '';
+            const out = {
+                mix,
+                curve: !!curve,
+                target: d('path.target'),
+                actual: d('path.actual'),
+                caption: curve?.querySelector('.loudness-curve-caption')?.textContent || ''
+            };
+            player.setVolume(saved.volume);
+            if (!saved.enabled && toggle?.checked) toggle.click();
+            return out;
+        });
+
+        await test.assert(r.mix, 'Mix Reference slider row should exist');
+        await test.assert(r.curve, 'loudness-curve preview should render');
+        // 29 ISO points for the target, 97 for the filter response
+        await test.assertEqual((r.target.match(/[ML]/g) || []).length, 29, 'target path points');
+        await test.assertEqual((r.actual.match(/[ML]/g) || []).length, 97, 'filter path points');
+        await test.assert(r.caption.includes('60 phon'), `caption at 10% volume: "${r.caption}"`);
     });
 
     // ==================== Comfort Noise Tests ====================

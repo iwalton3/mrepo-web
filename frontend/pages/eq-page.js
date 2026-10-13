@@ -15,6 +15,7 @@ import eqPresetsStore from '../stores/eq-presets-store.js';
 // player-store.js), so its two controls are hidden there.
 const IS_MOBILE = isMobileDevice();
 import '../components/parametric-eq-editor.js';
+import '../components/loudness-curve.js';
 import 'vdxui/button/button.js';
 
 // Number of points for frequency response calculation
@@ -49,6 +50,7 @@ export class EqPage extends Component {
             loudnessEnabled: player.state.loudnessEnabled,
             loudnessReferenceSPL: player.state.loudnessReferenceSPL,
             loudnessStrength: player.state.loudnessStrength,
+            loudnessMixPhon: player.state.loudnessMixPhon,
 
             // Comfort noise settings
             noiseEnabled: player.state.noiseEnabled,
@@ -399,6 +401,12 @@ export class EqPage extends Component {
         player.setLoudnessStrength(value);
     }
 
+    handleLoudnessMixPhonChange(e) {
+        const value = parseInt(e.target.value, 10);
+        this.state.loudnessMixPhon = value;
+        player.setLoudnessMixPhon(value);
+    }
+
     // Comfort noise handlers
     handleNoiseToggle(e) {
         this.state.noiseEnabled = e.target.checked;
@@ -445,7 +453,7 @@ export class EqPage extends Component {
     }
 
     template() {
-        const { eqEnabled, eqGains, showParametricEQ, undoHistory, redoHistory, crossfeedEnabled, crossfeedLevel, crossfeedDelayMs, crossfeedShadowHz, loudnessEnabled, loudnessReferenceSPL, loudnessStrength, noiseEnabled, noiseMode, noiseTilt, noisePower, noiseThreshold, noiseAttack } = this.state;
+        const { eqEnabled, eqGains, showParametricEQ, undoHistory, redoHistory, crossfeedEnabled, crossfeedLevel, crossfeedDelayMs, crossfeedShadowHz, loudnessEnabled, loudnessReferenceSPL, loudnessStrength, loudnessMixPhon, noiseEnabled, noiseMode, noiseTilt, noisePower, noiseThreshold, noiseAttack } = this.state;
         const canUndo = undoHistory.length > 0;
         const canRedo = redoHistory.length > 0;
 
@@ -583,7 +591,8 @@ export class EqPage extends Component {
                     <p class="loudness-explainer">
                         Boosts bass and treble at low volumes to compensate for how human hearing
                         perceives quieter sounds. Set Reference SPL based on how loud your device is
-                        at full volume.
+                        at full volume, and Mix Reference to the level the music was made to be heard
+                        at (80 for most music, 83-85 for film).
                     </p>
                     ${when(loudnessEnabled, html`
                         <div class="loudness-slider-row">
@@ -606,6 +615,15 @@ export class EqPage extends Component {
                                    on-input="handleLoudnessStrengthChange">
                             <span class="loudness-value">${loudnessStrength}%</span>
                         </div>
+                        <div class="loudness-slider-row">
+                            <span class="range-label-inline">Mix Reference</span>
+                            <input type="range" min="75" max="90" step="1"
+                                   class="loudness-slider"
+                                   value="${loudnessMixPhon}"
+                                   on-input="handleLoudnessMixPhonChange">
+                            <span class="loudness-value">${loudnessMixPhon} phon</span>
+                        </div>
+                        <loudness-curve></loudness-curve>
                     `)}
                 </div>
 

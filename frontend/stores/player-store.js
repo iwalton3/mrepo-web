@@ -21,6 +21,7 @@ import {
     createNoiseSquarerCurve, createNoiseGateCurve, onePoleCoefficients,
     noiseThresholdScale, noiseLevelToLinear, noiseLoopMixGain
 } from './noise-dsp.js';
+import { LOUDNESS_FILTERS, loudnessGainsForSettings, loudnessResponseDb } from './loudness-dsp.js';
 
 /**
  * Convert decibels to linear gain multiplier.
@@ -338,6 +339,7 @@ export const playerStore = createStore({
     loudnessEnabled: audioFXSettings?.loudnessEnabled || false,
     loudnessReferenceSPL: audioFXSettings?.loudnessReferenceSPL ?? 80,  // 60-90 dB, what SPL does 100% volume produce?
     loudnessStrength: audioFXSettings?.loudnessStrength ?? 100,  // 0-150%, intensity multiplier
+    loudnessMixPhon: audioFXSettings?.loudnessMixPhon ?? 80,  // 75-90 phon, level the music was mixed at; no compensation at or above it
 
     // Sleep timer (Android background playback)
     sleepTimerMode: audioFXSettings?.sleepTimerMode ?? 'time',  // 'duration' or 'time'
@@ -409,8 +411,8 @@ class AudioController {
         this._loudnessInitialized = false;
         this._loudnessInternalConnected = false;  // Track internal node connections
         this._userVolumeGain = null;      // GainNode for user volume (replaces HTML5 volume when loudness enabled)
-        this._loudnessLowShelf = null;    // BiquadFilterNode (lowshelf, 100Hz)
-        this._loudnessHighShelf = null;   // BiquadFilterNode (highshelf, 10kHz)
+        this._loudnessFilters = null;     // BiquadFilterNodes, one per LOUDNESS_FILTERS entry
+        this._loudnessActive = false;     // Last update applied compensation (vs passthrough/muted)
 
         // Comfort noise state. Entirely native nodes - nothing here runs JS on
         // the audio render thread, which is what made the old AudioWorklet
@@ -2434,6 +2436,7 @@ class AudioController {
             loudnessEnabled: this.store.state.loudnessEnabled,
             loudnessReferenceSPL: this.store.state.loudnessReferenceSPL,
             loudnessStrength: this.store.state.loudnessStrength,
+            loudnessMixPhon: this.store.state.loudnessMixPhon,
             sleepTimerMode: this.store.state.sleepTimerMode,
             sleepTimerMinutes: this.store.state.sleepTimerMinutes,
             sleepTimerTargetTime: this.store.state.sleepTimerTargetTime,
@@ -3173,7 +3176,7 @@ class AudioController {
 
     /**
      * Initialize loudness compensation audio nodes.
-     * Creates: user volume gain node, low shelf filter, high shelf filter.
+     * Creates: user volume gain node and the LOUDNESS_FILTERS biquads.
      */
     _initLoudness() {
         if (!this._audioContext || this._loudnessInitialized) return;
@@ -3182,77 +3185,86 @@ class AudioController {
         this._userVolumeGain = this._audioContext.createGain();
         this._userVolumeGain.gain.value = 1.0;
 
-        // Low shelf filter at 100Hz for bass boost
-        this._loudnessLowShelf = this._audioContext.createBiquadFilter();
-        this._loudnessLowShelf.type = 'lowshelf';
-        this._loudnessLowShelf.frequency.value = 100;
-        this._loudnessLowShelf.gain.value = 0;
-
-        // High shelf filter at 10kHz for treble boost
-        this._loudnessHighShelf = this._audioContext.createBiquadFilter();
-        this._loudnessHighShelf.type = 'highshelf';
-        this._loudnessHighShelf.frequency.value = 10000;
-        this._loudnessHighShelf.gain.value = 0;
+        this._loudnessFilters = LOUDNESS_FILTERS.map(spec => {
+            const filter = this._audioContext.createBiquadFilter();
+            filter.type = spec.type;
+            filter.frequency.value = spec.frequency;
+            if (spec.Q !== undefined) filter.Q.value = spec.Q;
+            filter.gain.value = 0;
+            return filter;
+        });
 
         this._loudnessInitialized = true;
+        this._loudnessActive = false;
         this._updateLoudnessGains();
     }
 
     /**
      * Update loudness compensation filter gains based on current volume.
-     * Uses ISO 226 equal-loudness contour approximation.
+     * Gains follow ISO 226 equal-loudness contours; see loudness-dsp.js.
      */
     _updateLoudnessGains() {
         if (!this._loudnessInitialized) return;
 
         const state = this.store.state;
+        const filters = this._loudnessFilters;
+        const wasActive = this._loudnessActive;
 
         // If loudness disabled or muted, set filters to passthrough
         if (!state.loudnessEnabled || state.muted || state.volume === 0) {
-            this._loudnessLowShelf.gain.value = 0;
-            this._loudnessHighShelf.gain.value = 0;
+            this._loudnessActive = false;
+            filters.forEach(f => this._setLoudnessParam(f.gain, 0, false));
             // When disabled, user volume gain should be 1.0 (HTML5 volume controls)
             if (!state.loudnessEnabled) {
-                this._userVolumeGain.gain.value = 1.0;
+                this._setLoudnessParam(this._userVolumeGain.gain, 1.0, false);
             } else {
                 // Muted with loudness enabled
-                this._userVolumeGain.gain.value = 0;
+                this._setLoudnessParam(this._userVolumeGain.gain, 0, false);
             }
             return;
         }
-
-        // Apply user volume via the gain node (provides headroom for loudness boost)
-        this._userVolumeGain.gain.value = state.volume;
+        this._loudnessActive = true;
 
         // Ensure HTML5 volume is at full scale (headroom for loudness boost)
         this._audioElements[0].volume = 1.0;
         this._audioElements[1].volume = 1.0;
 
-        // Calculate volume in dB
-        const volumeDb = 20 * Math.log10(state.volume);  // 0dB at 100%, -6dB at 50%, -12dB at 25%
+        const gains = loudnessGainsForSettings(state);
 
-        // Calculate effective SPL at current volume
-        const effectiveSPL = state.loudnessReferenceSPL + volumeDb;
+        // Clipping guard: the user volume gain sits before the filters, so the
+        // volume cut is headroom for the boost. When the boost peak exceeds
+        // that headroom (high volume with mild compensation, or a reference
+        // SPL below the mix level), take the excess off the volume gain too.
+        const volumeDb = 20 * Math.log10(state.volume);
+        const sampleRate = this._audioContext.sampleRate;
+        let peakBoostDb = 0;
+        for (let i = 0; i <= 48; i++) {
+            const freq = 20 * Math.pow(1000, i / 48);
+            peakBoostDb = Math.max(peakBoostDb, loudnessResponseDb(gains, freq, sampleRate));
+        }
+        const excessDb = Math.max(0, peakBoostDb + volumeDb);
 
-        // ISO 226-inspired compensation (simplified)
-        // At 80 phon: 0dB compensation
-        // At 40 phon: +12dB bass, +6dB treble
-        // Linear interpolation between
-        const phon = Math.max(20, effectiveSPL);
-        const compensationFactor = Math.max(0, (80 - phon) / 40);  // 0 at 80 phon, 1 at 40 phon
+        // Ramp only while compensation stays on (the volume slider moving), to
+        // avoid zipper noise. Switching on from passthrough or mute steps
+        // instead: the HTML5 volume above has just jumped to 1.0, and a gain
+        // ramping down from 1.0 behind it would be a loud blip.
+        filters.forEach((f, k) => this._setLoudnessParam(f.gain, gains[k], wasActive));
+        this._setLoudnessParam(this._userVolumeGain.gain, state.volume * dbToLinear(-excessDb), wasActive);
+    }
 
-        // Apply strength multiplier
-        const strength = state.loudnessStrength / 100;
-        const bassBoost = compensationFactor * 12 * strength;    // Up to +12dB
-        const trebleBoost = compensationFactor * 6 * strength;   // Up to +6dB
-
-        this._loudnessLowShelf.gain.value = bassBoost;
-        this._loudnessHighShelf.gain.value = trebleBoost;
+    _setLoudnessParam(param, value, ramp) {
+        const now = this._audioContext.currentTime;
+        param.cancelScheduledValues(now);
+        if (ramp) {
+            param.setTargetAtTime(value, now, 0.03);
+        } else {
+            param.value = value;
+        }
     }
 
     /**
      * Connect loudness compensation nodes into the audio chain.
-     * Chain: input → userVolumeGain → lowShelf → highShelf → output
+     * Chain: input → userVolumeGain → loudness filters → output
      * @param {AudioNode} inputNode - Node to connect from (e.g., mixer or source)
      * @returns {AudioNode} Output node to connect to next stage (e.g., EQ)
      */
@@ -3267,15 +3279,18 @@ class AudioController {
 
         // Internal connections only need to be done once
         if (!this._loudnessInternalConnected) {
-            this._userVolumeGain.connect(this._loudnessLowShelf);
-            this._loudnessLowShelf.connect(this._loudnessHighShelf);
+            let node = this._userVolumeGain;
+            for (const filter of this._loudnessFilters) {
+                node.connect(filter);
+                node = filter;
+            }
             this._loudnessInternalConnected = true;
         }
 
         // Connect input to volume gain (this can change when chain is rebuilt)
         inputNode.connect(this._userVolumeGain);
 
-        return this._loudnessHighShelf;
+        return this._loudnessFilters[this._loudnessFilters.length - 1];
     }
 
     /**
@@ -3321,6 +3336,17 @@ class AudioController {
      */
     setLoudnessStrength(strength) {
         this.store.state.loudnessStrength = Math.max(0, Math.min(150, strength));
+        this._updateLoudnessGains();
+        this._saveAudioFXSettings();
+    }
+
+    /**
+     * Set the mix reference level (75-90 phon): the playback level the music
+     * is assumed to have been mixed at. 80 suits most music; film and studio
+     * references are 83-85. No compensation is applied at or above it.
+     */
+    setLoudnessMixPhon(phon) {
+        this.store.state.loudnessMixPhon = Math.max(75, Math.min(90, phon));
         this._updateLoudnessGains();
         this._saveAudioFXSettings();
     }
@@ -6345,6 +6371,7 @@ export const player = {
     setLoudnessEnabled: (enabled) => audioController.setLoudnessEnabled(enabled),
     setLoudnessReferenceSPL: (spl) => audioController.setLoudnessReferenceSPL(spl),
     setLoudnessStrength: (strength) => audioController.setLoudnessStrength(strength),
+    setLoudnessMixPhon: (phon) => audioController.setLoudnessMixPhon(phon),
 
     // Audio FX - Comfort Noise
     setNoiseEnabled: (enabled) => audioController.setNoiseEnabled(enabled),

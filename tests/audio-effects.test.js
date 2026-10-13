@@ -124,7 +124,7 @@ const test = new TestHelper();
         await test.page.evaluate(() => {
             const toggles = document.querySelectorAll('input[type="checkbox"]');
             for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item, label, .toggle-row')?.textContent || '';
+                const label = toggle.closest('.loudness-row')?.textContent || '';
                 if (label.includes('Loudness')) {
                     toggle.click();
                     return;
@@ -138,7 +138,7 @@ const test = new TestHelper();
         await test.page.evaluate(() => {
             const toggles = document.querySelectorAll('input[type="checkbox"]');
             for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item, label, .toggle-row')?.textContent || '';
+                const label = toggle.closest('.loudness-row')?.textContent || '';
                 if (label.includes('Loudness')) {
                     toggle.click();
                     return;
@@ -160,7 +160,7 @@ const test = new TestHelper();
         await test.page.evaluate(() => {
             const toggles = document.querySelectorAll('input[type="checkbox"]');
             for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item, label, .toggle-row')?.textContent || '';
+                const label = toggle.closest('.loudness-row')?.textContent || '';
                 if (label.includes('Loudness') && !toggle.checked) {
                     toggle.click();
                     return;
@@ -173,7 +173,7 @@ const test = new TestHelper();
         await test.page.evaluate(() => {
             const sliders = document.querySelectorAll('input[type="range"]');
             for (const slider of sliders) {
-                const label = slider.closest('.setting-item, .slider-row')?.textContent || '';
+                const label = slider.closest('.loudness-slider-row')?.textContent || '';
                 if (label.includes('Reference') || label.includes('SPL')) {
                     slider.value = 75;
                     slider.dispatchEvent(new Event('input', { bubbles: true }));
@@ -196,7 +196,7 @@ const test = new TestHelper();
         await test.page.evaluate(() => {
             const toggles = document.querySelectorAll('input[type="checkbox"]');
             for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item, label, .toggle-row')?.textContent || '';
+                const label = toggle.closest('.loudness-row')?.textContent || '';
                 if (label.includes('Loudness') && !toggle.checked) {
                     toggle.click();
                     return;
@@ -209,7 +209,7 @@ const test = new TestHelper();
         await test.page.evaluate(() => {
             const sliders = document.querySelectorAll('input[type="range"]');
             for (const slider of sliders) {
-                const label = slider.closest('.setting-item, .slider-row')?.textContent || '';
+                const label = slider.closest('.loudness-slider-row')?.textContent || '';
                 if (label.includes('Strength')) {
                     slider.value = 100;
                     slider.dispatchEvent(new Event('input', { bubbles: true }));
@@ -220,6 +220,149 @@ const test = new TestHelper();
         await test.wait(300);
 
         await test.assertNoConsoleErrors(['favicon', 'ResizeObserver']);
+    });
+
+    await test.test('Loudness filters follow volume; muted, disabled and strength 0 pass through', async () => {
+        await test.goto('/eq/');
+        await test.wait(500);
+
+        // Each read follows a mode switch, which sets the params immediately;
+        // changes while compensation stays on ramp and may not have landed yet.
+        const r = await test.page.evaluate(async () => {
+            const { player, playerStore, audioController: ac } = await import('/stores/player-store.js');
+            const s = playerStore.state;
+            const saved = {
+                enabled: s.loudnessEnabled, volume: s.volume, muted: s.muted,
+                ref: s.loudnessReferenceSPL, mix: s.loudnessMixPhon, strength: s.loudnessStrength
+            };
+            const read = () => ({
+                filters: ac._loudnessFilters.map(f => f.gain.value),
+                user: ac._userVolumeGain.gain.value,
+                html: ac._audioElements.map(a => a.volume)
+            });
+
+            await player.setLoudnessEnabled(false);
+            player.setLoudnessReferenceSPL(80);
+            player.setLoudnessMixPhon(80);
+            player.setLoudnessStrength(100);
+            player.setVolume(0.01);              // 40 phon
+            await player.setLoudnessEnabled(true);
+            const on = read();
+            const types = ac._loudnessFilters.map(f => `${f.type}@${f.frequency.value}`);
+
+            player.toggleMute();
+            const muted = read();
+            player.toggleMute();
+
+            await player.setLoudnessEnabled(false);
+            const off = read();
+
+            player.setLoudnessStrength(0);
+            await player.setLoudnessEnabled(true);
+            const s0 = read();
+
+            await player.setLoudnessEnabled(false);
+            player.setLoudnessReferenceSPL(saved.ref);
+            player.setLoudnessMixPhon(saved.mix);
+            player.setLoudnessStrength(saved.strength);
+            player.setVolume(saved.volume);
+            if (saved.muted !== s.muted) player.toggleMute();
+            if (saved.enabled) await player.setLoudnessEnabled(true);
+            return { on, types, muted, off, s0 };
+        });
+
+        const near = (a, b) => Math.abs(a - b) < 0.01;
+        await test.assertEqual(r.types.join(' '),
+            'lowshelf@350 lowshelf@80 peaking@3500 highshelf@10000', 'filter chain');
+        // loudnessGains(40, 80) - see loudness-dsp.test.js for how close that is to ISO 226
+        const want = [8.03, 11.17, -2.28, 6.87];
+        await test.assert(r.on.filters.every((g, k) => Math.abs(g - want[k]) < 0.02),
+            `40 phon gains ${r.on.filters.map(g => g.toFixed(2))}, want ${want}`);
+        // -40 dB of volume is more headroom than the ~19 dB peak boost, so no cut
+        await test.assert(near(r.on.user, 0.01), `user gain at 40 phon: ${r.on.user}`);
+        await test.assert(r.on.html.every(v => v === 1), `HTML5 volume while on: ${r.on.html}`);
+
+        await test.assert(r.muted.filters.every(g => g === 0) && r.muted.user === 0,
+            `muted: filters ${r.muted.filters}, user ${r.muted.user}`);
+        await test.assert(r.off.filters.every(g => g === 0) && r.off.user === 1,
+            `disabled: filters ${r.off.filters}, user ${r.off.user}`);
+        await test.assert(r.s0.filters.every(g => g === 0) && near(r.s0.user, 0.01),
+            `strength 0: filters ${r.s0.filters}, user ${r.s0.user}`);
+    });
+
+    await test.test('Clipping guard cuts the volume gain by the boost the volume cannot absorb', async () => {
+        await test.goto('/eq/');
+        await test.wait(500);
+
+        const r = await test.page.evaluate(async () => {
+            const { player, playerStore, audioController: ac } = await import('/stores/player-store.js');
+            const { loudnessResponseDb } = await import('/stores/loudness-dsp.js');
+            const s = playerStore.state;
+            const saved = { enabled: s.loudnessEnabled, volume: s.volume, ref: s.loudnessReferenceSPL,
+                            mix: s.loudnessMixPhon, strength: s.loudnessStrength };
+
+            // Quiet headphones at full volume: 60 phon, so ~10 dB of boost with no volume headroom.
+            await player.setLoudnessEnabled(false);
+            player.setLoudnessReferenceSPL(60);
+            player.setLoudnessMixPhon(80);
+            player.setLoudnessStrength(100);
+            player.setVolume(1);
+            await player.setLoudnessEnabled(true);
+            const gains = ac._loudnessFilters.map(f => f.gain.value);
+            const user = ac._userVolumeGain.gain.value;
+            let peak = 0;
+            for (let f = 20; f <= 20000; f *= 1.02) peak = Math.max(peak, loudnessResponseDb(gains, f, ac._audioContext.sampleRate));
+
+            await player.setLoudnessEnabled(false);
+            player.setLoudnessReferenceSPL(saved.ref);
+            player.setLoudnessMixPhon(saved.mix);
+            player.setLoudnessStrength(saved.strength);
+            player.setVolume(saved.volume);
+            if (saved.enabled) await player.setLoudnessEnabled(true);
+            return { peak, userDb: 20 * Math.log10(user) };
+        });
+
+        // The guard samples the response more coarsely than this check does.
+        await test.assert(r.peak > 5, `expected a real boost, peak ${r.peak.toFixed(2)} dB`);
+        await test.assert(Math.abs(r.userDb + r.peak) < 0.1,
+            `user gain ${r.userDb.toFixed(2)} dB should cancel the ${r.peak.toFixed(2)} dB peak`);
+    });
+
+    await test.test('Loudness Mix Reference slider updates and persists the setting', async () => {
+        await test.goto('/eq/');
+        await test.wait(500);
+
+        await test.page.evaluate(() => {
+            const toggles = document.querySelectorAll('input[type="checkbox"]');
+            for (const toggle of toggles) {
+                const label = toggle.closest('.loudness-row')?.textContent || '';
+                if (label.includes('Loudness') && !toggle.checked) {
+                    toggle.click();
+                    return;
+                }
+            }
+        });
+        await test.wait(300);
+
+        const r = await test.page.evaluate(async () => {
+            const slider = [...document.querySelectorAll('.loudness-slider-row')]
+                .find(row => row.textContent.includes('Mix Reference'))?.querySelector('input[type="range"]');
+            if (!slider) return { found: false };
+            slider.value = 85;
+            slider.dispatchEvent(new Event('input', { bubbles: true }));
+            const { playerStore } = await import('/stores/player-store.js');
+            const stored = Object.keys(localStorage)
+                .map(k => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } })
+                .find(v => v && typeof v === 'object' && 'loudnessMixPhon' in v);
+            const value = playerStore.state.loudnessMixPhon;
+            slider.value = 80;
+            slider.dispatchEvent(new Event('input', { bubbles: true }));
+            return { found: true, value, saved: stored?.loudnessMixPhon };
+        });
+
+        await test.assert(r.found, 'Mix Reference slider should exist when loudness is on');
+        await test.assertEqual(r.value, 85, 'store value after moving the slider');
+        await test.assertEqual(r.saved, 85, 'saved audio FX settings');
     });
 
     // ==================== Crossfeed Advanced Tests ====================
@@ -676,7 +819,7 @@ const test = new TestHelper();
         await test.page.evaluate(() => {
             const toggles = document.querySelectorAll('input[type="checkbox"]');
             for (const toggle of toggles) {
-                const label = toggle.closest('.setting-item, label, .toggle-row')?.textContent || '';
+                const label = toggle.closest('.loudness-row')?.textContent || '';
                 if (label.includes('Loudness') && !toggle.checked) {
                     toggle.click();
                     return;
