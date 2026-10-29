@@ -62,9 +62,17 @@ const LOCAL_STORAGE_SHUFFLE_HISTORY_KEY = 'music-player-shuffle-history';
 const LOW_LATENCY_MODE_KEY = 'music-low-latency-always';
 let currentLatencyMode = '';
 
+// Track changes hand off between the two elements (see play()). The next song
+// is preloaded this long before the end, and an automatic advance starts it
+// this close to the end, while the old element is still playing.
+const PRELOAD_LEAD_S = 30;
+const HANDOFF_LEAD_S = 0.1;
+// Within this of its end the old element is left to finish rather than silenced
+const HANDOFF_FINISH_S = 0.5;
+
 /**
  * Load audio effects settings from localStorage.
- * Includes: crossfeed, gapless, crossfade, tempo
+ * Includes: crossfeed, crossfade, tempo
  */
 function loadAudioFXSettings() {
     try {
@@ -322,9 +330,6 @@ export const playerStore = createStore({
     crossfeedDelayMs: audioFXSettings?.crossfeedDelayMs ?? 0,  // 0-5ms delay on cross-channels
     crossfeedShadowHz: audioFXSettings?.crossfeedShadowHz ?? 0,  // 0=off, 500-3000Hz head shadow filter
 
-    // Gapless playback
-    gaplessEnabled: audioFXSettings?.gaplessEnabled ?? true,  // Default enabled
-
     // Crossfade between tracks
     crossfadeEnabled: audioFXSettings?.crossfadeEnabled || false,
     crossfadeDuration: audioFXSettings?.crossfadeDuration ?? 3,  // Seconds, default 3
@@ -372,23 +377,27 @@ class AudioController {
     constructor(store) {
         this.store = store;
 
-        // Dual-audio system for crossfade
-        // Mode A (crossfade disabled): Only _audioElements[0] connected to pipeline, no mixer overhead
-        // Mode B (crossfade enabled): Both elements with mixer for seamless crossfade
-        // Note: Both audio elements always exist for gapless preloading
+        // Two elements: every track change hands off from one to the other
+        // (play()), and crossfade mixes them. With a Web Audio pipeline, both
+        // feed the mixer (the dual pipeline).
         this._audioElements = [new Audio(), new Audio()];  // Both always exist
         this._audioSources = [null, null];          // MediaElementSourceNodes (only used in dual mode)
         this._replayGainNodes = [null, null];       // GainNodes for per-source ReplayGain (dual mode only)
         this._fadeGains = [null, null];             // GainNodes for crossfade volume
         this._mixerGain = null;                     // Combines both sources (null when crossfade disabled)
         this._primaryIndex = 0;                     // Which element is "primary" (0 or 1)
-        this._dualPipelineActive = false;           // true when crossfade enabled and dual pipeline built
+        this._dualPipelineActive = false;           // true once the Web Audio pipeline is built
 
         // Legacy aliases for compatibility
         this.audio = this._audioElements[0];
-        this.preloadAudio = this._audioElements[1]; // Always available for gapless preloading
+        this.preloadAudio = this._audioElements[1]; // The next song loads here
 
-        this.preloadedSong = null;
+        this.preloadedSong = null;     // Song whose src is set on preloadAudio
+        this._preloadingUuid = null;   // _preloadNext() in flight for this song
+        this._preloadSeq = 0;
+        this._shufflePick = null;      // {index, uuid}: next shuffle song, chosen early to preload it
+        this._handoffTimer = null;
+        this._advancedFrom = null;     // Element an automatic advance already left; see _handleTrackEnd
         this.playStartTime = null;
         this._currentHistoryId = null;  // ID of current history entry (for updating on end/skip)
         this._saveInterval = null;
@@ -903,6 +912,7 @@ class AudioController {
             }
             this._updateMediaSessionPosition();
             this._checkCrossfade();
+            this._checkHandoff();
         });
 
         audioElement.addEventListener('loadedmetadata', () => {
@@ -923,6 +933,8 @@ class AudioController {
         });
 
         audioElement.addEventListener('play', () => {
+            // Played again (resume after the end of the queue): it can end again
+            if (this._advancedFrom === audioElement) this._advancedFrom = null;
             // Only update state if this is still the active audio element
             if (audioElement !== this.audio) return;
             this.store.state.isPlaying = true;
@@ -955,7 +967,7 @@ class AudioController {
         audioElement.addEventListener('ended', () => {
             // Only handle if this is still the active audio element
             if (audioElement !== this.audio) return;
-            this._handleTrackEnd();
+            this._handleTrackEnd(audioElement);
         });
 
         audioElement.addEventListener('error', (e) => {
@@ -1120,7 +1132,12 @@ class AudioController {
         }
     }
 
-    async _handleTrackEnd() {
+    /**
+     * Advance after the current song. Runs from _checkHandoff() just before
+     * the end, and from the element's 'ended' if that did not happen.
+     * @param {HTMLAudioElement} [fromEl] - Element whose song is ending
+     */
+    async _handleTrackEnd(fromEl = this.audio) {
         // If crossfade is in progress (loading next song), signal it to skip the ramp
         // This handles the case where user seeks close to end and song finishes before crossfade loads
         if (this._crossfadeInProgress) {
@@ -1136,6 +1153,10 @@ class AudioController {
         if (this._advanceActive > 0) {
             return;
         }
+
+        // The early handoff and the element's own 'ended' both land here
+        if (this._advancedFrom === fromEl) return;
+        this._advancedFrom = fromEl;
 
         // Record play in history (fire-and-forget, don't block playback)
         const currentSong = this.store.state.currentSong;
@@ -1156,9 +1177,12 @@ class AudioController {
         }
 
         // Handle repeat mode
+        // Replayed on the other element like any other song: restarting an
+        // ended element is the same gap a new song would have
         if (this.store.state.repeatMode === 'one') {
-            this.audio.currentTime = 0;
-            await this.audio.play();
+            const { queue, queueIndex } = this.store.state;
+            const song = queue[queueIndex] || currentSong;
+            if (song) await this.play(song);
             return;
         }
 
@@ -1225,6 +1249,13 @@ class AudioController {
 
         const op = opToken ?? ++this._advanceSeq;
 
+        // Crossfade mixes through Web Audio. Build it before choosing elements:
+        // the build replaces both of them.
+        if (this.store.state.crossfadeEnabled && !this._audioContext) {
+            await this._ensureAudioPipeline();
+            if (op !== this._advanceSeq) return; // superseded
+        }
+
         this.store.state.isLoading = true;
         this.store.state.error = null;
         // Copy - assigning the queue's own (untracked) object would let any
@@ -1233,9 +1264,12 @@ class AudioController {
         this.store.state.currentTime = 0;
         this.store.state.duration = song.duration_seconds || 0;
 
-        // Check for offline audio first (in work-offline mode or when available)
+        const reuse = this._isPreloaded(song);
         let audioUrl = null;
-        if (offlineStore.state.workOfflineMode || !offlineStore.state.isOnline) {
+        if (reuse) {
+            // Already loading on the other element
+        } else if (offlineStore.state.workOfflineMode || !offlineStore.state.isOnline) {
+            // Check for offline audio first (in work-offline mode or when available)
             // In offline mode, only use cached audio
             audioUrl = await getAudioUrl(song.uuid);
             if (op !== this._advanceSeq) return; // superseded by a newer play/advance
@@ -1278,30 +1312,50 @@ class AudioController {
             }
         }
 
-        // Initialize audio pipeline if crossfade is enabled but not set up yet
-        // Do this BEFORE setting the audio source to avoid glitches during playback
-        if (this.store.state.crossfadeEnabled) {
-            if (!this._dualPipelineActive) {
-                console.log('[Play] Initializing dual pipeline for crossfade');
-                await this._ensureAudioPipeline();
-                if (op !== this._advanceSeq) return; // superseded
-            }
-            // Ensure the primary audio source is connected to the pipeline
-            if (this._dualPipelineActive && !this._audioSources[this._primaryIndex]) {
-                console.log('[Play] Connecting audio source to pipeline');
-                this._ensureSourceConnected(this._primaryIndex);
-            }
+        // Hand the song to the other element and keep the old one playing until
+        // the new one does. Android freezes a background page once its playing
+        // element ends or is reloaded before another one plays, and drops the
+        // Media Session with it. See vdx-web docs/music-player-patterns.md.
+        const oldIndex = this._primaryIndex;
+        const newIndex = 1 - oldIndex;
+        const oldAudio = this._audioElements[oldIndex];
+        const newAudio = this._audioElements[newIndex];
+        // An automatic advance starts just before the end: let the old song
+        // finish so nothing is cut. A skip silences it now.
+        const finishing = this._isFinishing(oldAudio);
+
+        if (!reuse) newAudio.src = audioUrl;
+        if (this._dualPipelineActive) this._ensureSourceConnected(newIndex);
+
+        // Swap first, so the old element's pause/ended events are ignored
+        clearTimeout(this._handoffTimer);
+        this._handoffTimer = null;
+        this._primaryIndex = newIndex;
+        this.audio = newAudio;
+        this.preloadAudio = oldAudio;
+        this.preloadedSong = null;
+        this._advancedFrom = null;
+        // A preloaded element's metadata events fired while it was inactive
+        if (isFinite(newAudio.duration) && newAudio.duration > 0) {
+            this.store.state.duration = newAudio.duration;
+            this.store.state.isLoading = newAudio.readyState < HTMLMediaElement.HAVE_FUTURE_DATA;
         }
 
-        this.audio.src = audioUrl;
-
-        // In dual mode, ensure gains are reset properly
-        // (might be mid-fade if called during crossfade or after an aborted one)
         if (this._dualPipelineActive) {
-            this._resetAllGains();
-            // Cancel any in-progress crossfade since we're playing a new song directly
+            // A crossfade's curve locks its gains; only fresh nodes escape it
+            const setGain = this._crossfadeInProgress
+                ? (i, v) => this._forceRecreateGainAtIndex(i, v)
+                : (i, v) => this._safeResetGain(this._fadeGains[i], v);
+            setGain(newIndex, 1.0);
+            setGain(oldIndex, finishing ? 1.0 : 0);
             this._crossfadeInProgress = false;
             this._crossfadeSeekLockout = false;
+            if (this._audioSources[newIndex]) {
+                newAudio._visualizerContext = this._audioContext;
+                newAudio._visualizerSource = this._audioSources[newIndex];
+            }
+        } else if (!finishing) {
+            oldAudio.volume = 0;
         }
 
         // Apply replay gain for the new song
@@ -1313,8 +1367,9 @@ class AudioController {
         this._updateMediaSessionMetadata(song);
 
         try {
-            await this.audio.play();
-            if (op !== this._advanceSeq) return; // superseded mid-start
+            await newAudio.play();
+            if (op !== this._advanceSeq) return; // superseded mid-start; the newer play() owns oldAudio now
+            if (!finishing) oldAudio.pause();
             // Explicitly set state - don't rely solely on 'play' event
             this.store.state.isPlaying = true;
             this.store.state.isPaused = false;
@@ -1338,6 +1393,7 @@ class AudioController {
             }).catch(e => console.error('Failed to record history:', e));
         } catch (error) {
             console.error('Playback failed:', error);
+            if (op === this._advanceSeq && !finishing) oldAudio.pause();
             this.store.state.error = 'Playback failed';
             this.store.state.isPlaying = false;
             this.store.state.isPaused = true;
@@ -2199,6 +2255,9 @@ class AudioController {
 
         this.audio = this._audioElements[savedPrimaryIndex];
         this.preloadAudio = this._audioElements[1 - savedPrimaryIndex];
+        this.preloadedSong = null;
+        this._preloadSeq++;
+        this._preloadingUuid = null;
 
         // Set up event listeners on both new elements
         this._setupEventListeners(this._audioElements[0]);
@@ -2208,26 +2267,15 @@ class AudioController {
         this._audioContext = new (window.AudioContext || window.webkitAudioContext)({ latencyHint });
         this._eqOutputNode = this._audioContext.destination;
 
-        // Determine chain input based on crossfade mode
-        let chainInputNode;
+        // Always dual: every track change moves to the other element, and an
+        // element outside the graph would play past EQ and loudness
+        this._initDualAudioPipeline();
+        this._ensureSourceConnected(0);
+        this._ensureSourceConnected(1);
+        const chainInputNode = this._mixerGain;
 
-        if (this.store.state.crossfadeEnabled) {
-            // Dual mode: set up mixer pipeline
-            this._initDualAudioPipeline();
-            this._ensureSourceConnected(savedPrimaryIndex);
-            chainInputNode = this._mixerGain;
-
-            // Store primary source for backward compatibility
-            this._eqSourceNode = this._audioSources[savedPrimaryIndex];
-        } else {
-            // Simple mode: direct source connection
-            this._eqSourceNode = this._audioContext.createMediaElementSource(this.audio);
-            chainInputNode = this._eqSourceNode;
-
-            // Store on audio element for visualizer reuse
-            this.audio._visualizerContext = this._audioContext;
-            this.audio._visualizerSource = this._eqSourceNode;
-        }
+        // Store primary source for backward compatibility
+        this._eqSourceNode = this._audioSources[savedPrimaryIndex];
 
         // Initialize noise if enabled (must happen before EQ chain build)
         if (this.store.state.noiseEnabled) {
@@ -2281,6 +2329,7 @@ class AudioController {
 
         // Notify visualizers that the pipeline has been rebuilt
         this._notifyAudioSourceChange();
+        if (currentSrc) this._preloadNext();
 
         // If interactive mode, create and return analyser for visualizer
         if (latencyHint === 'interactive') {
@@ -2428,7 +2477,6 @@ class AudioController {
             crossfeedLevel: this.store.state.crossfeedLevel,
             crossfeedDelayMs: this.store.state.crossfeedDelayMs,
             crossfeedShadowHz: this.store.state.crossfeedShadowHz,
-            gaplessEnabled: this.store.state.gaplessEnabled,
             crossfadeEnabled: this.store.state.crossfadeEnabled,
             crossfadeDuration: this.store.state.crossfadeDuration,
             tempoEnabled: this.store.state.tempoEnabled,
@@ -2455,10 +2503,8 @@ class AudioController {
     // ==================== DUAL-AUDIO PIPELINE METHODS ====================
 
     /**
-     * Initialize the dual-audio pipeline for crossfade support.
+     * Initialize the dual-audio pipeline (both elements into one mixer).
      * Creates: fade gain nodes, mixer gain node.
-     * Audio elements already exist (created in constructor for gapless preloading).
-     * Called when crossfade is enabled.
      */
     _initDualAudioPipeline() {
         if (this._dualPipelineActive) return;
@@ -3827,37 +3873,16 @@ class AudioController {
     // ==================== GAPLESS/CROSSFADE METHODS ====================
 
     /**
-     * Set gapless playback enabled.
-     */
-    setGaplessEnabled(enabled) {
-        this.store.state.gaplessEnabled = enabled;
-        this._saveAudioFXSettings();
-    }
-
-    /**
-     * Set crossfade enabled.
-     * This triggers a pipeline rebuild to add/remove the mixer node.
+     * Set crossfade enabled. Crossfade needs the Web Audio pipeline (whose
+     * mixer always takes both elements), so enabling builds it if missing.
      */
     async setCrossfadeEnabled(enabled) {
-        const wasEnabled = this.store.state.crossfadeEnabled;
         this.store.state.crossfadeEnabled = enabled;
-
-        // Crossfade overrides gapless
         if (enabled) {
-            this.store.state.gaplessEnabled = false;
+            await this._ensureAudioPipeline();
+        } else {
+            this._cancelCrossfade();
         }
-
-        // Initialize or rebuild pipeline
-        if (wasEnabled !== enabled) {
-            if (this._audioContext) {
-                // Use full teardown/rebuild via switchLatencyMode for reliability
-                await this.switchLatencyMode(currentLatencyMode, true);
-            } else if (enabled) {
-                // No context yet - use unified pipeline builder
-                await this._ensureAudioPipeline();
-            }
-        }
-
         this._saveAudioFXSettings();
     }
 
@@ -4086,6 +4111,7 @@ class AudioController {
             this._primaryIndex = secondaryIndex;
             this.audio = this._audioElements[secondaryIndex];
             this.preloadAudio = this._audioElements[oldPrimaryIndex];
+            this.preloadedSong = null;
 
             // Update state to reflect new song (UI updates during crossfade).
             // Copy - aliasing the untracked queue item lets currentSong
@@ -4276,6 +4302,7 @@ class AudioController {
                 inactiveAudio.pause();
                 inactiveAudio.src = '';
             }
+            this.preloadedSong = null;
 
             // Sync _primaryIndex to match the active audio element
             this._primaryIndex = activeIndex;
@@ -4588,7 +4615,13 @@ class AudioController {
         let nextIndex;
 
         // Handle shuffle mode
-        if (shuffle && queue.length > 1) {
+        const pick = this._shufflePick;
+        this._shufflePick = null;
+        if (shuffle && queue.length > 1 && pick && pick.index !== queueIndex
+                && queue[pick.index]?.uuid === pick.uuid && isPlayable(queue[pick.index])) {
+            // Chosen early by _peekAutoNextIndex(), and preloaded
+            nextIndex = pick.index;
+        } else if (shuffle && queue.length > 1) {
             // Pick a random index different from current; offline, only
             // consider cached songs (a bounded selection, not a recursive
             // random walk that never terminates when nothing is cached)
@@ -4677,17 +4710,17 @@ class AudioController {
 
         this.store.state.queueIndex = nextIndex;
 
-        // Sync index to server (skip in temp queue mode)
-        if (this.store.state.tempQueueMode) {
-            await this._saveTempQueueState();
-        } else {
-            try {
-                await queueApi.setIndex(nextIndex);
-            } catch (e) {
-                console.error('Failed to sync queue index:', e);
-            }
+        // Sync index to server (skip in temp queue mode). An automatic advance
+        // does not wait for it: it is timed to the old song's last moments
+        // (_checkHandoff), which a round trip would overrun.
+        const synced = (this.store.state.tempQueueMode
+            ? this._saveTempQueueState()
+            : queueApi.setIndex(nextIndex)
+        ).catch(e => console.error('Failed to sync queue index:', e));
+        if (userInitiated) {
+            await synced;
+            if (op !== this._advanceSeq) return; // superseded during index sync
         }
-        if (op !== this._advanceSeq) return; // superseded during index sync
 
         await this.play(this.store.state.queue[nextIndex], 0, op);
 
@@ -6199,38 +6232,138 @@ class AudioController {
     }
 
     /**
-     * Preload next song for gapless playback.
+     * The queue index an automatic advance will play next, or -1 (end of the
+     * queue, or nothing playable). Mirrors next(); a shuffle choice is made
+     * here once and kept for next() to use, so the preload is the song played.
      */
-    async _preloadNext() {
-        // Only preload if gapless or crossfade is enabled
-        if (!this.store.state.gaplessEnabled && !this.store.state.crossfadeEnabled) return;
+    _peekAutoNextIndex() {
+        const { queue, queueIndex, repeatMode, shuffle } = this.store.state;
+        if (repeatMode === 'one') return queue[queueIndex] ? queueIndex : -1;
+        const offline = offlineStore.state.workOfflineMode || !offlineStore.state.isOnline;
+        const isPlayable = (s) => !offline || offlineStore.state.offlineSongUuids.has(s.uuid);
 
-        const { queue, queueIndex, repeatMode } = this.store.state;
-        let nextIndex = queueIndex + 1;
+        if (shuffle && queue.length > 1) {
+            const pick = this._shufflePick;
+            if (pick && pick.index !== queueIndex && queue[pick.index]?.uuid === pick.uuid
+                    && isPlayable(queue[pick.index])) {
+                return pick.index;
+            }
+            const available = [];
+            for (let i = 0; i < queue.length; i++) {
+                if (i !== queueIndex && isPlayable(queue[i])) available.push(i);
+            }
+            if (available.length === 0) return -1;
+            const index = available[Math.floor(Math.random() * available.length)];
+            this._shufflePick = { index, uuid: queue[index].uuid };
+            return index;
+        }
 
-        // Handle wrap-around for repeat all
-        if (nextIndex >= queue.length) {
-            if (repeatMode === 'all') {
-                nextIndex = 0;
-            } else {
+        let i = queueIndex + 1;
+        for (let steps = 0; steps < queue.length; steps++, i++) {
+            if (i >= queue.length) {
+                if (repeatMode !== 'all') return -1;
+                i = 0;
+            }
+            if (queue[i] && isPlayable(queue[i])) return i;
+        }
+        return -1;
+    }
+
+    /**
+     * Whether `song` is set on the other element, ready for play() to use.
+     */
+    _isPreloaded(song) {
+        const el = this.preloadAudio;
+        // getAttribute: src='' reads back as the page's own URL
+        if (!song || this.preloadedSong?.uuid !== song.uuid || !el.getAttribute('src') || el.error) return false;
+        // An offline copy always plays; a stream needs the network
+        return el.src.startsWith('blob:')
+            || (offlineStore.state.isOnline && !offlineStore.state.workOfflineMode);
+    }
+
+    _isFinishing(el) {
+        if (el.paused || el.ended || !isFinite(el.duration)) return false;
+        return (el.duration - el.currentTime) / (el.playbackRate || 1) <= HANDOFF_FINISH_S;
+    }
+
+    /**
+     * On timeupdate: preload the next song near the end, and start it just
+     * before the end so it plays while the old element still does (see play()).
+     * Without a preload the element's 'ended' advances instead.
+     */
+    _checkHandoff() {
+        if (this.store.state.crossfadeEnabled) return;
+        const el = this.audio;
+        if (el.paused || el.ended || !isFinite(el.duration)) return;
+        const remaining = (el.duration - el.currentTime) / (el.playbackRate || 1);
+        if (remaining > PRELOAD_LEAD_S) return;
+
+        const index = this._peekAutoNextIndex();
+        const song = index === -1 ? null : this.store.state.queue[index];
+        if (!song) return;
+        if (!this._isPreloaded(song)) {
+            this._preloadNext();
+            return;
+        }
+        if (remaining > 1 || this._handoffTimer) return;
+
+        this._handoffTimer = setTimeout(() => {
+            this._handoffTimer = null;
+            if (this.audio !== el || el.paused || el.ended) return;
+            const left = (el.duration - el.currentTime) / (el.playbackRate || 1);
+            if (left > HANDOFF_LEAD_S + 0.05) {
+                this._checkHandoff();  // Seeked, or the timer ran early
                 return;
             }
-        }
+            this._handleTrackEnd(el);
+        }, Math.max(0, remaining - HANDOFF_LEAD_S) * 1000);
+    }
 
-        const nextSong = queue[nextIndex];
-        if (!nextSong || this.preloadedSong?.uuid === nextSong.uuid) return;
+    /**
+     * Load the song an automatic advance will play onto the other element.
+     */
+    async _preloadNext() {
+        const index = this._peekAutoNextIndex();
+        const nextSong = index === -1 ? null : this.store.state.queue[index];
+        if (!nextSong) return;
+        if (this.preloadedSong?.uuid === nextSong.uuid || this._preloadingUuid === nextSong.uuid) return;
 
-        this.preloadedSong = nextSong;
+        const el = this.preloadAudio;
+        const token = ++this._preloadSeq;
+        this._preloadingUuid = nextSong.uuid;
+        try {
+            // Still finishing the previous song after a handoff; load over it
+            // once it ends
+            if (!el.paused && !el.ended) {
+                await new Promise(resolve => {
+                    const done = () => {
+                        clearTimeout(timer);
+                        el.removeEventListener('ended', done);
+                        el.removeEventListener('pause', done);
+                        resolve();
+                    };
+                    const timer = setTimeout(done, (HANDOFF_FINISH_S + 1) * 1000);
+                    el.addEventListener('ended', done);
+                    el.addEventListener('pause', done);
+                });
+            }
 
-        // Try offline audio first
-        let audioUrl = await getAudioUrl(nextSong.uuid);
-        if (!audioUrl && offlineStore.state.isOnline && !offlineStore.state.workOfflineMode) {
-            audioUrl = getStreamUrl(nextSong.uuid, nextSong.type);
-        }
+            // Try offline audio first
+            let audioUrl = await getAudioUrl(nextSong.uuid);
+            if (!audioUrl && offlineStore.state.isOnline && !offlineStore.state.workOfflineMode) {
+                audioUrl = getStreamUrl(nextSong.uuid, nextSong.type);
+            }
+            if (!audioUrl || token !== this._preloadSeq || this.preloadAudio !== el) return;
 
-        if (audioUrl) {
-            this.preloadAudio.src = audioUrl;
-            this.preloadAudio.load();
+            // A finished handoff leaves its gain up; crossfade fades in from 0
+            if (this._dualPipelineActive) {
+                this._safeResetGain(this._fadeGains[this._audioElements.indexOf(el)], 0);
+            }
+            el.src = audioUrl;
+            el.load();
+            this.preloadedSong = nextSong;
+        } finally {
+            if (token === this._preloadSeq) this._preloadingUuid = null;
         }
     }
 
@@ -6375,7 +6508,6 @@ export const player = {
     setTempoPitchLock: (enabled) => audioController.setTempoPitchLock(enabled),
 
     // Audio FX - Gapless/Crossfade
-    setGaplessEnabled: (enabled) => audioController.setGaplessEnabled(enabled),
     setCrossfadeEnabled: (enabled) => audioController.setCrossfadeEnabled(enabled),
     setCrossfadeDuration: (duration) => audioController.setCrossfadeDuration(duration),
 

@@ -83,23 +83,15 @@ const test = new TestHelper();
         await test.assert(options.length > 1, `replay gain Mode options: ${JSON.stringify(options)}`);
     });
 
-    await test.test('Gapless playback toggle exists', async () => {
+    // Every transition hands off between elements now (track-handoff.e2e.js),
+    // so the setting is gone
+    await test.test('No gapless playback toggle', async () => {
         await test.goto('/settings/');
         await test.wait(500);
 
-        const exists = await test.page.evaluate(() => {
-            return document.body.textContent.includes('Gapless');
-        });
-    });
-
-    await test.test('Can toggle gapless playback', async () => {
-        await test.goto('/settings/');
-        await test.wait(500);
-
-        // Toggle gapless
-        await test.setToggle('Gapless Playback');
-
-        await test.wait(300);
+        let threw = false;
+        try { await test.setToggle('Gapless Playback'); } catch (e) { threw = true; }
+        await test.assert(threw, 'the Gapless Playback toggle should no longer exist');
     });
 
     await test.test('Crossfade setting exists', async () => {

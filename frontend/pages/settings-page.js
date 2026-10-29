@@ -71,7 +71,6 @@ export class SettingsPage extends Component {
             lowLatencyAlways: lowLatencyAlways,
 
             // Audio FX settings
-            gaplessEnabled: player.state.gaplessEnabled,
             crossfadeEnabled: player.state.crossfadeEnabled,
             crossfadeDuration: player.state.crossfadeDuration,
             tempoEnabled: player.state.tempoEnabled,
@@ -293,23 +292,8 @@ export class SettingsPage extends Component {
         player.setLowLatencyAlways(enabled);
     }
 
-    // Gapless/Crossfade handlers
-    handleGaplessChange(e) {
-        this.state.gaplessEnabled = e.target.checked;
-        // If enabling gapless, disable crossfade
-        if (e.target.checked) {
-            this.state.crossfadeEnabled = false;
-            player.setCrossfadeEnabled(false);
-        }
-        player.setGaplessEnabled(e.target.checked);
-    }
-
     handleCrossfadeChange(e) {
         this.state.crossfadeEnabled = e.target.checked;
-        // If enabling crossfade, disable gapless
-        if (e.target.checked) {
-            this.state.gaplessEnabled = false;
-        }
         player.setCrossfadeEnabled(e.target.checked);
     }
 
@@ -394,7 +378,7 @@ export class SettingsPage extends Component {
     template() {
         const {
             isAuthenticated, user, prefs, isLoading, saveStatus, eqEnabled,
-            gaplessEnabled, crossfadeEnabled, crossfadeDuration,
+            crossfadeEnabled, crossfadeDuration,
             tempoEnabled, tempoRate, tempoPitchLock,
             sleepTimerMode, sleepTimerMinutes, sleepTimerTargetTime,
             sleepTimerMinimumMinutes, sleepTimerActive, isAndroid
@@ -738,24 +722,10 @@ export class SettingsPage extends Component {
                     `)}
 
                     <div class="settings-section">
-                        <h2>Gapless Playback</h2>
+                        <h2>Track Transitions</h2>
                         <p class="section-help">
-                            Seamless transitions between tracks without silence gaps.
+                            Tracks play back to back without a gap unless crossfade is on.
                         </p>
-
-                        <div class="setting-row">
-                            <label>Gapless Playback</label>
-                            <div class="setting-control">
-                                <label class="toggle">
-                                    <input type="checkbox" checked="${gaplessEnabled}"
-                                           on-change="handleGaplessChange">
-                                    <span class="toggle-slider"></span>
-                                </label>
-                            </div>
-                            <p class="setting-help">
-                                Preload next track for seamless transitions. Best for live albums and DJ mixes.
-                            </p>
-                        </div>
 
                         <div class="setting-row">
                             <label>Crossfade</label>
@@ -767,7 +737,7 @@ export class SettingsPage extends Component {
                                 </label>
                             </div>
                             <p class="setting-help">
-                                Smoothly fade between tracks. Overrides gapless when enabled.
+                                Smoothly fade between tracks.
                             </p>
                         </div>
 

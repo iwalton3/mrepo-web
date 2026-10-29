@@ -470,21 +470,6 @@ const test = new TestHelper();
         await test.assertNoConsoleErrors(['favicon', 'ResizeObserver']);
     });
 
-    // ==================== Gapless Playback Tests ====================
-
-    await test.test('Gapless playback can be toggled without errors', async () => {
-        test.consoleErrors = [];
-
-        await test.goto('/settings/');
-        await test.wait(500);
-
-        // Toggle gapless
-        await test.setToggle('Gapless Playback');
-
-        await test.wait(300);
-        await test.assertNoConsoleErrors(['favicon', 'ResizeObserver']);
-    });
-
     // ==================== Crossfade Tests ====================
 
     await test.test('Crossfade can be toggled without errors', async () => {
